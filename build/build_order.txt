@@ -232,9 +232,15 @@ vyatta-rest
 #   foobartest                  only README.md
 #   vyatta-fs-monitor           only README
 #   tests                       the Robot suites; test material, never built.
-#                               Note it is cloned twice -- also as danos-tests
-#                               outside this tree, which is the working copy the
-#                               2608 suite modernisation was done in.
+#                               It was cloned twice for a while, and the two
+#                               clones took the 2608 suite work in disjoint
+#                               halves. The surviving clone is on master; the
+#                               other three commits are on fork/i-danos/2608,
+#                               fetched into the same repository, and have not
+#                               been merged.
+#   toolkit                     this repository. Not upstream's -- it holds the
+#                               tooling written for the 2608 port, including
+#                               this file.
 #
 # For completeness on the other side of the ledger: of upstream's 189
 # repositories, iproute2 and vyatta-dataplane-flow were never cloned, and

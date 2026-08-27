@@ -59,7 +59,7 @@ under them is not.
 ## Quick start
 
 ```sh
-T=/home/aikon/danos/danos-toolkit
+T=/home/aikon/danos/build-iso/danos-sources/toolkit
 
 # before building: package lists resolve, dependency closure is satisfiable
 $T/iso/preflight.py

@@ -25,7 +25,7 @@ mkdir -p "$OUT" "$STAGE"
 
 pkgs=("$@")
 if [ ${#pkgs[@]} -eq 0 ]; then
-  mapfile -t pkgs < <(grep -vE '^\s*(#|$)' /home/aikon/danos/danos-toolkit/build/build_order.txt \
+  mapfile -t pkgs < <(grep -vE '^\s*(#|$)' /home/aikon/danos/build-iso/danos-sources/toolkit/build/build_order.txt \
                       | sed 's/\s*#.*//' | grep .)
 fi
 
