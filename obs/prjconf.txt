@@ -24,7 +24,7 @@ Support: linux-libc-dev
 # The official home:danos:2110a project builds 2110a by the same mechanism.
 #
 # Keep in step with danos-sources/vyatta-version/_buildconfig;
-# danos-2110b/auto/config reads the same parameters to compose
+# build-iso/auto/config reads the same parameters to compose
 # VYATTA_PROJECT_ID for the banner.
 Macros:
 %_project Kington

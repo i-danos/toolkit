@@ -90,7 +90,7 @@ the commit message.
 
 ## 3. `linux-headers-amd64` metapackage version race
 
-**`danos-2110b` package list**
+**`build-iso` package list**
 
 Both DANOS and Debian ship a package called `linux-headers-amd64`, and apt picks
 between them by version. Fine while ours was newer; once trixie moved to

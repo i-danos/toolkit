@@ -5,7 +5,7 @@ Two checks, both of which fail deep inside `lb build` if skipped, with error
 messages that point somewhere other than the real cause:
 
   1. package-list existence -- every package named in
-     danos-2110b/config/package-lists/*.list.chroot must exist in one of the
+     build-iso/config/package-lists/*.list.chroot must exist in one of the
      apt sources. A missing one surfaces as "Unable to locate package" tens of
      minutes into the build.
 
@@ -29,8 +29,8 @@ from collections import defaultdict
 # Defaults for this working directory; override with --repo/--lists or by
 # exporting OBS_REPO / PKG_LISTS.
 REPO = os.environ.get("OBS_REPO", "/home/aikon/danos/build-iso/danos-build/obs-repo")
-LISTS = os.environ.get("PKG_LISTS", "/home/aikon/danos/build-iso/danos-2110b/config/package-lists")
-# The chroot's apt sources; see danos-2110b/config/apt/sources.list.
+LISTS = os.environ.get("PKG_LISTS", "/home/aikon/danos/build-iso/danos-sources/build-iso/config/package-lists")
+# The chroot's apt sources; see build-iso/config/apt/sources.list.
 DEBIAN = [
     "https://mirrors.aliyun.com/debian/dists/trixie/main/binary-amd64/Packages.gz",
     "https://mirrors.aliyun.com/debian/dists/trixie/contrib/binary-amd64/Packages.gz",
