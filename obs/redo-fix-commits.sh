@@ -14,7 +14,7 @@
 
 set -u
 SRC=/home/aikon/danos/build-iso/danos-sources
-FIXES=/home/aikon/danos/.obs/fixes.disabled
+FIXES=${OBS_DIR:-/home/aikon/danos/.obs}/fixes.disabled
 MODE=${MODE:-dry}
 declare -A DIRMAP=([python-pytest-lazy-fixture]=pytest-lazy-fixture)
 

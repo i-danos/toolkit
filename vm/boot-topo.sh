@@ -31,7 +31,7 @@
 set -u
 ISO=${1:?usage: boot-topo.sh <test-iso>}
 BIN=$(dirname "$ISO")/binary/live
-RUNBASE=/home/aikon/danos/.obs/run
+RUNBASE=${OBS_DIR:-/home/aikon/danos/.obs}/run
 MEM=${MEM:-3072}
 
 [ -f "$BIN/vmlinuz" ] || { echo "missing $BIN/vmlinuz" >&2; exit 1; }

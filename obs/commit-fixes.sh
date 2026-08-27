@@ -14,7 +14,7 @@
 
 set -u
 SRC=/home/aikon/danos/build-iso/danos-sources
-FIXES=/home/aikon/danos/.obs/fixes
+FIXES=${OBS_DIR:-/home/aikon/danos/.obs}/fixes
 MODE=${MODE:-dry}
 
 # Repositories whose directory name differs from the fixes directory name

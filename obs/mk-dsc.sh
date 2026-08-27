@@ -17,9 +17,9 @@
 
 set -u
 SRC=/home/aikon/danos/build-iso/danos-sources
-OUT=${OUT:-/home/aikon/danos/.obs/dsc}
-STAGE=${STAGE:-/home/aikon/danos/.obs/stage}
-FIXES=${FIXES:-/home/aikon/danos/.obs/fixes}
+OUT=${OUT:-${OBS_DIR:-/home/aikon/danos/.obs}/dsc}
+STAGE=${STAGE:-${OBS_DIR:-/home/aikon/danos/.obs}/stage}
+FIXES=${FIXES:-${OBS_DIR:-/home/aikon/danos/.obs}/fixes}
 
 mkdir -p "$OUT" "$STAGE"
 
