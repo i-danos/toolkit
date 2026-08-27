@@ -33,7 +33,7 @@ is what it turned out to be here.
 | What you see | What it is |
 |---|---|
 | A rebuild still contains what you just removed | `lb clean` does not empty `binary/`. Files staged there by an earlier run — an extra kernel, say — are packaged into the new ISO unchanged, so a package-list fix appears not to have worked. `rm -rf binary` before rebuilding, and verify against the ISO, not against `binary/`. |
-| A previously built ISO has vanished | `lb clean` removes `*.iso` from the build directory, and `90-mk-test-iso.sh` runs it before every test-image build. Copy an image you want to keep out of `danos-2110b/` first. |
+| A previously built ISO has vanished | `lb clean` removes `*.iso` from the build directory, and `90-mk-test-iso.sh` runs it before every test-image build. Copy an image you want to keep out of the build directory first. |
 | The image is unusually large | Two kernels. 566M is normal here; 616M and 766M were images that had picked up Debian's kernel alongside ours. Size is a cheap first check. |
 | `Unable to locate package` deep in the build | `iso/preflight.py` catches this before the build starts. |
 | Everything passes but the wrong kernel boots | `verify-iso.sh` checks the default boot entry now. Before that it only checked presence, and presence was never in doubt. |

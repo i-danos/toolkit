@@ -49,7 +49,7 @@ override, so nothing needs editing to run them elsewhere:
 |---|---|---|
 | `OBS_DIR` | `/home/aikon/danos/.obs` | Operational state: `dsc/`, the `osc` wrapper, `run/`, `fixes/` |
 | `OBS_REPO` | `.../danos-build/obs-repo` | Local apt repo built from OBS output (`preflight.py`, or `--repo`) |
-| `PKG_LISTS` | `.../danos-2110b/config/package-lists` | live-build package lists (`preflight.py`, or `--lists`) |
+| `PKG_LISTS` | `.../danos-sources/build-iso/config/package-lists` | live-build package lists (`preflight.py`, or `--lists`) |
 
 `OBS_DIR` is deliberately outside this repository. The scripts are worth keeping
 in version control; the 2 GB of generated source packages and build staging
@@ -177,7 +177,7 @@ Four defects that only a booted image would show. Full accounts in
 |---|---|---|
 | Perl smartmatch warnings on stdout | `vyatta-security-vpn 2.17` | `show vpn ipsec sa` returned warnings instead of the SA table |
 | XFRM policy path never committed its transaction | `vyatta-dataplane 3.14.28` | Configuring IPsec segfaulted the dataplane, 566 times in one run |
-| `linux-headers-amd64` metapackage version race | `danos-2110b` package list | The image booted Debian's kernel, not DANOS's |
+| `linux-headers-amd64` metapackage version race | `build-iso` package list | The image booted Debian's kernel, not DANOS's |
 | cloud-init stage deadlock | `cloud-init …vyatta4` | Boot hung with a seed attached; hostname silently dropped |
 
 The first two were hidden behind each other: the Perl warnings buried the SA
