@@ -31,7 +31,7 @@ echo
 # The manifest live-build writes alongside the ISO lists every installed
 # package with its version. Prefer it; fall back to unpacking the squashfs.
 # live-build names the manifest after the image but without the ".hybrid"
-# infix: danos-2110b_<stamp>-amd64.hybrid.iso -> danos-2110b_<stamp>-amd64.packages
+# infix: i-danos_2608_<stamp>-amd64.hybrid.iso -> i-danos_2608_<stamp>-amd64.packages
 BASE=${ISO%.iso}; BASE=${BASE%.hybrid}
 MAN=""
 for c in "$BASE.packages" "${ISO%.iso}.packages" \
