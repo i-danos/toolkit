@@ -34,7 +34,11 @@
 set -u
 SOCK=${1:?usage: prep-router.sh <console.sock> [session-id]}
 SID=${2:-$((RANDOM + 9000))}
-OBS=/home/aikon/danos/.obs
+# OBS_DIR is where the operational state lives -- dsc/ (generated source
+# packages), the osc wrapper, run/ (console sockets), fixes/. It is deliberately
+# separate from this toolkit: the scripts are worth keeping in version control,
+# 2 GB of build output is not. Override it if your working directory differs.
+OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
 
 "$OBS/console.py" "$SOCK" tmpuser tmppwd \
   "eval \$(cli-shell-api getSessionEnv $SID); cli-shell-api setupSession; echo session=$SID" \

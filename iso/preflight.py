@@ -26,8 +26,10 @@ import sys
 import urllib.request
 from collections import defaultdict
 
-REPO = "/home/aikon/danos/build-iso/danos-build/obs-repo"
-LISTS = "/home/aikon/danos/build-iso/danos-2110b/config/package-lists"
+# Defaults for this working directory; override with --repo/--lists or by
+# exporting OBS_REPO / PKG_LISTS.
+REPO = os.environ.get("OBS_REPO", "/home/aikon/danos/build-iso/danos-build/obs-repo")
+LISTS = os.environ.get("PKG_LISTS", "/home/aikon/danos/build-iso/danos-2110b/config/package-lists")
 # The chroot's apt sources; see danos-2110b/config/apt/sources.list.
 DEBIAN = [
     "https://mirrors.aliyun.com/debian/dists/trixie/main/binary-amd64/Packages.gz",

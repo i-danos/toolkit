@@ -7,7 +7,11 @@
 # version after a fix has to go through here.
 
 set -u
-OBS=/home/aikon/danos/.obs
+# OBS_DIR is where the operational state lives -- dsc/ (generated source
+# packages), the osc wrapper, run/ (console sockets), fixes/. It is deliberately
+# separate from this toolkit: the scripts are worth keeping in version control,
+# 2 GB of build output is not. Override it if your working directory differs.
+OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
 OSC="$OBS/osc -A https://api.opensuse.org"
 PRJ=home:i-danos
 

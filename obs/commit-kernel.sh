@@ -19,7 +19,11 @@
 # refresh there, then copy the result back into the repository.
 
 set -eu
-OBS=/home/aikon/danos/.obs
+# OBS_DIR is where the operational state lives -- dsc/ (generated source
+# packages), the osc wrapper, run/ (console sockets), fixes/. It is deliberately
+# separate from this toolkit: the scripts are worth keeping in version control,
+# 2 GB of build output is not. Override it if your working directory differs.
+OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
 R=/home/aikon/danos/build-iso/danos-sources/linux-vyatta
 W=$(mktemp -d /tmp/kcommit.XXXXXX)
 QUILT="$OBS/opt/usr/bin/quilt"

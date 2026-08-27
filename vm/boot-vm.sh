@@ -23,7 +23,7 @@ SSHPORT=${3:-2222}
 MEM=${4:-4096}
 
 BIN=$(dirname "$ISO")/binary/live
-RUN=/home/aikon/danos/.obs/run/$NAME
+RUN=${OBS_DIR:-/home/aikon/danos/.obs}/run/$NAME
 mkdir -p "$RUN"
 
 for f in vmlinuz initrd.img; do

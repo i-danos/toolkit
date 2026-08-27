@@ -2,12 +2,16 @@
 # The OBS work that piled up while the login was expired, run in one go.
 #
 # Prerequisite: a valid session cookie. First run
-#   /home/aikon/danos/.obs/osc -A https://api.opensuse.org whois i-danos
+#   ${OBS_DIR:-/home/aikon/danos/.obs}/osc -A https://api.opensuse.org whois i-danos
 # and enter the i-danos password at the prompt yourself; this script never
 # enters it for you.
 
 set -u
-OBS=/home/aikon/danos/.obs
+# OBS_DIR is where the operational state lives -- dsc/ (generated source
+# packages), the osc wrapper, run/ (console sockets), fixes/. It is deliberately
+# separate from this toolkit: the scripts are worth keeping in version control,
+# 2 GB of build output is not. Override it if your working directory differs.
+OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
 OSC="$OBS/osc -A https://api.opensuse.org"
 PRJ=home:i-danos
 

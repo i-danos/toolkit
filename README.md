@@ -40,6 +40,21 @@ The same mistake recurred in different clothes:
 When adding a check, ask what it would print if the thing were broken. If the
 answer is "the same", it is not a check.
 
+## Paths
+
+The scripts default to the working directory they were written in and take an
+override, so nothing needs editing to run them elsewhere:
+
+| Variable | Default | What it is |
+|---|---|---|
+| `OBS_DIR` | `/home/aikon/danos/.obs` | Operational state: `dsc/`, the `osc` wrapper, `run/`, `fixes/` |
+| `OBS_REPO` | `.../danos-build/obs-repo` | Local apt repo built from OBS output (`preflight.py`, or `--repo`) |
+| `PKG_LISTS` | `.../danos-2110b/config/package-lists` | live-build package lists (`preflight.py`, or `--lists`) |
+
+`OBS_DIR` is deliberately outside this repository. The scripts are worth keeping
+in version control; the 2 GB of generated source packages and build staging
+under them is not.
+
 ## Quick start
 
 ```sh
