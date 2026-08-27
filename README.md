@@ -134,6 +134,12 @@ https. `relays.sh` gives each router the address its suite hard-codes.
 `console.py` drives the serial console. `verify-ipsec-fix.py` checks a booted
 topology for the dataplane crash.
 
+`probe3.py`, `linkchk.py` and `vymgmt_t.py` are small probes: reachability from
+the Robot container, interface state, and a direct vymgmt login. Reach for
+`vymgmt_t.py` first when a suite fails — the suites drive the CLI through
+vymgmt, whose own errors say little, and a one-line login test separates a
+harness problem from a product one in seconds.
+
 ## suite/ — the Robot suites
 
 The DANOS suites were written in 2020–2021 and predate the current tooling.
