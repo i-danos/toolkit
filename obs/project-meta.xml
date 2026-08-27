@@ -1,0 +1,18 @@
+<project name="home:i-danos">
+  <title>DANOS on Debian 13</title>
+  <description>A port of DANOS (Disaggregated Network Operating System) to Debian 13
+trixie: kernel 6.12, DPDK 24.11, FRR 10.3.
+
+The line taken is upstream-first — where Debian ships a package that does the
+job, the DANOS fork is retired rather than carried forward. Hardware-vendor
+support is out of scope. Release id 2608, branch i-danos/2608.
+
+Packages disabled here are not failures; each carries its reason in its own
+description. Most are forks Debian has since overtaken, and the official DANOS
+OBS project did not build them either.</description>
+  <person userid="i-danos" role="maintainer"/>
+  <repository name="2608">
+    <path project="Debian:13" repository="standard"/>
+    <arch>x86_64</arch>
+  </repository>
+</project>
