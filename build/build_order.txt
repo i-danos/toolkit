@@ -1,0 +1,242 @@
+vyatta-debian-system-config
+# strongswan  # use Debian 13 stock 6.0.1 (upstream-first)
+python-vici  # only supplies the vici python binding Debian does not package; source taken unmodified from strongswan 6.0.1
+dh-golang
+vyatta-vmware-tools
+smartmontools
+vyatta-debian-lldpd-config
+valgrind
+linux-firmware
+libpam-chvrf
+check
+vrf-manager
+# pygobject: obsolete DANOS-vendored 3.22.0 (2016-era) build against Python 2,
+# which trixie no longer ships. No other repo hard-depends on this custom
+# build; trixie's stock python3-gi (3.50.0) already satisfies consumers like
+# vyatta-vrrp.
+# pygobject
+# dpdk-kmods: obsolete DANOS-vendored DPDK 20.11.2 source. Phase 3 decided
+# to consume trixie's stock libdpdk-dev (24.11.4) instead -- vyatta-dataplane
+# and vyatta-dpdk-swport already Build-Depend on libdpdk-dev (>= 24.11.4/20.11)
+# and build successfully against it. Building this stale source is unnecessary
+# and its debian/rules passes a meson option (per_library_versions) that no
+# longer exists in this DPDK version's meson_options.txt.
+# dpdk-kmods
+# opennsl-binary
+vyatta-cfg-default
+vyatta-base
+host-sflow
+libzmq-constants-perl
+vyatta-cpu-shield
+vyatta-bash
+libyang
+makedumpfile
+base-files
+linux-vyatta
+dh-yang
+vyatta-security-crypto
+ufispace-bsp-utils
+libnss-vrfdns
+# bcm-linux-bde-modules  # hardware-vendor support dropped (software-only)
+vyatta-ipv6-rtradv
+# jitterentropy  # use Debian 13 stock (upstream-first)
+cloud-init  # DANOS integration ported from 18.3-5vyatta9 to 25.1.4; the image has always shipped this, not Debian stock
+vyatta-curl-wrapper
+lu
+vyatta-debian-systemd-config
+libvci
+vyatta-ipsec-trapd
+vyatta-version
+vyatta-platform  # kept: only platform-detect + platform-util (generic platform probing) are installed; the vendor PHY/SFP/sfpd/ONIE subpackages are not
+libre
+vyatta-lldp
+live-boot-vyatta
+lintian-profile-vyatta
+libpcap
+vyatta-debian-pam-configs-config
+vyatta-debian-passwd-config
+dh-vci
+i2util
+vyatta-route-broker
+live-build-desc
+# netplug  # use Debian 13 stock (upstream-first)
+keepalived
+# libteam  # use Debian 13 stock (upstream-first)
+ufispace-apollo-linux-modules
+# bcm-kbp-linux-modules  # hardware-vendor support dropped (software-only)
+pam_tacplus
+golang-defaults
+pyang
+vyatta-debian-ssh-server-config
+vyatta-config-migrate
+vyatta-debug
+golang
+vyatta-hotplug
+vyatta-util
+pytest-lazy-fixture
+vyatta-mibs-misc
+# netkit-telnet  # use Debian 13 stock (upstream-first). Debian 13 gets
+#   telnet/telnetd from the inetutils source package (2:2.6-3+deb13u3) and no
+#   longer packages netkit-telnet. The one substantive DANOS patch,
+#   telnet-netwritebuf-fix.diff, fixes an infinite recursion in netwritebuf()
+#   (Debian Bug #974428) that is specific to netkit; the function does not
+#   exist in the inetutils implementation, so nothing needs porting.
+# ntp  # use Debian 13 stock chrony (upstream-first). Debian 13 dropped NTP
+#   Classic — upstream stopped releasing and there is no source package —
+#   whereas DANOS had been building 4.2.8p15 locally. chrony is Debian's
+#   default time daemon and provides the time-daemon virtual package that
+#   owamp/twamp depend on.
+# accton-hwdiag  # hardware-vendor support dropped (software-only)
+golang-github-youmark-pkcs8
+# rdma-core  # use Debian 13 stock (upstream-first)
+libzmq-libzmq3-perl
+vyatta-service-ssh
+# vplane-config-npf-alg-scripts  # superseded by vplane-config-npf. Both declare
+#   the same three binary packages (vyatta-system-alg-v1-yang,
+#   vyatta-system-alg-routing-instance-v1-yang, vyatta-op-system-alg-v1-yang)
+#   with byte-identical .install files, including the two scripts
+#   (vyatta-dp-npf-alg.pl, vyatta-dp-npf-show-alg-state). This repo is at 3.0.1,
+#   vplane-config-npf at 4.5.0, and 4.5.0 is what the image carries. OBS had
+#   already disabled this package.
+vyatta-op
+vyatta-service-telnet
+vyatta-log
+vyatta-service-dpi
+vyatta-service-ntp
+vyatta-service-twamp
+# vyatta-cfg-sflow
+# vyatta-hwdiag  # hardware-vendor support dropped (software-only)
+vyatta-openvpn-yang
+vyatta-tech-support
+cli-sandbox
+vyatta-service-portmonitor
+vyatta-client-ssh
+vyatta-interfaces-l2tpeth
+vyatta-image-tools
+vyatta-service-dhcp
+vyatta-poe
+vyatta-service-bridge
+routing-instance
+vyatta-syslog
+vyatta-login
+vyatta-cfg-journalbeat
+vyatta-service-switch
+vyatta-service-export
+vyatta-sssd
+vermont
+# ppp  # use Debian 13 stock (upstream-first)
+# ndpi  # use Debian 13 stock libndpi 4.2 (upstream-first)
+vyatta-ndpi-support  # the DANOS side: two YANG modules plus ndpi_show_name, regenerated against 4.2
+vyatta-system-timing
+vplane-config-npf
+vyatta-service-pcp
+vyatta-config-mgmt
+vyatta-service-gnss
+grub2-signed
+vyatta-service-snmp
+tacplusd
+golang-golang-x-sys
+golang-github-zeromq-goczmq
+golang-dbus
+golang-jsouthworth-hash
+golang-jsouthworth-dyn
+vyatta-protocols-common
+golang-github-josharian-native
+utils
+libnetconf
+vyatta-cfg
+vyatta-vrrp
+vyatta-security-vpn
+# dpdk: obsolete DANOS-vendored DPDK 20.11.2 source, see dpdk-kmods note above.
+# dpdk
+libvirt
+golang-github-mdlayher-netlink
+golang-github-jsouthworth-objtree
+golang-jsouthworth-transduce
+golang-jsouthworth-try
+vyatta-protocols-frr
+aaa
+mgmterror
+vplane-config-qos
+# vyatta-ipmi  # hardware-vendor support dropped (software-only)
+netconfd
+vyatta-cfg-system
+# vyatta-dpdk-swport  # hardware-vendor support dropped (software-only)
+golang-github-mdlayher-genetlink
+golang-jsouthworth-seq
+vyatta-tacacs
+vyatta-dataplane
+golang-jsouthworth-immutable
+fluent-bit
+vyatta-controller
+vyatta-cfg-bonding
+# libfal-opennsl
+golang-jsouthworth-etm
+encoding
+# golang-github-danos-encoding-rfc7951  # stale ancestor of encoding. Both set
+#   Source: golang-github-danos-encoding and build the same
+#   golang-github-danos-encoding-rfc7951-dev, but this one is 0.8 UNRELEASED
+#   against encoding's released 0.10, and its tree is a subset (96 .go files to
+#   99, missing rfc7951/data/unmarshal_helpers.go). It also sat *after* encoding
+#   in this file, so a sequential local build had 0.8 overwriting 0.10. OBS
+#   holds 0.10, i.e. encoding's.
+repcpd
+vyatta-cfg-dataplane
+owamp
+mstpd
+vci
+yang
+notifyd
+vci-template-go
+ephemerad
+vyatta-service-dns
+vyatta-interfaces
+xpath-plugins
+yangd
+config
+provisiond
+configd
+op
+vyatta-kdump
+ifmgrd
+opd
+vyatta-rest
+
+# ---------------------------------------------------------------------------
+# Cloned locally under danos-sources/ but not part of this build.
+#
+# The entries above record what was retired *from* the build order. These were
+# never in it, so nothing recorded that they had been looked at. Listing them
+# here means the next person comparing `ls danos-sources/` against this file
+# gets an answer instead of 17 unexplained directories.
+#
+# Superseded by Debian 13 stock. Verified from the built image, not from the
+# package lists -- a package list names a binary package, which says nothing
+# about who supplied it. The versions below are what 2608 actually installs:
+#
+#   frr          10.3-3+deb13u1          isc-dhcp   4.4.3-P1-8
+#   grub         2.12-9+deb13u2          radvd      1:2.20-1+b1
+#   openssh      1:10.0p1-7+deb13u4      iputils    3:20240905-3
+#   net-snmp     5.9.4+dfsg-2+deb13u1    iperf      2.2.1+dfsg-1
+#   rsyslog      8.2504.0-1              sssd       2.10.1-2+b1
+#
+# Build nothing that reaches the image:
+#
+#   shim                   grub2-signed covers signed boot; this fork is unused
+#   vyatta-snmp-vrf-agent  its one binary package is in no package list
+#
+# Not packaging repositories at all -- no debian/ directory:
+#
+#   danos-service-flowstat      only .gitignore
+#   dataplane-flowstat-plugin   only .gitignore
+#   foobartest                  only README.md
+#   vyatta-fs-monitor           only README
+#   tests                       the Robot suites; test material, never built.
+#                               Note it is cloned twice -- also as danos-tests
+#                               outside this tree, which is the working copy the
+#                               2608 suite modernisation was done in.
+#
+# For completeness on the other side of the ledger: of upstream's 189
+# repositories, iproute2 and vyatta-dataplane-flow were never cloned, and
+# neither is referenced here.
+# ---------------------------------------------------------------------------
