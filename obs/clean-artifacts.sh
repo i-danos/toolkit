@@ -19,7 +19,7 @@ SRC=/home/aikon/danos/build-iso/danos-sources
 MODE=${MODE:-dry}     # dry = list only; apply = actually git rm --cached and commit
 
 cd "$SRC" || exit 1
-mapfile -t pkgs < <(grep -vE '^\s*(#|$)' /home/aikon/danos/build-iso/scripts/build_order.txt \
+mapfile -t pkgs < <(grep -vE '^\s*(#|$)' /home/aikon/danos/danos-toolkit/build/build_order.txt \
                     | sed 's/\s*#.*//' | grep .)
 
 total=0; repos=0

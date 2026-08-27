@@ -5,6 +5,7 @@ DPDK 24.11, FRR 10.3), covering the whole path from source packages to a booted
 router under test:
 
 ```
+build/   the numbered pipeline: clone the sources, order them, build them
 obs/     build source packages, push them to OBS, keep the repos clean
 iso/     check an image before and after building it
 vm/      boot routers under QEMU and wire them into a topology
@@ -71,6 +72,34 @@ TOPO=ipsec $T/vm/boot-topo.sh <test-image>.iso
 for r in r1 r2 r3; do $T/vm/prep-router.sh /home/aikon/danos/.obs/run/$r/console.sock; done
 $T/vm/relays.sh up r1:192.168.203.155:2231 r2:192.168.203.156:2232 r3:192.168.203.157:2233
 ```
+
+## build/ — the pipeline
+
+The numbered scripts run in order, from an empty tree to a built image:
+
+| | |
+|---|---|
+| `00-start_repo.sh` | serve the local apt repo over HTTP — without it every DANOS package reports "Unable to locate", which reads like a missing package |
+| `10-fetch_danos_repos.py`, `20-clone_danos_189_repos.sh` | fetch and clone upstream's 189 repositories |
+| `30-audit_and_fix_repos.sh` | check out the release branch in each and report the strays |
+| `40-analyze_build_order.py` | topologically sort the repositories by their Build-Depends |
+| `50-build_danos_packages.sh` | build each one in the order `build_order.txt` gives |
+| `80-fix_repo.sh` | regenerate `Packages`/`Release` after new .debs land |
+| `90-mk-test-iso.sh` | build a test image with the overlay applied, then remove the overlay |
+
+`build_order.txt` is the authoritative build scope: 148 active entries, and
+every retired one kept as a comment with the reason it went. Read it before
+concluding a repository is unused — several directories under `danos-sources/`
+are only there because upstream has them.
+
+`40-analyze_build_order.py` regenerates the file from dependency analysis and
+writes no comments, so `50-` only calls it when the file is missing or empty.
+Deleting `build_order.txt` therefore discards every retirement reason in it.
+
+These scripts resolve `build_order.txt` and each other from their own location,
+so mounting this directory anywhere in the build container works. The
+`/build-iso` paths that remain in them refer to the *source tree* mount, which
+is a different thing and still correct.
 
 ## obs/ — source packages and OBS
 
