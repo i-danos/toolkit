@@ -11,7 +11,7 @@ iso/     check an image before and after building it
 vm/      boot routers under QEMU and wire them into a topology
 suite/   bring the DANOS Robot suites up to current tooling
 seed/    NoCloud seed for exercising cloud-init
-docs/    what each defect was, and how it was found
+docs/    what each defect was, and how it was found, plus the 2105 baselines
 ```
 
 Every script carries its reasoning in its own header. This file is the map;
