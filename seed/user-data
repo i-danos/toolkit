@@ -1,0 +1,9 @@
+#cloud-config
+# Minimal NoCloud payload for acceptance testing.
+#
+# The point is not what this configures but that cloud-init runs at all: on a
+# live boot with no datasource ds-identify disables it, so the vrouter distro
+# class and the two DANOS modules (apply-network-vyatta, ssh_vyatta) are never
+# exercised. With a seed present they are, and cloud-init's own logs then say
+# which distro was selected and which modules ran.
+hostname: danos-ci-test

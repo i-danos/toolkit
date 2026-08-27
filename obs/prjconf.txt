@@ -1,0 +1,34 @@
+# The kernel's host tools (scripts/unifdef, arch/x86/tools/relocs) include
+# <linux/errno.h> and other UAPI headers, which come from linux-libc-dev.
+#
+# OBS excludes a binary from a package's own build root by matching the Source
+# field in the .dsc. Debian:13's linux-libc-dev has Source: linux, and this
+# project's kernel source package is also named linux, so it gets excluded
+# outright. Measured: vyatta-util (186 packages) and libyang (226) both have
+# linux-libc-dev in their build roots; linux (302) does not. Copying the OBS
+# package to the name linux-vyatta changed nothing, confirming the match is on
+# the Source field rather than the OBS package name.
+#
+# Support: cannot override that exclusion. Preinstall unpacks before dependency
+# resolution and can. linux-libc-dev is headers only, with no dependencies and
+# no maintainer scripts, so preinstalling it is safe.
+Preinstall: linux-libc-dev
+Support: linux-libc-dev
+
+# DANOS release identity. vyatta-version's debian/rules computes the package
+# version at build time with
+#     VVERSION=$(shell scripts/get_vyatta_version)
+# and that script reads /.build/build.dist, which OBS generates from this file.
+# Without these macros it falls back to the value in the repository and builds
+# vyatta-version 1.3 — upstream's 2020 value — instead of this project's 2608.
+# The official home:danos:2110a project builds 2110a by the same mechanism.
+#
+# Keep in step with danos-sources/vyatta-version/_buildconfig;
+# danos-2110b/auto/config reads the same parameters to compose
+# VYATTA_PROJECT_ID for the banner.
+Macros:
+%_project Kington
+%_vyatta_name Disaggregated Network Operating System
+%_vyatta_pretty_name DANOS
+%_vyatta_version_id 2608
+:Macros

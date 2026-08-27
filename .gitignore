@@ -1,0 +1,3 @@
+# Runtime state, not tooling: boot-vm.sh and boot-topo.sh put console and
+# monitor sockets, pidfiles and console logs under run/.
+/run/
