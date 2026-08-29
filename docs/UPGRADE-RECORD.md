@@ -1,16 +1,16 @@
-# DANOS 2110b to 2608: what the upgrade actually involved
+# DANOS 2110a to 2608: what the upgrade actually involved
 
 This is the repository-side reference: topology, decisions, and where things
 live. The narrative account of the same work — the defects in order, with the
 console output and the wrong turns — is kept as a separate published record.
 Keep the two consistent when either changes.
 
-DANOS 2110b targets Debian 10. Nothing in that stack is still current, and the
+DANOS 2110a targets Debian 10. Nothing in that stack is still current, and the
 parts DANOS forked have drifted far enough from upstream that carrying the forks
 forward costs more than retiring them. This record covers the move to Debian 13,
 what broke, and how each break was proved rather than guessed at.
 
-| | 2110b | 2608 |
+| | 2110a | 2608 |
 |---|---|---|
 | Debian | 10 buster | 13 trixie |
 | Kernel | 5.4 | 6.12 |
