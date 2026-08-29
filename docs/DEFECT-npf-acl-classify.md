@@ -1,8 +1,15 @@
 # Dataplane segfault in rte_acl_classify_scalar on the crypto policy path
 
-Status: **root cause not established.** Two attempted fixes did not remove it.
-This is a report of what is known, what was ruled out, and where the next
-person should start — not a diagnosis.
+Status: **resolved.** The cause was the ACL trie being rebuilt while forwarding
+threads were still traversing it, which became possible when retiring the DANOS
+DPDK fork replaced `rte_acl_rcu_qsbr_add` with a stub. Fixed in
+`vyatta-dataplane` 3.14.33, with the related rule-deletion stubs fixed in
+3.14.34. See defects 6 and 7 in `DEFECTS.md`.
+
+The rest of this file is kept as written *before* the cause was known. It is
+worth reading for the wrong turns rather than the conclusion — in particular the
+gdb `Cannot access memory` that looked like a use-after-free and was a hugepage
+the core simply did not capture.
 
 ## Signature
 

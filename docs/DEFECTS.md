@@ -1,7 +1,12 @@
-# The four defects
+# The defects
 
-All four were invisible to static checks and to the OBS build. Each needed a
-booted image, and three of them needed a booted *topology*.
+Every one of these was invisible to static checks and to the OBS build. Each
+needed a booted image, and most needed a booted *topology*.
+
+Defects 1 to 4 were found during the port itself. Defects 5 to 10 came out of
+running the Robot suites against the built image, and four of those six trace
+back to a single decision — retiring the DANOS fork of DPDK, whose patches
+turned out to be functional rather than cosmetic.
 
 ---
 
@@ -153,6 +158,112 @@ four in `cloud_config_modules`, whose service is ordered
 The verification that caught the half-fix was a check added *because* the first
 one had passed too easily: `hostname` must print `danos-ci-test`. Boot time and
 module execution were both green on the half-fixed version.
+
+---
+
+## 5. rldb torn down before it was disabled
+
+**`vyatta-dataplane` 3.14.31**
+
+`rldb_destroy()` walked the databases and freed them, then set
+`rldb_disabled = true`. A packet arriving in between matched against a database
+that was already being freed. The window is real on any liburcu; 0.10.2 simply
+happened to hide it, and 0.15.2 does not.
+
+This is an upstream defect from 2021, not something the port introduced — but
+the port is what made it fire. 2105 survived eight rounds of the IPsec suite
+with no crash. 2608 crashed on 2 of 2 attempts before the fix and 0 of 4 after.
+
+The fix moves `rldb_disabled = true` ahead of the destroy loop and splits the
+body into `rldb_destroy_internal()`.
+
+---
+
+## 6. ACL trie rebuilt underneath live readers
+
+**`vyatta-dataplane` 3.14.33**
+
+DANOS's DPDK fork patched `rte_acl` with `rte_acl_rcu_qsbr_add`, which let the
+ACL defer its own reclamation. Retiring the fork replaced that with a stub in
+`compat.h`, so a trie could be rebuilt while forwarding threads were still
+traversing it.
+
+The signature was a segfault in `rte_acl_classify_scalar` with `%r8 == 0`,
+reached through `rldb_match` on the crypto policy path. `DEFECT-npf-acl-classify.md`
+records the investigation, including the wrong turns.
+
+The fix clears the built flag and waits for a grace period before rebuilding:
+
+```c
+if (live && (m_trie->acl_built || m_trie->needs_recreate)) {
+        m_trie->acl_built = false;
+        dp_rcu_synchronize();
+}
+```
+
+---
+
+## 7. Deleted ACL rules kept matching
+
+**`vyatta-dataplane` 3.14.34**
+
+The same stubbing removed `rte_acl_del_rule` and `rte_acl_copy_rules`. Nothing
+failed to compile and nothing logged an error — deleting a rule simply had no
+effect, so traffic kept matching policies that had been removed.
+
+Upstream DPDK has no rule-deletion API, so the fix does not restore the calls.
+Each trie now keeps its own `rule_list`, and deletion rebuilds the context from
+what remains (`npf_rte_acl_store_rule`, `find_rule`, `free_rule_copies`,
+`recreate_ctx`). The stubs are gone from `compat.h`; the comment explaining why
+is not.
+
+---
+
+## 8. Crypto session pool sized to zero
+
+**`vyatta-dataplane` 3.14.35**
+
+DPDK 22.11 merged the symmetric session model, and
+`rte_cryptodev_sym_session_pool_create` now wants `elt_size` to be
+`rte_cryptodev_sym_get_private_session_size()`. It was left at 0, so every
+session allocation failed with `Invalid mempool`.
+
+The fix creates the pool from the device setup path, once the size is known
+(`crypto_rte_ensure_session_pool`).
+
+---
+
+## 9. Redundant private session pool
+
+**`vyatta-dataplane` 3.14.36**
+
+With the merged model, the separate private session pool is not just
+unnecessary — it prevents sessions from being established at all. Removing
+`crypto_rte_setup_priv_pool()` took `ipsec sad` from `total-sas: 0` to
+`total-sas: 2`.
+
+Defects 8 and 9 are one story: the first made the pool unusable, the second kept
+it that way after the first was fixed.
+
+---
+
+## 10. strongswan unit renamed on Debian 13
+
+**`vyatta-security-vpn` 2.18 → 2.19**
+
+Debian 13 ships the unit as `strongswan-starter.service`. Every reference to
+`strongswan.service` therefore matched nothing, the IKE daemon never started,
+and — worst of it — the commit reported success: "succeeded (non-fatal
+failures)".
+
+Fixed by using the shipped unit name throughout, and by having the daemon wait
+for the VICI socket rather than testing for it once:
+
+```
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do [ -S /var/run/charon.vici ] && exit 0; sleep 1; done; exit 1'
+```
+
+`ipsec_running()` checks `strongswan-starter` for the same reason.
 
 ---
 
