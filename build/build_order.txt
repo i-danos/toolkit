@@ -22,6 +22,15 @@ vrf-manager
 # and its debian/rules passes a meson option (per_library_versions) that no
 # longer exists in this DPDK version's meson_options.txt.
 # dpdk-kmods
+# dpdk: the same decision applies to the main DPDK repository next to it. It
+# carries two commits from this project -- "Carry the DANOS changes forward
+# onto DPDK 24.11" and "Version the module package against the 6.12 kernel" --
+# made on 2026-08-20, before the decision to consume trixie's stock libdpdk-dev
+# settled. They are superseded: the image installs Debian's 24.11.4, nothing
+# Build-Depends on a locally built DPDK, and neither repository has an i-danos
+# remote, so those commits exist only on the build host. Recorded here so the
+# next person does not have to work out whether they are load-bearing.
+# dpdk
 # opennsl-binary
 vyatta-cfg-default
 vyatta-base
