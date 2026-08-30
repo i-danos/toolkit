@@ -78,6 +78,28 @@ deletes the other versions in the same directory, so this cannot recur. To
 check for the same class of problem, compare `osc ls` against `osc results` --
 a count of 150 against 150 means nothing is stuck outside the scheduler.
 
+The 9 disabled packages were reviewed on 2026-08-30 and all 9 are correctly
+disabled. They fall into three groups, none of them hardware-vendor related:
+
+- **Superseded by Debian stock.** `libpcap` — the image installs Debian's
+  `libpcap0.8t64` 1.10.5-2, the `t64` suffix marking it as trixie's time64
+  build, so the fork is genuinely unused.
+- **Build-time only, never in the image.** `check`, `golang-1.15`,
+  `golang-dbus`, `golang-defaults`, `golang-golang-x-sys`. Debian 13 supplies
+  what the build needs. Also `libvirt` and `host-sflow`, which ship no binary
+  into the image at all.
+- **A duplicate source.** `vplane-config-npf-alg-scripts` 3.0.1 declares the
+  same three binary packages as `vplane-config-npf` 4.5.0 —
+  `vyatta-system-alg-v1-yang`, `vyatta-system-alg-routing-instance-v1-yang`,
+  `vyatta-op-system-alg-v1-yang`. Only one of the two can be built. The image
+  carries all three at 4.5.0, so ALG is complete and it is the older split that
+  is disabled; enabling it would put two sources in contention for the same
+  binary package names.
+
+Each conclusion is drawn from what the built image actually installs rather
+than from the package lists — a package list names a binary package, which says
+nothing about who supplied it.
+
 ## The defects
 
 Ten defects needed a booted image to find; several needed a booted *topology*.

@@ -234,10 +234,12 @@ vyatta-rest
 #   tests                       the Robot suites; test material, never built.
 #                               It was cloned twice for a while, and the two
 #                               clones took the 2608 suite work in disjoint
-#                               halves. The surviving clone is on master; the
-#                               other three commits are on fork/i-danos/2608,
-#                               fetched into the same repository, and have not
-#                               been merged.
+#                               halves. Reconciled 2026-08-30: the three commits
+#                               that had been stranded on fork/i-danos/2608 are
+#                               merged into master and that branch is deleted, so
+#                               master is now the whole of it. Restore the branch
+#                               with `git push fork f593000:refs/heads/i-danos/2608`
+#                               if it is ever wanted back.
 #   toolkit                     this repository. Not upstream's -- it holds the
 #                               tooling written for the 2608 port, including
 #                               this file.
