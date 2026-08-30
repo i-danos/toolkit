@@ -61,6 +61,14 @@ own log before believing anything strongswan says.
 | `Unable to locate package` deep in the build | `iso/preflight.py` catches this before the build starts. |
 | Everything passes but the wrong kernel boots | `verify-iso.sh` checks the default boot entry now. Before that it only checked presence, and presence was never in doubt. |
 
+## OBS
+
+| What you see | What it is |
+|---|---|
+| A package is absent from `osc results` | Not absent — stuck before scheduling, most likely two `.dsc` files in one package directory. OBS builds one source package per directory and cannot choose. Uploads succeed, the revision climbs, and nothing is ever built. |
+| Several unrelated packages report `unresolvable` | Look for a package that produces what they link against and is not building. Five packages here reported unresolvable purely because `vyatta-dataplane` was stuck; all five cleared the moment it built. The cause is never the ones being reported. |
+| The status tally looks healthy | It only counts packages that have results. A package stuck before scheduling is not failed, not disabled, not unresolvable — it is in no column at all. `osc ls <prj> \| wc -l` against `osc results <prj>` is the only thing that shows it. Two packages sat invisible this way for days, holding six product fixes that had therefore never been compiled on OBS. |
+
 ## Debugging a dataplane crash
 
 The image has neither `gdb` nor `zstd`, so the core has to come out to the host:
