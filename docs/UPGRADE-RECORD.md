@@ -54,9 +54,29 @@ documents 17 repositories that are never built — kept in the tree for referenc
 but not part of the image. Two redundant entries are commented out rather than
 deleted so the reason stays visible.
 
-On OBS (`home:i-danos`), 150 packages: 141 succeeded, 9 disabled. Note that
-`home:` projects on build.opensuse.org are world-readable, so uploading sources
-there publishes them.
+On OBS (`home:i-danos`), 150 packages: 141 succeeded, 9 disabled, none
+unresolvable. Note that `home:` projects on build.opensuse.org are
+world-readable, so uploading sources there publishes them.
+
+That tally was wrong for several days in a way the tally itself could not show.
+`vyatta-dataplane` and `vyatta-security-vpn` are built locally rather than on
+OBS -- the local build skips the queue -- and both package directories had
+accumulated more than one `.dsc`. OBS builds one source package per directory
+and cannot choose between two, so neither was ever scheduled: uploads
+succeeded, the revision climbed to 10, and the packages appeared in no status
+column at all. Not failed, not disabled, not unresolvable. Every one of the six
+dataplane and VPN defects above had therefore never been compiled on OBS.
+
+It also took five other packages down with it. `owamp`, `td-agent-bit`,
+`vplane-config`, `vplane-controller` and `vyatta-interfaces-bonding` all
+reported `unresolvable`, because what they link against was never produced.
+All five cleared the moment the dataplane built. The visible failures were the
+downstream ones; the package actually at fault was the one nothing reported.
+
+`toolkit/build/90-upload_obs.sh` uploads a locally built source package and
+deletes the other versions in the same directory, so this cannot recur. To
+check for the same class of problem, compare `osc ls` against `osc results` --
+a count of 150 against 150 means nothing is stuck outside the scheduler.
 
 ## The defects
 
