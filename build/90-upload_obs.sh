@@ -1,18 +1,19 @@
 #!/bin/bash
 # Upload a locally built Debian source package to home:i-danos.
 #
-# Two packages were only ever built locally -- the local build skips the OBS
-# queue, which is why the ISO has vyatta-dataplane 3.14.36 and
-# vyatta-security-vpn 2.19 while OBS has no such packages at all. Everything
-# else in build_order.txt is on OBS already; those two are the whole gap.
+# vyatta-dataplane and vyatta-security-vpn are built locally rather than on OBS,
+# because the local build skips the queue. That is why the 2608 ISO carries
+# 3.14.36 and 2.19 -- and why OBS had been sitting on older sources that it was
+# never actually building. See step 4 for what was wrong.
 #
 # Uploading here PUBLISHES THE SOURCE. home: projects on build.opensuse.org are
 # world-readable, so anything committed becomes public.
 #
 # osc is configured with TransientCredentialsManager, which keeps the password
-# in memory only and never writes it to disk. That is the right setting, and it
-# means every osc process asks again -- expect one prompt per call below, three
-# per package. To be asked once instead, switch to the system keyring:
+# in memory only and never writes it to disk. That is the right setting. The
+# first call below prompts; the rest reuse the session cookie it leaves in
+# ~/.local/state/osc/cookiejar. To avoid the prompt entirely, switch to the
+# system keyring:
 #
 #     credentials_mgr_class=osc.credentials.KeyringCredentialsManager
 #
@@ -60,7 +61,8 @@ echo "  files     $(basename "$DSC"), $(basename "$TAR") ($(du -h "$TAR" | cut -
 echo "  checksum  verified against the .dsc"
 echo
 echo "  This publishes the source publicly. Ctrl-C now if that is not intended."
-echo "  Three osc calls follow; each asks for the password separately."
+echo "  Four osc calls follow. The first asks for the password; the rest"
+echo "  reuse the session it establishes."
 echo
 
 meta=$(mktemp); trap 'rm -f "$meta"' EXIT
@@ -73,15 +75,39 @@ XML
 
 api="/source/$PROJECT/$PKG"
 
-echo "== 1/3  create or update the package =="
+echo "== 1/4  create or update the package =="
 "$OSC" api -X PUT -T "$meta" "$api/_meta" > /dev/null
 
-echo "== 2/3  upload $(basename "$DSC") =="
+echo "== 2/4  upload $(basename "$DSC") =="
 "$OSC" api -X PUT -T "$DSC" "$api/$(basename "$DSC")" > /dev/null
 
-echo "== 3/3  upload $(basename "$TAR") =="
+echo "== 3/4  upload $(basename "$TAR") =="
 "$OSC" api -X PUT -T "$TAR" "$api/$(basename "$TAR")" > /dev/null
+
+# Remove every other version from the package directory. OBS builds one source
+# package per package directory and wants exactly one .dsc there; leaving the
+# previous version behind gives it two, and it then has no way to choose. The
+# symptom is quiet and easy to misread: the files upload fine, the revision
+# number keeps climbing, and the package simply never appears in
+# "osc results" -- it looks absent rather than stuck. vyatta-dataplane sat at
+# rev 10 with 3.14.28, 3.14.34 and 3.14.36 all present and had never once been
+# scheduled.
+echo "== 4/4  remove other versions from the package directory =="
+stale=$("$OSC" api "$api" \
+  | sed -n 's/.*<entry name="\([^"]*\)".*/\1/p' \
+  | grep -v "^${PKG}_${VER}\." || true)
+
+if [ -z "$stale" ]; then
+  echo "  nothing to remove"
+else
+  for f in $stale; do
+    echo "  deleting $f"
+    "$OSC" api -X DELETE "$api/$f" > /dev/null
+  done
+fi
 
 echo
 echo "  done. Watch the build with:"
 echo "    $OSC results $PROJECT $PKG"
+echo "  If it still does not appear, the authoritative answer is in:"
+echo "    $OSC api /build/$PROJECT/2608/x86_64/$PKG/_status"
