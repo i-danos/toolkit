@@ -86,6 +86,22 @@ detect_kernel_source() {
 
 declare -A PACKAGE_EXTRA_BUILD_OPTIONS
 
+# Packages whose own test suite is known to pass and is worth running. The
+# default is nocheck across the board, which is a blunt instrument: it was set
+# to get the port moving and it silences every package's tests, so a suite that
+# starts failing says nothing until someone goes looking.
+#
+# vyatta-security-vpn runs pylint over vyatta-ike-sa-daemon. Trixie's pylint
+# found enough to fail the build, which is why nocheck went on in the first
+# place -- and three of those findings were real defects, since fixed. It now
+# rates 10.00/10, so there is no reason to keep skipping it.
+#
+# Add to this list rather than removing nocheck wholesale: 148 packages'
+# suites have not been looked at, and turning them all on at once would mix
+# real regressions in with environment problems.
+declare -A PACKAGE_RUN_TESTS
+PACKAGE_RUN_TESTS["vyatta-security-vpn"]=1
+
 KERNEL_SOURCE_PATH="$(detect_kernel_source || true)"
 if [ -n "$KERNEL_SOURCE_PATH" ]; then
     PACKAGE_EXTRA_BUILD_OPTIONS["dpdk"]="kernel_modules ksrc=${KERNEL_SOURCE_PATH}"
@@ -142,6 +158,10 @@ build_package() {
     local repo_dir="${SOURCES_DIR}/${repo_name}"
     local build_log="${LOG_DIR}/${repo_name}.log"
     local build_options="$DEFAULT_BUILD_OPTIONS"
+
+    if [ -n "${PACKAGE_RUN_TESTS[$repo_name]}" ]; then
+        build_options="${build_options//nocheck/}"
+    fi
 
     if [ -n "${PACKAGE_EXTRA_BUILD_OPTIONS[$repo_name]}" ]; then
         build_options="${build_options} ${PACKAGE_EXTRA_BUILD_OPTIONS[$repo_name]}"
