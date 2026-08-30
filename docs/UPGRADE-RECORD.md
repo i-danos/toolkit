@@ -228,4 +228,16 @@ rather than appending, so re-running it does not accumulate duplicates.
 - `DEFECT-npf-acl-classify.md` is kept for its debugging detail; its root cause
   is established and fixed, and its status line now says so.
 - The 9 disabled OBS packages have not been revisited.
-- `linux-vyatta` is at 6.12.101-1vyatta1 and has not been rebased since.
+- `linux-vyatta` is at 6.12.101-1vyatta1, six stable releases behind 6.12.107.
+
+  Reviewed on 2026-08-30: stay on 6.12 and keep importing stable updates. 6.12
+  is longterm and not EOL, so there is no reason to change series, and the
+  question is only cadence. The import is cheap: 6.12.94 to 6.12.101 on
+  2026-08-26 was a single commit over 2157 files with no follow-up fixes, so
+  all 55 patches applied clean -- 27 Debian generic in `debian/patches`, 28
+  DANOS out-of-tree in `debian/patches-vyatta`. What costs time is the rebuild
+  and the re-verification on real hardware, not patch archaeology, and skipping
+  imports only makes the next one worse.
+
+  (The DANOS series started at 35 patches; `8816fed6b` dropped the ipmi_ssif
+  revert and others went with it, so 28 is the current count.)
