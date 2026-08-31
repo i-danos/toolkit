@@ -88,8 +88,21 @@ if [ -s "$work/configured" ]; then
     xargs -P "$JOBS" -I{} sh -c '
         cd "$SOURCES_DIR/{}" || exit 0
         rem=$(git remote | grep -E "^(i-danos|fork)$" | head -1)
-        n=$(git log --oneline --since=2026-01-01 --not --remotes="$rem" 2>/dev/null | wc -l)
-        [ "$n" -gt 0 ] && echo "{} ($n on $(git rev-parse --abbrev-ref HEAD))"' \
+        # HEAD must be named explicitly. git log defaults to HEAD only when it
+        # is given no revision at all, and "--not --remotes=..." is a revision
+        # argument -- so the obvious "git log --not --remotes=X" walks from
+        # nothing and prints nothing, for every repository, always. This check
+        # reported "nothing stranded" while vyatta-dataplane held 15 commits
+        # that were on no remote branch.
+        #
+        # Count ours separately from the total. Most of these clones came from
+        # upstream danos with history our fork has never been pushed, so the
+        # raw count is dominated by commits that were never ours to publish --
+        # pyang alone shows 1433. Only the ones we wrote are work at risk.
+        n=$(git rev-list --count HEAD --not --remotes="$rem" 2>/dev/null)
+        mine=$(git rev-list --count --author=i-danos HEAD --not --remotes="$rem" 2>/dev/null)
+        [ "${mine:-0}" -gt 0 ] &&
+            echo "{} ($mine of $n on $(git rev-parse --abbrev-ref HEAD))"' \
         < "$work/configured" > "$work/stranded" 2>/dev/null
 else
     : > "$work/stranded"
