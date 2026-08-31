@@ -36,6 +36,9 @@ then whether its value is right.
 | Stubs and constant-returns | 9 | **and here** |
 | Argument-dropping wrappers | 1 | one, and it was wrong |
 
+Of the 173, seven turned out to be wrong and three of those were reached at
+run time. Every one of the seven is in the bottom three rows.
+
 The 119 renames need no verification. A misspelled rename does not compile, and
 DPDK 24.11's own deprecation notices name the replacements. Everything below is
 from the other 54.
@@ -81,46 +84,73 @@ which is when nobody is watching, and a wrong value there still compiles.
 `IFF_META_HDR 0x0004` is unassigned in `if_tun.h`, so `TUNSETIFF` would quietly
 not enable the meta header rather than reject the request.
 
-## Live, and still open
+## Live, and now removed
 
-Three stubs are reached on every build. None of them break a build or a test,
-which is why they survived; each degrades something real.
+Three stubs were reached on every build. None broke a build or a test, which is
+why they survived; each degraded something real. All three are gone.
 
-**`rte_sched_get_profile_for_pipe(port, qid)` → `0`.** One caller,
-`qos_get_dscp_grp()` in `qos_dpdk.c:152`, which then reads
-`port_params.pipe_profiles[profile]`. Every pipe therefore reports profile 0's
-WRED group names. This mattered little while the port carried one profile and
-matters now that `qos_dpdk_build_pipe_profiles()` builds several.
+**`rte_sched_get_profile_for_pipe(port, qid)` → `0`** and
+**`rte_red_queue_num_maps(port, qid) → 1`.** Both fed
+`qos_dpdk_dscp_resgrp_json()`, and both asked DPDK a question only DANOS can
+answer. `qos_red_init_q_params()` is what fills these structures in;
+`sinfo->profile_map[pipe]` (`qos.h:170`) is what records a pipe's profile.
+`qos_hw_dscp_resgrp_json()` has always read them directly, and the DPDK path
+now does the same walk.
 
-The fix does not need DPDK: DANOS keeps `sinfo->profile_map[pipe]` (`qos.h:170`,
-"pipe to profile") and is the authority on its own mapping. The caller
-`qos_dpdk_dscp_resgrp_json()` already has `subport` and `pipe` in hand and
-throws them away by collapsing to a `qid` first.
+The lookup key was wrong underneath all of that, which is the part reading the
+shims would not have found. WRED parameters are stored against the per-pipe
+queue index `q_from_mask()` builds — `tc * 8 + q` — while what was passed in was
+`qos_dpdk_qindex()`'s port-wide queue id, `(subport * pipes + pipe) * 16 + off`.
+The two agree only on the first pipe of the first subport, so
+`qos_red_find_q_params()` returned NULL and the loop broke on its first
+iteration.
 
-Effect: `show queuing` names the wrong resource group. Forwarding is unaffected.
+So the real behaviour was not "reports profile 0's groups" as the shim's value
+suggested. It was an empty `"wred_map": []` on every queue — which reads as
+"none configured" rather than as a defect, and would have been believed.
 
-**`rte_red_queue_num_maps(port, qid)` → `1`.** One caller, `qos_dpdk.c:174`,
-which loops `num_maps` times emitting the `wred_map` array. DANOS supports up to
-`RTE_NUM_DSCP_MAPS` (8) maps per queue, so a queue with several configured
-reports only the first.
-
-Effect: `show queuing` under-reports. Forwarding is unaffected.
+Effect: `show queuing` only. Forwarding was unaffected.
 
 **`rte_red_set_scaling(max_len)` → `0`.** Called once, at `qos_sched.c:362`,
-under `if (... != 0) rte_panic(...)`. It reports success and does nothing.
+under `if (... != 0) rte_panic(...)` — so the stub also made that panic
+unreachable.
 
 This is the one with a forwarding consequence. `MAX_RED_QUEUE_LENGTH` is 8192
 packets and `qos_sched.c:77` documents the configurable range as
 `min_th 64..499999998`, `max_th 128..499999999`. Stock DPDK caps both at
 `RTE_RED_MAX_TH_MAX` = 1023 (`rte_red.h:25`) and takes them as `uint16_t`. The
-DANOS fork's scaling knob is what reconciled the two ranges; without it, a
-threshold above 1023 is rejected by `rte_red_config_init()`, and that failure
-propagates out of `rte_sched_subport_config()` — so the QoS policy does not
-apply at all, rather than applying with the wrong drop profile.
+fork's scaling knob is what reconciled the two ranges.
 
-Not reproduced. It is configuration-dependent and needs a `queue-limit` or
-`wred-map` threshold above 1023 packets; the defaults are well below. Recorded
-here rather than filed as a defect because the trigger has not been exercised.
+Nothing checked them on the way, either: `qos_wred_threshold_get()`
+range-checks only its `QOS_QUEUE_SIZE_USEC` branch, and clamps that no lower
+than `MAX_QUEUE_LIMIT_BYTES` (500000000); the packets and bytes branches pass
+the value straight through. The `(uint16_t)` cast in `qos_copy_red_params()`
+then wrapped it, so a threshold of 70000 arrived as 4464 — not merely too large
+but arbitrary, and smaller than a neighbour that had not wrapped.
+
+`qos_red_clamp_th()` now clamps at `RTE_RED_MAX_TH_MAX` and logs it. Clamping
+loses precision on queues longer than 1023; failing loses more, because
+`rte_red_config_init()`'s error propagates out of `rte_sched_subport_config()`
+and one over-long threshold would take the whole policy's shaping down with it.
+The USEC branch already clamps-and-logs for its own limits, so this matches.
+
+Never reproduced against a live configuration — it needs a `queue-limit` or
+`wred-map` threshold above 1023 packets and `DEFAULT_QSIZE` is 64.
+
+## Adjacent, not yet resolved
+
+`qos_dpdk.c` casts `qos_sp_qsize_get()` to `uint16_t` when filling
+`dpdk_params.qsize[]`. That is the same silent truncation as the RED thresholds
+had — the source value reaches 500000000 in USEC mode and is unbounded in the
+packets and bytes modes.
+
+It is not fixed here because the correct clamp is not yet established. DPDK
+validates `qsize` (`librte_sched` carries "Incorrect qsize" and "Incorrect
+value for qsize or tc_rate"), and if it requires a power of two then clamping
+to `UINT16_MAX` would turn a truncation into a rejected configuration —
+trading a quiet wrong answer for a loud wrong one. DANOS does no power-of-two
+alignment anywhere. Establish the requirement first, then clamp to whatever it
+actually allows.
 
 ## Checked and sound
 
