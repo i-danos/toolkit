@@ -49,6 +49,25 @@ Two things about this layout are worth knowing before touching it:
   `git push` goes to the right place; reaching upstream needs an explicit
   `git fetch origin`.
 
+`linux-vyatta` does not follow the branch convention the other repositories
+do, and should not be made to. Its `master` is at `2c85ebc5`, "Linux 5.10",
+dated 2020-12-13 — vanilla upstream, inherited when the repository was forked
+and untouched since. DANOS kernel work lives on series branches:
+`linux-vyatta-4.19.y`, `-5.4.y`, `-5.10.y`, `-6.12.y`. Ours is
+`i-danos/2608`.
+
+So `git push i-danos HEAD:master` is rejected there as a non-fast-forward, and
+that rejection is correct rather than an obstacle to route around: taking it
+would replace an upstream release tree with a DANOS 6.12 one and destroy what
+the branch means. The consolidation done elsewhere — merge 2608 into master,
+retire 2608 — does not transfer to this repository, because master is not its
+development line.
+
+`linux-vyatta-6.12.y` is a parallel lineage rather than an ancestor of ours:
+its head carries the same subject as our oldest 6.12 commit but a different
+hash, so it was rebased or re-created at some point. Nothing depends on
+reconciling the two today.
+
 `toolkit/build/build_order.txt` carries 148 active entries. The trailing block
 documents 17 repositories that are never built — kept in the tree for reference
 but not part of the image. Two redundant entries are commented out rather than
