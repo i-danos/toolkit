@@ -51,6 +51,13 @@ and child SAs are up, the kernel has the XFRM state -- and traffic through the
 tunnel is lost entirely. When IPsec does not pass traffic, read the dataplane's
 own log before believing anything strongswan says.
 
+## Login and the CLI sandbox
+
+| What you see | What it is |
+|---|---|
+| The live image never reaches a login prompt; getty respawns in a loop | `pam_sandbox` is enabled and failing. It is declared `required`, so when its per-user `systemd-nspawn` container fails to start under systemd 257 / kernel 6.12, the session is refused rather than degraded, and autologin dies immediately. `50-disable-user-isolation.chroot` removes the profile for this reason. |
+| A login succeeds but is not in a sandbox, though `pam-sandbox` is installed | Installed is not enabled. The module is only called if `pam-auth-update` wrote it into `/etc/pam.d/common-session`, and the profile it reads lives in `/usr/share/pam-configs/`, not in the package. Check `grep pam_sandbox /etc/pam.d/common-session`, not `dpkg -l`. |
+
 ## Build
 
 | What you see | What it is |

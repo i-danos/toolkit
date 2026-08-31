@@ -165,6 +165,52 @@ which also waits for the VICI socket instead of testing for it once.
 XFRM policy path never committing its rldb transaction, a `linux-headers-amd64`
 version race, and a cloud-init stage deadlock. See `DEFECTS.md`.
 
+## One deliberate difference from 2105: the CLI sandbox is off
+
+Booting official DANOS 2105, live or installed, lands a login in a vbash shell
+inside a per-user sandbox. On 2608 the vbash half is identical and the sandbox
+half is disabled, by
+`build-iso/config/hooks/live/50-disable-user-isolation.chroot`.
+
+The pieces are all installed and at the same versions 2105 carries —
+`vyatta-bash` 6 supplying vbash, `pam-sandbox` 0.26 supplying
+`pam_sandbox.so`, `cli-sandbox` 0.26 supplying the nspawn template. What the
+hook removes is the wiring: it runs `pam-auth-update --package --remove
+sandbox` and deletes `/usr/share/pam-configs/sandbox`, so
+`/etc/pam.d/common-session` has no `pam_sandbox.so` line where 2105 has one at
+line 27.
+
+The reason is that `pam_sandbox` does not work on trixie. For every non-root
+user outside the `vyattasu` group it asks systemd-machined to start a per-user
+`systemd-nspawn` container and joins its namespaces; under systemd 257 and
+kernel 6.12 that fails, and the module is declared `required`, so the failure
+refuses the whole session. The live image's autologin then dies at once and
+getty respawns in a loop — the image never reaches a vbash prompt at all. The
+choice was not "sandbox or no sandbox" but "no sandbox or no login".
+
+Two things about the shape of this are worth keeping:
+
+The package being installed proves nothing. `pam-sandbox` is `install ok
+installed` in the image, `pam_sandbox.so` is on disk, and a login still lands
+outside the sandbox, because whether the module is ever *called* is decided by
+`pam-auth-update` and lives in `/etc/pam.d/`, not in the package list. Checking
+a package manifest cannot see this; `toolkit/vm/verify-workspace.sh` checks the
+wiring and the behaviour separately for that reason.
+
+Installing the package in a clean trixie container works perfectly — the
+profile is copied and `pam-auth-update` adds the line exactly as on 2105. The
+package is not at fault and reproducing it outside the image will not show the
+problem.
+
+The hook deliberately leaves `/opt/vyatta/share/pam-configs/sandbox` in place,
+which is where DANOS's own `system login user-isolation` re-enables the feature
+from, so the sandbox can be switched back on at runtime once it works — no
+rebuild needed.
+
+Still to establish: the trixie failure is recorded in that hook's comment and
+has not been independently reproduced or diagnosed. Which systemd-machined step
+fails, and why, is unknown. Restoring 2105 parity starts there.
+
 ## Test suites
 
 All five pass on the 2608 image:
