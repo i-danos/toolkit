@@ -63,10 +63,21 @@ the branch means. The consolidation done elsewhere — merge 2608 into master,
 retire 2608 — does not transfer to this repository, because master is not its
 development line.
 
-`linux-vyatta-6.12.y` is a parallel lineage rather than an ancestor of ours:
-its head carries the same subject as our oldest 6.12 commit but a different
-hash, so it was rebased or re-created at some point. Nothing depends on
-reconciling the two today.
+Our 6.12 line descends from the 2110a baseline logically but not
+genealogically, and the distinction matters when reading the history.
+`danos/2110a` is a **tag**, not a branch, on `ee3324762` — "Update changelog
+for 5.4.149-0vyatta1 release", 2021-09-27, which is also the head of
+`linux-vyatta-5.4.y`. Commit `f525c0cab` records what was done to it:
+"the overall Debian 10->13 / kernel 5.4.149->6.12.94 rebase". A rebase across
+kernel versions replaces the source outright and re-targets the patches, so
+no commit on the remote is a git ancestor of ours — `ee3324762` included.
+Expect `git merge-base` to say no and do not read that as the baseline being
+wrong.
+
+`linux-vyatta-6.12.y` is likewise a parallel lineage: its head carries the
+same subject as our oldest 6.12 commit but a different hash, so it was
+rebased or re-created at some point. Nothing depends on reconciling the two
+today.
 
 `toolkit/build/build_order.txt` carries 148 active entries. The trailing block
 documents 17 repositories that are never built — kept in the tree for reference
