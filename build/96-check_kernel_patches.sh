@@ -34,6 +34,24 @@ while read -r p; do
 done < debian/patches-vyatta/series \
 	| sed 's#^--- a/##' | LC_ALL=C sort -u > "$WORK/files"
 
+# The build applies debian/patches first, then patches-vyatta on top. Replaying
+# patches-vyatta against the unpatched tree is only equivalent while the two
+# series touch disjoint files. That is true today; assert it rather than assume
+# it, because a future Debian patch landing on a shared file would make this
+# check quietly meaningless.
+while read -r p; do
+	case "$p" in ''|\#*) continue ;; esac
+	grep -h '^--- a/' "debian/patches/$p" || true
+done < debian/patches/series \
+	| sed 's#^--- a/##' | LC_ALL=C sort -u > "$WORK/deb-files"
+
+if overlap=$(LC_ALL=C comm -12 "$WORK/files" "$WORK/deb-files") && [ -n "$overlap" ]; then
+	echo "the two series now share files, so this check no longer stands in" >&2
+	echo "$overlap" | sed 's/^/  /' >&2
+	echo "replay patches-vyatta on a tree with debian/patches applied instead" >&2
+	exit 2
+fi
+
 while read -r f; do
 	[ "$f" = "/dev/null" ] && continue
 	mkdir -p "$WORK/tree/$(dirname "$f")"
