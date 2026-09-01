@@ -207,9 +207,32 @@ which is where DANOS's own `system login user-isolation` re-enables the feature
 from, so the sandbox can be switched back on at runtime once it works — no
 rebuild needed.
 
-Still to establish: the trixie failure is recorded in that hook's comment and
-has not been independently reproduced or diagnosed. Which systemd-machined step
-fails, and why, is unknown. Restoring 2105 parity starts there.
+The failure was then reproduced, and it is narrower than the hook's comment
+says. Two measurements, and they disagree:
+
+**Enabled at build time, it fails.** An ISO built without the hook boots to a
+console login, authenticates, prints the MOTD -- and the session dies at once,
+leaving a fresh `node login:`. Nothing survives long enough to reach a prompt.
+
+**Enabled at run time on a system already up, it works.** Copying the profile
+back and running `pam-auth-update --package` gives a working sandbox twice
+over: `su -l` lands in the container with `systemd-detect-virt -c` reporting
+`systemd-nspawn` from inside it, and restarting `getty@tty1` logs in through
+`pam_sandbox(login:session): tmpuser login entering sandbox cli-1000` with
+`NRestarts=0`. systemd-machined registers the machine and the unit starts.
+
+So "pam_sandbox does not work on trixie" is too broad. It works on a warm
+system; something about the first boot does not, and what differs is not yet
+established. One candidate matters more than the others: the warm test may only
+show that *joining* an existing container works, because an earlier `su -l` had
+already created `cli-1000`. *Creating* the first one may be what fails. The
+next step separates them cheaply -- on a freshly booted image, enable the
+profile at run time and open a session without any prior `su`.
+
+An earlier reading of the warm result as disproving the hook was wrong, and is
+kept here rather than quietly dropped: a journal line saying a session entered
+the sandbox is not the same as the session surviving, and `NRestarts=0` was
+sampled immediately after a restart, before a respawn loop could have appeared.
 
 ## Test suites
 

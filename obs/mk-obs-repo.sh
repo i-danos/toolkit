@@ -29,7 +29,7 @@ OLD=/home/aikon/danos/build-iso/danos-build/local-repo
 NEW=/home/aikon/danos/build-iso/danos-build/obs-repo
 PUB=/published/home:i-danos/2608
 
-rm -rf "$NEW"; mkdir -p "$NEW"
+mkdir -p "$NEW"
 
 echo "== 1. fetch the OBS Packages index =="
 timeout 180 $OSC api "$PUB/Packages" < /dev/null 2>/dev/null > "$NEW/.Packages.src"
@@ -42,24 +42,47 @@ echo "== 2. download =="
 # return a 25-byte <directory></directory>. The public URL is also faster than
 # osc api and follows redirects to a nearby mirror.
 DL=https://download.opensuse.org/repositories/home:/i-danos/2608
-n=0; fail=0
-while read -r f; do
+export DL NEW
+
+# Downloading serially takes about 23 seconds per package -- almost all of it
+# round-trip latency to download.opensuse.org, not bandwidth. Over 823 packages
+# that is five hours, and an interrupted run used to lose everything because
+# this directory was emptied at the start.
+#
+# So: fetch in parallel, and skip anything already here that dpkg-deb can still
+# read. A re-run after an interruption costs only what is missing. Staleness is
+# handled at the end instead of by emptying the directory up front -- anything
+# not named in the current index is removed there, which is the same guarantee
+# without the cost.
+grep -oP '^Filename: \K.*' "$NEW/.Packages.src" \
+  | xargs -P "${JOBS:-12}" -I{} sh -c '
+      b=$(basename "{}")
+      if [ -s "$NEW/$b" ] && dpkg-deb -f "$NEW/$b" Package >/dev/null 2>&1; then
+        exit 0
+      fi
+      for try in 1 2 3; do
+        if curl -sSL --max-time 300 -o "$NEW/$b" "$DL/{}" 2>/dev/null \
+           && [ -s "$NEW/$b" ] && dpkg-deb -f "$NEW/$b" Package >/dev/null 2>&1; then
+          exit 0
+        fi
+        sleep 3
+      done
+      echo "   failed: {}" >&2; rm -f "$NEW/$b"'
+
+n=$(ls "$NEW"/*.deb 2>/dev/null | wc -l)
+fail=$((total - n))
+echo "   $n present, $fail missing"
+
+echo "== 3b. drop packages no longer in the index =="
+# Replaces the old "rm -rf at the start". Same staleness guarantee, but a
+# re-run does not re-download everything that was already correct.
+keep=$(mktemp); trap 'rm -f "$keep"' EXIT
+grep -oP '^Filename: \K.*' "$NEW/.Packages.src" | xargs -n1 basename | sort > "$keep"
+for f in "$NEW"/*.deb; do
+  [ -e "$f" ] || continue
   b=$(basename "$f")
-  ok=0
-  for try in 1 2 3; do
-    if curl -sSL --max-time 300 -o "$NEW/$b" "$DL/$f" 2>/dev/null \
-       && [ -s "$NEW/$b" ] && dpkg-deb -f "$NEW/$b" Package >/dev/null 2>&1; then
-      ok=1; break
-    fi
-    sleep 3
-  done
-  if [ $ok -eq 1 ]; then
-    n=$((n+1)); [ $((n % 100)) -eq 0 ] && printf '   %d/%d\n' "$n" "$total"
-  else
-    echo "   failed: $f" >&2; rm -f "$NEW/$b"; fail=$((fail+1))
-  fi
-done < <(grep -oP '^Filename: \K.*' "$NEW/.Packages.src")
-echo "   $n downloaded, $fail failed"
+  grep -qxF "$b" "$keep" || { echo "   - $b"; rm -f "$f"; }
+done
 
 echo "== 3. supplement from the old local repository (nothing left to add) =="
 # All five former gaps are closed, so EXTRA_LOCAL_PKGS is empty and this loop
