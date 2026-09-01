@@ -32,9 +32,67 @@ PUB=/published/home:i-danos/2608
 mkdir -p "$NEW"
 
 echo "== 1. fetch the OBS Packages index =="
-timeout 180 $OSC api "$PUB/Packages" < /dev/null 2>/dev/null > "$NEW/.Packages.src"
-total=$(grep -c '^Package: ' "$NEW/.Packages.src")
-echo "   $total packages"
+# The index is the authority for step 3b, which deletes everything not named in
+# it. A truncated fetch is therefore destructive, and truncation is easy to hit:
+# `> file` empties the target before osc writes a byte, so a timeout partway
+# through leaves a short but well-formed index. That happened once -- a fetch cut
+# off at 64 of 823 entries took 750 packages out of an assembled repository.
+#
+# A short index is well-formed, so it cannot be recognised from its own
+# contents, and the exit status does not help either: OBS returns partial
+# responses under load with osc still exiting 0 (seen at 64/823 and 467/823,
+# minutes apart, while an unhurried fetch of the same index returns all 823).
+#
+# So do not trust one transport. Fetch the same index two independent ways --
+# osc against the API, and plain https from the mirror network -- and use it
+# only when they agree byte for byte. Both truncating identically is not
+# something a busy server does. Then, as a second line, refuse a large shrink
+# against the index kept from last time.
+#
+# No trap here: step 3b sets its own EXIT trap and would replace this one.
+TMPIDX=$(mktemp)
+TMPIDX2=$(mktemp)
+DLIDX=https://download.opensuse.org/repositories/home:/i-danos/2608/Packages
+
+agreed=""
+for attempt in 1 2 3; do
+	timeout 600 $OSC api "$PUB/Packages" < /dev/null 2>/dev/null > "$TMPIDX"
+	timeout 600 curl -sSL --max-time 600 "$DLIDX" -o "$TMPIDX2" 2>/dev/null
+	a=$(grep -c '^Package: ' "$TMPIDX")
+	b=$(grep -c '^Package: ' "$TMPIDX2")
+	if [ "$a" -gt 0 ] && cmp -s "$TMPIDX" "$TMPIDX2"; then
+		agreed=yes
+		break
+	fi
+	echo "   attempt $attempt: osc says $a, https says $b -- disagree, retrying" >&2
+	sleep 10
+done
+if [ -z "$agreed" ]; then
+	echo "   two transports never agreed on the index -- refusing to use it" >&2
+	echo "   (the repository is left as it is; rerun when OBS settles)" >&2
+	rm -f "$TMPIDX" "$TMPIDX2"
+	exit 1
+fi
+
+total=$(grep -c '^Package: ' "$TMPIDX")
+prev=$(grep -c '^Package: ' "$NEW/.Packages.src" 2>/dev/null || echo 0)
+rm -f "$TMPIDX2"
+
+if [ "$total" -lt 100 ]; then
+	echo "   index has only $total entries -- refusing to use it" >&2
+	echo "   (the repository is left as it is; rerun when OBS answers)" >&2
+	rm -f "$TMPIDX"
+	exit 1
+fi
+if [ "$prev" -gt 0 ] && [ "$total" -lt $((prev * 9 / 10)) ]; then
+	echo "   index shrank $prev -> $total (>10%) -- refusing to use it" >&2
+	echo "   if the shrink is real, delete $NEW/.Packages.src and rerun" >&2
+	rm -f "$TMPIDX"
+	exit 1
+fi
+cp "$TMPIDX" "$NEW/.Packages.src"
+rm -f "$TMPIDX"
+echo "   $total packages (was $prev)"
 
 echo "== 2. download =="
 # Filename carries a subdirectory prefix (amd64/xxx.deb, all/xxx.deb), so
@@ -49,25 +107,35 @@ export DL NEW
 # that is five hours, and an interrupted run used to lose everything because
 # this directory was emptied at the start.
 #
-# So: fetch in parallel, and skip anything already here that dpkg-deb can still
-# read. A re-run after an interruption costs only what is missing. Staleness is
-# handled at the end instead of by emptying the directory up front -- anything
-# not named in the current index is removed there, which is the same guarantee
-# without the cost.
-grep -oP '^Filename: \K.*' "$NEW/.Packages.src" \
-  | xargs -P "${JOBS:-12}" -I{} sh -c '
-      b=$(basename "{}")
-      if [ -s "$NEW/$b" ] && dpkg-deb -f "$NEW/$b" Package >/dev/null 2>&1; then
+# So: fetch in parallel, and skip anything already here that matches the index.
+# A re-run after an interruption costs only what is missing. Staleness is handled
+# at the end instead of by emptying the directory up front -- anything not named
+# in the current index is removed there, which is the same guarantee without the
+# cost.
+#
+# "Matches the index" means the SHA256 from the index, not `dpkg-deb -f`. A .deb
+# is an ar archive holding control.tar then data.tar, so `dpkg-deb -f` reads only
+# the first member and answers correctly for a file whose data.tar was cut off
+# mid-transfer. Observed: vci-template-go arrived as 130684 of 1539088 bytes
+# after an SSL "unexpected eof", and `dpkg-deb -f` still printed its name --
+# a repository that passes its own validity check and installs nothing.
+awk '/^Filename: /{f=$2} /^SHA256: /{s=$2}
+     /^$/{if (f!="" && s!="") print f, s; f=""; s=""}
+     END{if (f!="" && s!="") print f, s}' "$NEW/.Packages.src" \
+  | xargs -P "${JOBS:-12}" -n2 sh -c '
+      p=$1; want=$2; b=$(basename "$p")
+      if [ -s "$NEW/$b" ] \
+         && [ "$(sha256sum "$NEW/$b" | cut -d" " -f1)" = "$want" ]; then
         exit 0
       fi
       for try in 1 2 3; do
-        if curl -sSL --max-time 300 -o "$NEW/$b" "$DL/{}" 2>/dev/null \
-           && [ -s "$NEW/$b" ] && dpkg-deb -f "$NEW/$b" Package >/dev/null 2>&1; then
+        if curl -sSL --max-time 300 -o "$NEW/$b" "$DL/$p" 2>/dev/null \
+           && [ "$(sha256sum "$NEW/$b" | cut -d" " -f1)" = "$want" ]; then
           exit 0
         fi
         sleep 3
       done
-      echo "   failed: {}" >&2; rm -f "$NEW/$b"'
+      echo "   failed: $p" >&2; rm -f "$NEW/$b"' _
 
 n=$(ls "$NEW"/*.deb 2>/dev/null | wc -l)
 fail=$((total - n))
@@ -104,7 +172,9 @@ for p in "${EXTRA_LOCAL_PKGS[@]:-}"; do
 done
 
 echo "== 4. generate the index =="
-rm -f "$NEW/.Packages.src"
+# .Packages.src is deliberately kept: step 1 compares the next fetch against it
+# to catch a truncated index before step 3b deletes anything. It is a dotfile,
+# so dpkg-scanpackages and apt both ignore it.
 cd "$NEW"
 dpkg-scanpackages -m . /dev/null > Packages 2>/dev/null
 gzip -9kf Packages
