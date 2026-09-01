@@ -92,7 +92,23 @@ echo "== 2/4  upload $(basename "$DSC") =="
 "$OSC" api -X PUT -T "$DSC" "$api/$(basename "$DSC")" > /dev/null
 
 echo "== 3/4  upload the tarballs =="
+# Skip anything already there byte for byte. A debian-only fix regenerates the
+# .dsc and debian.tar.xz while the orig is untouched, and for the kernel that
+# orig is 145 MB against an upload path that gets severed around four minutes.
+# The directory listing carries md5 and size per entry, which is enough to tell
+# "same file" from "needs sending".
+listing=$(mktemp); trap 'rm -f "$meta" "$listing"' EXIT
+"$OSC" api "$api" > "$listing"
+
 for f in $FILES; do
+  rmd5=$(sed -n 's/.*<entry name="'"$f"'"[^>]*md5="\([^"]*\)".*/\1/p' "$listing")
+  rsize=$(sed -n 's/.*<entry name="'"$f"'"[^>]*size="\([^"]*\)".*/\1/p' "$listing")
+  lmd5=$(md5sum "$DSC_DIR/$f" | awk '{print $1}')
+  lsize=$(stat -c %s "$DSC_DIR/$f")
+  if [ "$rmd5" = "$lmd5" ] && [ "$rsize" = "$lsize" ]; then
+    echo "  $f -- unchanged on OBS, not resending"
+    continue
+  fi
   echo "  $f"
   "$OSC" api -X PUT -T "$DSC_DIR/$f" "$api/$f" > /dev/null
 done
