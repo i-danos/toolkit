@@ -23,7 +23,7 @@ set -u
 # packages), the osc wrapper, run/ (console sockets), fixes/. It is deliberately
 # separate from this toolkit: the scripts are worth keeping in version control,
 # 2 GB of build output is not. Override it if your working directory differs.
-OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
+OBS=${OBS_DIR:-/home/aikon/danos/.obs}
 SRC=/home/aikon/danos/build-iso/danos-sources/linux-vyatta
 STAGE=$OBS/stage/kreuse
 OUT=$OBS/dsc
@@ -63,22 +63,11 @@ n_skip=$(grep -c 'SKIP-ALREADY-APPLIED' "$WORK/debian/patches/series" || true)
 sed -i 's/^#SKIP-ALREADY-APPLIED#//' "$WORK/debian/patches/series"
 echo "  $n_skip restored, $(grep -vcE '^\s*(#|$)' "$WORK/debian/patches/series") active in series"
 
-echo "== 4b. add the perf documentation asciidoctor patch =="
-# tools/perf/Documentation/Makefile sets the asciidoc(1) flags unconditionally
-# and with +=:
-#   ASCIIDOC=asciidoc
-#   ASCIIDOC_EXTRA += --unsafe -f asciidoc.conf
-# The ifdef USE_ASCIIDOCTOR block below only appends, never resets, so with
-# USE_ASCIIDOCTOR=1 the executable becomes asciidoctor while the asciidoc-only
-# flags remain, and asciidoctor 2.0.23 refuses:
-#   asciidoctor: invalid option: --unsafe
-# Every perf-*.1 target fails and takes build-perf down with it.
-PF=perf-doc-asciidoctor-no-asciidoc-flags.patch
-if ! grep -q "$PF" "$WORK/debian/patches/series"; then
-  cp "$OBS/fixes/linux-vyatta/patches/$PF" "$WORK/debian/patches/$PF"
-  echo "$PF" >> "$WORK/debian/patches/series"
-  echo "  added to series ($(grep -vcE '^\s*(#|$)' "$WORK/debian/patches/series") now active)"
-fi
+# Step 4b used to inject perf-doc-asciidoctor-no-asciidoc-flags.patch from
+# $OBS/fixes here. It is gone on purpose: its effect is now carried in the
+# source tree itself, so re-adding it to the series would fail as already
+# applied. $OBS/fixes/linux-vyatta/patches/ is kept only as a record of where
+# that change came from.
 
 echo "== 5. push --refresh then pop, to clear the offsets =="
 cd "$WORK"
@@ -93,6 +82,16 @@ done
 echo "  $n refreshed"
 "$Q" pop -a -q >/dev/null 2>&1
 rm -rf "$WORK/.pc"
+
+echo "== 5b. replay patches-vyatta at fuzz 0, the way debian/rules.real does =="
+# Step 5 refreshes debian/patches only. patches-vyatta rides along verbatim and
+# is applied later by debian/rules.real with quilt --fuzz=0, so a context shift
+# there fails on the build host, not here. That is how 6.12.107-1vyatta1 got
+# uploaded broken.
+if ! "$SRC/../toolkit/build/96-check_kernel_patches.sh" "$WORK"; then
+  echo "aborting: patches-vyatta would fail on the build host" >&2
+  exit 1
+fi
 
 echo "== 6. generate the .dsc against the OBS orig =="
 rm -f "$OUT/linux_$UP.orig.tar."* "$OUT/linux_$VER.dsc" "$OUT/linux_$VER.debian.tar."*

@@ -23,7 +23,7 @@ set -u
 # packages), the osc wrapper, run/ (console sockets), fixes/. It is deliberately
 # separate from this toolkit: the scripts are worth keeping in version control,
 # 2 GB of build output is not. Override it if your working directory differs.
-OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
+OBS=${OBS_DIR:-/home/aikon/danos/.obs}
 SRC=/home/aikon/danos/build-iso/danos-sources/linux-vyatta
 STAGE=$OBS/stage/kern
 OUT=$OBS/dsc
@@ -126,6 +126,18 @@ echo "  $n refreshed in total"
 echo "== 4. pop everything, back to a clean upstream tree =="
 "$QUILT" pop -a -q >/dev/null 2>&1
 rm -rf "$WORK/.pc"
+
+echo "== 4b. replay patches-vyatta at fuzz 0, the way debian/rules.real does =="
+# Step 3b refreshes debian/patches only. patches-vyatta is copied over verbatim
+# and is applied much later, by debian/rules.real during binary-indep, with
+# quilt --fuzz=0. A stable import that shifts context near one of those patches
+# therefore produces a source package that looks fine here and dies halfway
+# through the build on OBS -- taking bvnos-linux-libc-dev with it, which leaves
+# six dependent packages unresolvable. Catch it before the upload.
+if ! "$SRC/../toolkit/build/96-check_kernel_patches.sh" "$WORK"; then
+  echo "aborting: patches-vyatta would fail on the build host" >&2
+  exit 1
+fi
 
 echo "== 5. build the orig (xz; gz would be 250 MB and gets cut off by an SSL EOF) =="
 rm -f "$OUT/linux_$UP.orig.tar."* "$OUT/linux_$VER.dsc" "$OUT/linux_$VER.debian.tar."*
