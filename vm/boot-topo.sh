@@ -1,5 +1,20 @@
 #!/bin/bash
-# Bring up the three-router topology the DANOS FIREWALL/IPSEC suites expect.
+# Bring up a router topology for the DANOS test suites. TOPO selects which one;
+# it defaults to fw, so a suite from another family needs it set explicitly.
+#
+#   TOPO=fw     FIREWALL                 three routers   (default)
+#   TOPO=ipsec  IPSEC_VPN, MPLS_LDP      three routers
+#   TOPO=bgp    BGP                      four routers
+#
+# The default is not a topology all three-router suites can use, and forgetting
+# TOPO does not look like a wiring problem. The suite configures addresses on
+# interfaces that are not there, the CLI accepts them, and the run fails as
+# empty OSPF neighbour tables, 100% ping loss and a tunnel that never comes up
+# -- product symptoms, all of them. IPSEC_VPN scored 5 of 10 that way, twice,
+# once on a freshly booted topology, before the slots were compared against the
+# suite's own test data.
+#
+# The default layout, TOPO=fw:
 #
 #   R1 (lo 1.1.1.1)            R2 firewall (lo 2.2.2.2)        R3 (lo 3.3.3.3)
 #     dp0s8 10.1.1.2/24
