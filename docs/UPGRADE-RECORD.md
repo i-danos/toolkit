@@ -346,6 +346,33 @@ says the race was won once, not that live is immune. Memory was the obvious
 suspect, since the four VMs had been dropped to 2560M to fit; raising them back
 to 3072M made it worse (3 failures, not 2), which is what ruled memory out.
 
+## What "verified" covers, and what it does not
+
+Everything in this record was verified under QEMU/KVM. No part of it has run on
+physical hardware. Where the text says "on hardware", read "on a booted image in
+a VM" -- it means a real boot of a real ISO rather than a container or a unit
+test, not a physical machine.
+
+The gap that leaves is specific rather than general. The dataplane is DPDK, and
+under QEMU it drives virtio-net through the virtio PMD, with hugepages and CPU
+isolation as the harness happens to set them. A physical box brings a different
+PMD, real NIC queues and offloads, IOMMU and VFIO binding, NUMA placement, and
+link events that come from a cable rather than a socket netdev. None of that is
+exercised here. Two of this port's defects -- the crypto session pool sized to
+zero, and the ACL trie rebuilt underneath live readers -- are the kind that
+depend on how the forwarding path is actually driven, and both were found under
+QEMU; that says the harness is capable of finding such things, not that it
+finds all of them.
+
+Also not covered: the switch-vendor paths, deliberately, since hardware-vendor
+support was dropped for this port; and anything about thermals, PSUs, sensors
+or platform management, which the image still carries YANG for.
+
+What QEMU does cover is everything above the driver: the CLI, configd, the YANG
+model, the routing protocols, the firewall and IPsec paths, the QoS scheduler's
+own logic, the sandbox, both boot paths, and the whole package and image build.
+That is where this port's work was, and where all ten recorded defects were.
+
 ## The harness
 
 `toolkit/vm/` boots QEMU topologies from a built ISO. `boot-topo.sh` takes
@@ -459,7 +486,7 @@ empty input as an answer — the same shape as the CDN empty response that made
 - The 9 disabled OBS packages were re-checked on 2026-09-02, after the kernel
   and three package bumps this round, and all 9 stay disabled. See below.
 - `linux-vyatta` was at 6.12.101-1vyatta1, six stable releases behind. Imported
-  to 6.12.107-1vyatta1, built on OBS and verified on hardware; the note below
+  to 6.12.107-1vyatta1, built on OBS and verified on a booted image; the note
   is kept for the cadence decision.
 
   Reviewed on 2026-08-30: stay on 6.12 and keep importing stable updates. 6.12
@@ -468,7 +495,7 @@ empty input as an answer — the same shape as the CDN empty response that made
   2026-08-26 was a single commit over 2157 files with no follow-up fixes, so
   all 55 patches applied clean -- 27 Debian generic in `debian/patches`, 28
   DANOS out-of-tree in `debian/patches-vyatta`. What costs time is the rebuild
-  and the re-verification on real hardware, not patch archaeology, and skipping
+  and the re-verification on a booted image, not patch archaeology, and skipping
   imports only makes the next one worse.
 
   (The DANOS series started at 35 patches; `8816fed6b` dropped the ipmi_ssif
