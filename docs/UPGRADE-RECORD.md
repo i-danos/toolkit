@@ -165,86 +165,108 @@ which also waits for the VICI socket instead of testing for it once.
 XFRM policy path never committing its rldb transaction, a `linux-headers-amd64`
 version race, and a cloud-init stage deadlock. See `DEFECTS.md`.
 
-## One deliberate difference from 2105: the CLI sandbox is off
+## The CLI sandbox: why it was off, and what it actually was
 
 Booting official DANOS 2105, live or installed, lands a login in a vbash shell
-inside a per-user sandbox. On 2608 the vbash half is identical and the sandbox
-half is disabled, by
-`build-iso/config/hooks/live/50-disable-user-isolation.chroot`.
+inside a per-user sandbox. 2608 now does the same. It did not for most of the
+port, and the reason recorded here was wrong, so the whole line is worth
+keeping.
 
-The pieces are all installed and at the same versions 2105 carries —
-`vyatta-bash` 6 supplying vbash, `pam-sandbox` 0.26 supplying
-`pam_sandbox.so`, `cli-sandbox` 0.26 supplying the nspawn template. What the
-hook removes is the wiring: it runs `pam-auth-update --package --remove
-sandbox` and deletes `/usr/share/pam-configs/sandbox`, so
-`/etc/pam.d/common-session` has no `pam_sandbox.so` line where 2105 has one at
-line 27.
+`build-iso/config/hooks/live/50-disable-user-isolation.chroot` used to run
+`pam-auth-update --package --remove sandbox` and delete
+`/usr/share/pam-configs/sandbox`, leaving `/etc/pam.d/common-session` without
+the `pam_sandbox.so` line 2105 has. Its stated reason was that `pam_sandbox`
+does not work on trixie: that it asks systemd-machined for a per-user
+`systemd-nspawn` container, that this fails under systemd 257 / kernel 6.12,
+and that the module being `required` then refuses the session -- so the choice
+was "no sandbox or no login".
 
-The reason is that `pam_sandbox` does not work on trixie. For every non-root
-user outside the `vyattasu` group it asks systemd-machined to start a per-user
-`systemd-nspawn` container and joins its namespaces; under systemd 257 and
-kernel 6.12 that fails, and the module is declared `required`, so the failure
-refuses the whole session. The live image's autologin then dies at once and
-getty respawns in a loop — the image never reaches a vbash prompt at all. The
-choice was not "sandbox or no sandbox" but "no sandbox or no login".
+**The module never failed.** It succeeds on every login and says so:
 
-Two things about the shape of this are worth keeping:
+    login[4368]: pam_sandbox(login:session): tmpuser login entering sandbox cli-1000(leader=3002)
 
-The package being installed proves nothing. `pam-sandbox` is `install ok
-installed` in the image, `pam_sandbox.so` is on disk, and a login still lands
-outside the sandbox, because whether the module is ever *called* is decided by
-`pam-auth-update` and lives in `/etc/pam.d/`, not in the package list. Checking
-a package manifest cannot see this; `toolkit/vm/verify-workspace.sh` checks the
-wiring and the behaviour separately for that reason.
+and `machinectl` shows `cli-1000` running under `cli-sandbox@tmpuser.service`,
+created at boot, before anyone logs in. What failed was the step after: `login`
+carries on with the terminal it was started on and refers to it by name, and
+util-linux 2.41 needs that node to exist under the new root. systemd-nspawn
+builds the container's `/dev` from a fixed minimal list with no tty in it.
+Official 2105's sandbox has exactly the same `/dev` -- also no `ttyS0`, no
+`tty1` -- and works, because buster's util-linux 2.33 did not need one. The
+difference is util-linux, not configuration and not the sandbox.
 
-Installing the package in a clean trixie container works perfectly — the
-profile is copied and `pam-auth-update` adds the line exactly as on 2105. The
-package is not at fault and reproducing it outside the image will not show the
-problem.
+The symptom carries none of that. The session opens, the MOTD prints, the shell
+exits, `login` exits, autologin respawns; `getty@tty1` had restarted 282 times
+on the image this was found on, and the console echoed keystrokes while
+answering nothing -- the tty line discipline still there, the shell that would
+read it gone.
 
-The hook deliberately leaves `/opt/vyatta/share/pam-configs/sandbox` in place,
-which is where DANOS's own `system login user-isolation` re-enables the feature
-from, so the sandbox can be switched back on at runtime once it works — no
-rebuild needed.
+`cli-sandbox` 0.27 binds the nodes in a `sandbox-post-create.d` hook, the
+extension point `vyatta-sssd-cli-sandbox` already uses: it appends `Bind=` for
+the ttys systemd's getty units actually have to the per-sandbox
+`/run/systemd/nspawn/<machine>.nspawn`. pts needs no help -- `/dev/pts` is
+already in the container, which is why ssh sessions were never affected and
+only the console was. With that in, the disable hook is gone and the image
+boots into the workspace on both paths:
 
-The failure was then reproduced, and it is narrower than the hook's comment
-says. Two measurements, and they disagree:
+| | LIVE | installed |
+|---|---|---|
+| boot | one login prompt, no getty loop | same |
+| session | `tmpuser@node:~$` | `tmpuser@node:~$` |
+| sandbox | `vbash-sandbox:` prefix | `vbash-sandbox:` prefix |
+| operational CLI | works | works |
+| restricted commands | `ifconfig`, `insmod` unreachable | same |
+| `show version` | `Boot via: livecd` | `Boot via: image` |
 
-**Enabled at build time, it fails.** An ISO built without the hook boots to a
-console login, authenticates, prints the MOTD -- and the session dies at once,
-leaving a fresh `node login:`. Nothing survives long enough to reach a prompt.
+Turning it off is still supported and now goes through DANOS's own switch,
+`system login user-isolation disable`, which can also put the profile back from
+`/opt/vyatta/share/pam-configs/sandbox` -- something a build-time deletion
+cannot.
 
-**Enabled at run time on a system already up, it works.** Copying the profile
-back and running `pam-auth-update --package` gives a working sandbox twice
-over: `su -l` lands in the container with `systemd-detect-virt -c` reporting
-`systemd-nspawn` from inside it, and restarting `getty@tty1` logs in through
-`pam_sandbox(login:session): tmpuser login entering sandbox cli-1000` with
-`NRestarts=0`. systemd-machined registers the machine and the unit starts.
+Three things about the shape of this are worth keeping.
 
-So "pam_sandbox does not work on trixie" is too broad. It works on a warm
-system; something about the first boot does not, and what differs is not yet
-established. One candidate matters more than the others: the warm test may only
-show that *joining* an existing container works, because an earlier `su -l` had
-already created `cli-1000`. *Creating* the first one may be what fails. The
-next step separates them cheaply -- on a freshly booted image, enable the
-profile at run time and open a session without any prior `su`.
+**The package being installed proves nothing.** `pam-sandbox` is `install ok
+installed`, `pam_sandbox.so` is on disk, and a login can still land outside the
+sandbox, because whether the module is *called* is decided by `pam-auth-update`
+and lives in `/etc/pam.d/`. A package manifest cannot see it;
+`toolkit/vm/verify-workspace.sh` checks pieces, wiring and behaviour
+separately for that reason.
 
-An earlier reading of the warm result as disproving the hook was wrong, and is
-kept here rather than quietly dropped: a journal line saying a session entered
-the sandbox is not the same as the session surviving, and `NRestarts=0` was
-sampled immediately after a restart, before a respawn loop could have appeared.
+**Superuser sessions are exempt by design.** `pam_sandbox.c`'s
+`exclude_groups` is `{ "vyattasu", NULL }`, so a `level superuser` account is
+never sandboxed. A first attempt to measure the sandbox used such an account,
+got `systemd-detect-virt -c` = `none`, and read it as the sandbox not working.
+It also means the test suites are unaffected: they log in as `vyatta`, a
+superuser, and get a full shell.
+
+**Inside the sandbox, shell-level inspection is gone.** `[Network] Private=yes`
+gives the container its own netns, so `/sys/class/net` shows only `lo`;
+`systemctl` reports "System has not been booted with systemd as init system",
+the container's PID 1 being `cli_sandbox_init`; `ip`, `sudo` and `vplsh` are
+not on the path. Verification has to go through the CLI, whose configd and opd
+sockets are bind-mounted in. Harness steps written against the sandbox-off
+image do not survive this -- see `toolkit/vm/prep-router.sh`.
 
 ## Test suites
 
-All five pass on the 2608 image:
+All five pass on the 2608 image, and were re-run in full after the CLI sandbox
+was restored -- 74 cases, same scores, no regression from booting into the
+workspace:
 
-| Suite | Result |
-|---|---|
-| `danos_restapi` | 21/21 |
-| `IPSEC_VPN` | 10/10 |
-| `FIREWALL` | 16/16 |
-| `BGP` | 16/16 |
-| `MPLS_LDP` | 11/11 |
+| Suite | Result | Topology |
+|---|---|---|
+| `danos_restapi` | 21/21 | `TOPO=bgp` + `restclient.sh` |
+| `IPSEC_VPN` | 10/10 | `TOPO=ipsec` |
+| `FIREWALL` | 16/16 | `TOPO=fw` |
+| `BGP` | 16/16 | `TOPO=bgp` |
+| `MPLS_LDP` | 11/11 | `TOPO=ipsec` |
+
+The topology column is not decoration. Three of the five need wiring the other
+two do not have, and a mismatch fails as product symptoms -- empty OSPF
+neighbour tables, 100% ping loss, a tunnel that never comes up. IPSEC_VPN
+scored 5 of 10 twice on the FIREWALL wiring, the second time on a freshly
+booted topology to rule out leftover state, before the slots were read off the
+suite's own test data. On `TOPO=ipsec`, unchanged image and unchanged routers:
+10 of 10.
 
 Getting there meant fixing the suites, not the product. Every remaining failure
 after the six product defects above turned out to be a stale assertion, a
@@ -327,7 +349,14 @@ rather than appending, so re-running it does not accumulate duplicates.
 - `DEFECT-npf-acl-classify.md` is kept for its debugging detail; its root cause
   is established and fixed, and its status line now says so.
 - The 9 disabled OBS packages have not been revisited.
-- `linux-vyatta` is at 6.12.101-1vyatta1, six stable releases behind 6.12.107.
+- The installed-disk path has been verified only as far as booting into the
+  workspace. The suites and the QoS check have been run on the live image;
+  neither has been run against a system installed to disk, whose root is a real
+  filesystem rather than squashfs plus an overlay -- and the sandbox container's
+  root is carved from it, which is where this port's last defect was.
+- `linux-vyatta` was at 6.12.101-1vyatta1, six stable releases behind. Imported
+  to 6.12.107-1vyatta1, built on OBS and verified on hardware; the note below
+  is kept for the cadence decision.
 
   Reviewed on 2026-08-30: stay on 6.12 and keep importing stable updates. 6.12
   is longterm and not EOL, so there is no reason to change series, and the
