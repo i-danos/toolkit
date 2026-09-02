@@ -376,11 +376,69 @@ silently discards the whole DANOS configuration, and `RECIPEFILE` defaults from
 set. The `96-os-release.chroot` hook replaces keys in place via `readlink -f`
 rather than appending, so re-running it does not accumulate duplicates.
 
+## The 9 disabled OBS packages
+
+Re-checked on 2026-09-02. All 9 stay disabled, and none of them needs deleting
+from OBS or from the local repository.
+
+Checked three ways rather than by re-reading the reasons:
+
+**In the image.** None of the 9, and none of their binaries, is in the finished
+image. `libpcap` in particular is Debian's `libpcap0.8t64` 1.10.5-2, not the
+2016 fork.
+
+**In the local repository.** Nothing to do: a disabled package produces no
+binaries, and the repository is assembled from OBS's published index, so they
+have never been in it. The three ALG yang packages that `vplane-config-npf-alg-
+scripts` would also have produced carry `Source: vplane-config-npf` — the right
+one won.
+
+**In OBS's dependency graph.** Six are referenced by nothing at all: both golang
+bootstrap halves, `host-sflow`, `libpcap`, `libvirt`,
+`vplane-config-npf-alg-scripts`. Three are still referenced, and Debian trixie
+satisfies each:
+
+| Binary | Consumers in OBS | Debian trixie |
+|---|---|---|
+| `check` | `vyatta-dataplane-dev` | 0.15.2-3 |
+| `golang-dbus-dev` | `config`, `vci`, `yangd`, +1 | 5.1.0-1 |
+| `golang-golang-x-sys-dev` | `genetlink`, `netlink` | 0.22.0-1 |
+
+The versions clear the constraints the disable notes cite: `vci` wants
+`golang-dbus-dev >= 4.0.0~git20160605` and Debian's 5.1.0 satisfies it, while
+the 2017 fork at 4.0.0 is *below* the 5.0.4 that Debian's
+`golang-github-coreos-go-systemd-dev` demands — which is why keeping the fork
+made the whole Go chain unresolvable. The other two consumers carry no version
+constraint.
+
+They stay in OBS rather than being deleted. The disabled state carries the
+reason in each package's `_meta` description, and those descriptions are
+specific enough to be checkable — `libpcap`'s records that the fork dropped
+Debian's soname patch, so `dpkg-gensymbols` fails on `libpcap.so.1` against a
+symbols file naming `libpcap.so.0.8`. Deleting the package deletes that, and an
+absence with no record invites the same investigation again. The cost of
+keeping is zero: a disabled package takes no build capacity, produces no
+binaries, and reaches neither the index nor the image.
+`vplane-config-npf-alg-scripts` is the one to keep most deliberately — it is
+disabled to *prevent* a downgrade, since its 3.0.1 would take the index from
+`vplane-config-npf`'s 4.5.0, and a package sitting there disabled with a note
+is a better guard than one that is simply gone.
+
+One method note, because the first attempt got the right answer for no reason.
+The dependency scan initially read the index from download.opensuse.org, which
+returned an empty body; the script reported every package as present in nothing
+and depended on by nothing, which happens to be the conclusion. Re-run against
+the verified local `.Packages.src` (823 entries), three of the nine turned out
+to still be referenced. `curl -s` hides the failure and downstream code treats
+empty input as an answer — the same shape as the CDN empty response that made
+`cli-sandbox` look unpublished earlier in this round.
+
 ## Still open
 
 - `DEFECT-npf-acl-classify.md` is kept for its debugging detail; its root cause
   is established and fixed, and its status line now says so.
-- The 9 disabled OBS packages have not been revisited.
+- The 9 disabled OBS packages were re-checked on 2026-09-02, after the kernel
+  and three package bumps this round, and all 9 stay disabled. See below.
 - `linux-vyatta` was at 6.12.101-1vyatta1, six stable releases behind. Imported
   to 6.12.107-1vyatta1, built on OBS and verified on hardware; the note below
   is kept for the cadence decision.
