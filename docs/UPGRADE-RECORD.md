@@ -268,10 +268,20 @@ booted topology to rule out leftover state, before the slots were read off the
 suite's own test data. On `TOPO=ipsec`, unchanged image and unchanged routers:
 10 of 10.
 
+The suites were also run against a system installed to disk, not just the live
+image -- 74 of 74, same scores. That path had only ever been verified as far as
+booting into the workspace, and it differs where this port's last defect was:
+the sandbox container's root is carved from the running root filesystem, ext4
+on a block device here and squashfs plus an overlay on live. One install was
+enough for all of it: four qcow2 backing-file clones off a single installed
+image, a few hundred KB each, re-wired between suites by restarting the VMs.
+That trick costs a shared machine-id and shared ssh host keys, which nothing
+here depends on but a DHCP-identity or certificate case would.
+
 Getting there meant fixing the suites, not the product. Every remaining failure
 after the six product defects above turned out to be a stale assertion, a
 Debian 10 to 13 tool change, a judgement criterion that is invalid under DPDK,
-or a gap in the harness. Three are worth recording because the failure mode
+or a gap in the harness. Four are worth recording because the failure mode
 pointed somewhere else entirely:
 
 **MPLS_LDP** asserted that PE1 and PE2 each discover the other. The topology is
@@ -294,6 +304,28 @@ applying any of them dropped R1's OSPF hellos along with the traffic under test:
 R1 sat in `Init/DROther` until the 40s dead interval expired and the route was
 withdrawn. Every later case then probed an address it had no path to. Each
 ruleset now ends with a catch-all accept, and the suite went from 9/16 to 16/16.
+
+**BGP**'s `Route Reflector Rule-1` configured all four routers and then checked
+the reflected prefix 0.06 seconds after the last `SetCommand`, with no wait at
+all -- the whole case ran in 6.3 seconds, of which about 6 were the four
+configuration steps. BGP has not brought its sessions up by then, so the table
+is empty and the check reads `No BGP prefixes displayed, 0 exist`. `Validate
+Next-hop attribute` reuses that configuration, so the two always failed
+together, and on one run `Verify local preference` joined them.
+
+It reproduces, which is what made it look like a functional break rather than a
+race -- a reproducible race is still a race; on a slower box it simply loses
+every time. Two things settled it: the table was empty rather than wrong, and
+every later case passed, including ones that exercise the same reflector. Those
+cases get away with `Sleep 5` because they reconverge an established mesh;
+Rule-1 builds the sessions from nothing and had no wait of any kind. It now
+polls with `Wait Until Keyword Succeeds`, which costs nothing once converged.
+
+Worth noting how close this came to the wrong conclusion. It appeared only on
+the installed-disk run, where the live run had passed 16/16 -- one run, which
+says the race was won once, not that live is immune. Memory was the obvious
+suspect, since the four VMs had been dropped to 2560M to fit; raising them back
+to 3072M made it worse (3 failures, not 2), which is what ruled memory out.
 
 ## The harness
 
@@ -349,11 +381,6 @@ rather than appending, so re-running it does not accumulate duplicates.
 - `DEFECT-npf-acl-classify.md` is kept for its debugging detail; its root cause
   is established and fixed, and its status line now says so.
 - The 9 disabled OBS packages have not been revisited.
-- The installed-disk path has been verified only as far as booting into the
-  workspace. The suites and the QoS check have been run on the live image;
-  neither has been run against a system installed to disk, whose root is a real
-  filesystem rather than squashfs plus an overlay -- and the sandbox container's
-  root is carved from it, which is where this port's last defect was.
 - `linux-vyatta` was at 6.12.101-1vyatta1, six stable releases behind. Imported
   to 6.12.107-1vyatta1, built on OBS and verified on hardware; the note below
   is kept for the cadence decision.
