@@ -12,7 +12,29 @@
 # Usage: relays.sh up [<name>:<ip>:<sshport> ...]
 #        relays.sh down
 #
-# Default layout matches the FIREWALL/IPSEC suites: R1 .231, R2 .232, R3 .233.
+# The suites hard-code their management addresses, and they do not all use the
+# same ones. There are two families:
+#
+#   .155 .156 .157        FIREWALL, IPSEC_VPN, MPLS_LDP -- the three-router
+#                         topology boot-topo.sh brings up
+#   .231 .232 .233 .234   BGP (four routers) and the REST suite's HOST1
+#
+# The default is the first, to match boot-topo.sh. For BGP or REST, pass the
+# layout:
+#
+#   relays.sh up r1:192.168.203.231:2231 r2:192.168.203.232:2232 \
+#                r3:192.168.203.233:2233 r4:192.168.203.234:2234
+#
+# Getting this wrong does not look like an addressing problem. Every case fails
+# at once with
+#
+#   NoValidConnectionsError: Unable to connect to port 22 on 192.168.203.155
+#   ExceptionPxssh: Could not establish connection to host
+#
+# and a 0-passed run reads as the product being broken. It happened here: the
+# default used to be .231-.233 with a comment claiming it matched
+# FIREWALL/IPSEC, which it never did. Same image, same routers, .155-.157
+# instead: 16 of 16 passed.
 
 set -u
 NET=danos-mgmt
@@ -25,7 +47,7 @@ GW=192.168.203.1
 # Create it once from the build container, which has socat installed:
 #   docker commit danos-2110b-build danos-relay:socat
 IMAGE=${RELAY_IMAGE:-danos-relay:socat}
-DEFAULT=(r1:192.168.203.231:2231 r2:192.168.203.232:2232 r3:192.168.203.233:2233)
+DEFAULT=(r1:192.168.203.155:2231 r2:192.168.203.156:2232 r3:192.168.203.157:2233)
 
 up() {
   local specs=("$@"); [ ${#specs[@]} -eq 0 ] && specs=("${DEFAULT[@]}")
