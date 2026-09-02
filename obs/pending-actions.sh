@@ -11,7 +11,11 @@ set -u
 # packages), the osc wrapper, run/ (console sockets), fixes/. It is deliberately
 # separate from this toolkit: the scripts are worth keeping in version control,
 # 2 GB of build output is not. Override it if your working directory differs.
-OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
+OBS=${OBS_DIR:-/home/aikon/danos/.obs}
+# push.sh is a sibling in this toolkit, not something under $OBS. It used to be
+# invoked from $OBS, back when the scripts were duplicated into the operational
+# directory; that copy is gone and $OBS now holds only state.
+HERE=$(cd "$(dirname "$0")" && pwd)
 OSC="$OBS/osc -A https://api.opensuse.org"
 PRJ=home:i-danos
 
@@ -46,9 +50,9 @@ disable_pkg host-sflow "Produces only libhost-sflow-dev, which nothing in the pr
 
 echo "== 4. push the fixes that are ready =="
 MSG="Create the runtime dirs the tests write to; normalize leading-zero IPv4 as decimal" \
-  "$OBS/push.sh" configd
+  "$HERE/push.sh" configd
 MSG="Drop --pep8; pytest-pep8 is gone from Debian and was never in Build-Depends" \
-  "$OBS/push.sh" vyatta-vrrp
+  "$HERE/push.sh" vyatta-vrrp
 
 echo
 echo "Done. Check status with:"
