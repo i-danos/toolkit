@@ -19,8 +19,9 @@ what broke, and how each break was proved rather than guessed at.
 | liburcu | 0.10.2 | 0.15.2 |
 | cloud-init | 18.3-5vyatta9 | 25.1.4-1+deb13u1vyatta4 |
 
-Branch `i-danos/2608` across the source repositories. Release id `2608`, ISO
-named `i-danos`.
+Branch `i-danos/2608` across the source repositories, with one exception:
+`linux-vyatta` uses `linux-vyatta-6.12.y`, following that repository's own
+kernel-line convention. Release id `2608`, ISO named `i-danos`.
 
 ## Two decisions that shaped everything else
 
@@ -52,9 +53,28 @@ Two things about this layout are worth knowing before touching it:
 `linux-vyatta` does not follow the branch convention the other repositories
 do, and should not be made to. Its `master` is at `2c85ebc5`, "Linux 5.10",
 dated 2020-12-13 — vanilla upstream, inherited when the repository was forked
-and untouched since. DANOS kernel work lives on series branches:
-`linux-vyatta-4.19.y`, `-5.4.y`, `-5.10.y`, `-6.12.y`. Ours is
-`i-danos/2608`.
+and untouched since. DANOS kernel work lives on series branches named for the
+kernel line, and ours now sits on the one that matches it:
+`linux-vyatta-4.19.y`, `-5.4.y`, `-5.10.y`, `-6.12.y`.
+
+It was on `i-danos/2608` for most of the port, alongside a separate
+`linux-vyatta-6.12.y` holding an earlier 6.12.94 import and a `danos/2110b`
+holding a parallel one. All three were reconciled on 2026-09-02: our line was
+renamed to `linux-vyatta-6.12.y` and the other two branches deleted. Nothing
+was lost. `i-danos/2608` was the same commit as the renamed branch, and
+`danos/2110b`, which shared no ancestor with ours, turned out to carry the same
+*content* — its tip tree and ours at the 6.12.94 point are both `dd0191df4c24`,
+with an identical `patches-vyatta/series` — so the two were the same rebase
+recorded as two histories, and ours is the one that continued to 6.12.107. The
+deleted commits included `e5e0e4117`, which the old `linux-vyatta-6.12.y` and
+`danos/2110b` both carried; deleting one of them alone would not have lost it,
+which is only visible if you check both before deleting either.
+
+The branch that matches OBS is `linux-vyatta-6.12.y`, and matching was verified
+by content rather than by version string: the `netdevice-stats-override.patch`
+in the source package OBS built hashes to `0ed601dc53e73d41fde6f795`, and so
+does the one on that branch. Two branches can carry the same changelog version
+and different trees, which is exactly what the old 6.12.y did.
 
 So `git push i-danos HEAD:master` is rejected there as a non-fast-forward, and
 that rejection is correct rather than an obstacle to route around: taking it
@@ -74,10 +94,9 @@ no commit on the remote is a git ancestor of ours — `ee3324762` included.
 Expect `git merge-base` to say no and do not read that as the baseline being
 wrong.
 
-`linux-vyatta-6.12.y` is likewise a parallel lineage: its head carries the
-same subject as our oldest 6.12 commit but a different hash, so it was
-rebased or re-created at some point. Nothing depends on reconciling the two
-today.
+The old `linux-vyatta-6.12.y` was likewise a parallel lineage: its head carried
+the same subject as one of our 6.12 commits but a different hash. That is what
+the reconciliation above resolved.
 
 `toolkit/build/build_order.txt` carries 148 active entries. The trailing block
 documents 17 repositories that are never built — kept in the tree for reference
