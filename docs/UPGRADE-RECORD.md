@@ -269,7 +269,12 @@ image do not survive this -- see `toolkit/vm/prep-router.sh`.
 
 All five pass on the 2608 image, and were re-run in full after the CLI sandbox
 was restored -- 74 cases, same scores, no regression from booting into the
-workspace:
+workspace. They were run a third time against the final Lancaster image, which
+carries the last upstream packages taken in (`vyatta-platform` 2.19,
+`vyatta-cfg-default` 3.24, `vyatta-interfaces-bonding` 0.57): 74 of 74 again,
+with one suite defect found and fixed on the way (`Verify local preference`,
+below). `vyatta-platform` 2.19's SFP changes are outside what QEMU can exercise
+and are not covered by any of this.
 
 | Suite | Result | Topology |
 |---|---|---|
@@ -335,10 +340,40 @@ together, and on one run `Verify local preference` joined them.
 It reproduces, which is what made it look like a functional break rather than a
 race -- a reproducible race is still a race; on a slower box it simply loses
 every time. Two things settled it: the table was empty rather than wrong, and
-every later case passed, including ones that exercise the same reflector. Those
-cases get away with `Sleep 5` because they reconverge an established mesh;
+every later case passed, including ones that exercise the same reflector.
 Rule-1 builds the sessions from nothing and had no wait of any kind. It now
 polls with `Wait Until Keyword Succeeds`, which costs nothing once converged.
+
+**BGP**'s `Verify local preference` is the same defect one layer down, and it is
+recorded separately because the first pass through it drew the wrong conclusion:
+that the later cases "get away with `Sleep 5` because they reconverge an
+established mesh". They do not get away with it. They were winning by about a
+second.
+
+The case applies a local-preference policy on R3, issues `reset protocols bgp
+all neighbor`, sleeps exactly 5 seconds under a comment marking the sleep
+REQUIRED, and asserts the route is now via R4. Measured on the running topology,
+straight from the router: the route leaves the table 1s after the reset and is
+back 3.8s, 4.0s, 3.8s later across three runs. The assertion was firing about a
+second after the route returned, on an otherwise idle box.
+
+That margin does not survive the full file. Running the whole suite it failed
+here, 15 of 16; running only the four tests it depends on, it passed -- same
+image, same VMs, minutes apart. By the twelfth case there is enough accumulated
+BGP state and enough load across four VMs to cross the boundary. It now polls
+the routing table the same way Rule-1 polls the BGP table, and the measured
+numbers are in the comment so the constant is not reinvented.
+
+Two measurement traps on the way to that number, both of which produced
+confident nonsense. `console.py --raw` only receives bytes arriving after it
+connects, so polling it for a login prompt that was printed at boot reports 0/3
+forever, which reads as "the routers did not come up"; `login()` sends a bare CR
+precisely because of this. And `show ip route` and `reset protocols bgp all
+neighbor` are vyatta operational-mode commands that do not exist in a
+non-interactive SSH shell -- both fail silently, so a poll loop built on them
+resets nothing, reads nothing, and reports the route missing for 60 seconds.
+`/opt/vyatta/bin/vyatta-op-cmd-wrapper` is the form that works outside the
+suites' interactive sessions.
 
 Worth noting how close this came to the wrong conclusion. It appeared only on
 the installed-disk run, where the live run had passed 16/16 -- one run, which
