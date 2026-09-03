@@ -518,6 +518,12 @@ empty input as an answer — the same shape as the CDN empty response that made
 
 - `DEFECT-npf-acl-classify.md` is kept for its debugging detail; its root cause
   is established and fixed, and its status line now says so.
+- Multicast turned out to be a missing CLI rather than a missing capability: the
+  dataplane has carried PIM/IGMP forwarding all along and `frr` 10.3 ships
+  `pimd`, but nothing was reachable through configd. The forwarding path was
+  verified on a booted image first — 7997 of 7998 packets replicated in the DPDK
+  fast path — and a CLI written on top of it in `vyatta-protocols-frr` 1.16.0.
+  See `MULTICAST.md`. Not yet pushed through a DANOS `commit` end to end.
 - The 9 disabled OBS packages were re-checked on 2026-09-02, after the kernel
   and three package bumps this round, and all 9 stay disabled. See below.
 - `linux-vyatta` was at 6.12.101-1vyatta1, six stable releases behind. Imported
