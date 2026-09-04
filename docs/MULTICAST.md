@@ -11,7 +11,7 @@ top of it does and does not cover.
 | Dataplane forwarding | present, compiled in | `src/netinet/ip_mroute.c` 1612 lines, `src/netinet6/ip6_mroute.c` 1612 lines, `mcast_ip_deliver()` at `src/ip_forward.c:215`, all listed in `src/meson.build` |
 | Netlink MFC ingest | present | `src/ip_netlink.c` parses `mfcc_mcastgrp` and `mf6cc` |
 | FAL offload interface | present, unused | `src/ip_mcast_fal_interface.c` 316 lines; hardware support was dropped this round |
-| `pimd` / `pim6d` | shipped, not enabled | in `frr 10.3-3+deb13u1`; `etc/frr/daemons.danos` listed only bgpd, isisd, ospfd, ospf6d, ldpd |
+| `pimd` / `pim6d` | shipped, not enabled | in `frr 10.3-3+deb13u1`; `etc/frr/daemons.danos` is an allowlist and listed only bgpd, isisd, ospfd, ospf6d, ldpd — a daemon not named simply does not start |
 | CLI | **absent** | `vyatta-protocols-frr` exposed only bgp, isis, ldp, mpls, ospf, ospfv3, rip |
 
 The forwarding code had not been modified since 2021 — `ip_mroute.c` last touched
@@ -83,9 +83,9 @@ is the thing the test existed to look for.
 
 ## What the CLI covers
 
-`vyatta-protocols-frr` 1.16.0. 664 lines, no C, no translation code: the
-config-to-FRR layer in this package is a declarative path map, so a protocol is
-a JSON file plus YANG.
+`vyatta-protocols-frr` 1.16.0. No C and no translation code: the config-to-FRR
+layer in this package is a declarative path map, so a protocol is a JSON file
+plus YANG.
 
 ```
 protocols pim
@@ -93,34 +93,86 @@ protocols pim
   keep-alive-timer                     rp-keep-alive-timer
   register-suppress-time               join-prune-interval
   packets                              ssm prefix-list <name>
+  ssmpingd <address>
   spt-switchover infinity-and-beyond [prefix-list <name>]
+  bsr candidate-bsr    [priority] [address|interface|loopback|any]
+  bsr candidate-rp     [priority] [interval] [address|...] group <prefix>
+  autorp discovery
+  autorp announce      rp-address <addr> group <prefix> | group-list <name>
+                       [scope] [interval] [holdtime]
+  autorp send-rp-discovery  [address|...] [scope] [interval] [holdtime]
+  msdp peer <addr>     source-address  password  sa-limit  sa-filter in|out
+  msdp mesh-group <n>  source-address  member <addr>
+  msdp timers keep-alive <s> hold-time <s> [connection-retry <s>]
+  msdp originator-id   msdp shutdown   msdp log neighbor-events|sa-events
+
+protocols pim6
+  rp / prefix-list / keep-alive-timer / rp-keep-alive-timer
+  join-prune-interval / packets / register-suppress-time / ssmpingd
+  spt-switchover infinity-and-beyond [prefix-list <name>]
+  bsr candidate-bsr / candidate-rp     (as above, IPv6 addresses)
+  embedded-rp [group-list <name>] [limit <n>]
 
 interfaces <type> <name> ip pim
   hello-interval / hello-holdtime      dr-priority      use-source
+  passive     bsm     unicast-bsm      active-active
 
 interfaces <type> <name> ip igmp
-  query-interval                       query-max-response-time
-  last-member-query-count              last-member-query-interval
+  version                              query-interval
+  query-max-response-time              last-member-query-count
+  last-member-query-interval
+  join-group <group> [source <src>]    static-group <group> [source <src>]
+
+interfaces <type> <name> ipv6 pim
+  hello-interval / hello-holdtime      dr-priority
+  passive     bsm     unicast-bsm      active-active
+
+interfaces <type> <name> ipv6 mld
+  version / query-interval / query-max-response-time
+  last-member-query-count / last-member-query-interval
   join-group <group> [source <src>]    static-group <group> [source <src>]
 ```
 
-Operational commands sit under `show protocols pim` and `show protocols igmp`.
+Operational commands sit under `show protocols pim`, `show protocols igmp`,
+`show protocols msdp`, `show protocols pim6` and `show protocols mld` — 63 in
+total.
 
-Every generated command was extracted from the shipping `pimd` binary. The
-`frr` repository in `danos-sources` is the retired 7.6 fork and is **not** what
-the image installs — reading daemon lists or command syntax out of it gives
-answers about software that is not there. This bit once already, in the first
-version of this analysis.
+Every generated command was extracted from the shipping daemon, by entering the
+`router pim` or `router pim6` node in `vtysh` and running `list`. The `frr`
+repository in `danos-sources` is the retired 7.6 fork and is **not** what the
+image installs — reading daemon lists or command syntax out of it gives answers
+about software that is not there. This bit once already, in the first version
+of this analysis.
+
+### IPv6 is not a mirror of IPv4
+
+`pim6d` has no MSDP and no Auto-RP. An IPv6 domain learns about out-of-domain
+sources through **embedded RP**, where the RP address is carried inside the
+group address itself, rather than through RPs telling each other. It also has
+no `ssm prefix-list`, no ECMP controls and no `rpf-lookup-mode`. Modelling it
+as a copy of the IPv4 module would have invented commands that do not exist,
+so it is a separate module that follows the daemon.
+
+### The generated form is a `router pim` block
+
+FRR keeps top-level `ip pim ...` as a compatibility alias for the older subset
+only. BSR, Auto-RP and MSDP exist solely inside the `router pim` node. Feeding
+the generated lines to the shipping FRR made that unambiguous: 25 of 38
+rejected as unknown commands, every one of them a new feature, while the old
+ones passed.
+
+Emitting a block also removed a form mismatch that predated this work — FRR
+normalises a flat `ip pim rp` into a `router pim` block, so the generated file
+never matched the running configuration. It reloaded without churn either way
+(PIM neighbour uptime is continuous across a commit that rewrites `frr.conf`),
+but the two now agree.
 
 ## What it deliberately does not cover
 
-- **Commands that could not be confirmed against the shipping binary**: passive
-  mode, ECMP and ECMP rebalance, MSDP, BSR, AutoRP, MLAG, `ip multicast
-  boundary oil`. These exist in FRR's YANG model; their CLI syntax was not
-  extractable, so they are absent rather than guessed at.
-- **IPv6.** `pim6d` ships and is not enabled; no MLD model is written.
-- **SSM and MSDP were not exercised.** The verification covered ASM with a
-  static RP only.
+- **IPv4 commands still absent**: ECMP and ECMP rebalance, `register-accept-list`,
+  `rpf-lookup-mode`, `ip pim bfd`, `ip igmp proxy`, `ip multicast boundary`.
+  Each needs its own thought — the boundary commands take ACL references — and
+  none is part of the four areas this round set out to cover.
 - **No shorthand for an RP serving all groups.** FRR defaults a bare
   `ip pim rp X` to 224.0.0.0/4, but an implicit form would also silently
   conflict with a per-group entry on the same RP, so the range is written out.
@@ -272,3 +324,110 @@ whole time.
 
 The pattern is the same one this port produced repeatedly: an unverified
 instrument returning something that looks like a product defect.
+
+## Second round: BSR, Auto-RP, MSDP, SSM and IPv6
+
+The features left out the first time, because their syntax "could not be
+confirmed". It could: the answer was in the running daemon the whole time.
+
+### Verified as configuration
+
+`parser.py` over a configuration exercising every mapping, then every generated
+line fed to the shipping FRR:
+
+| | mappings | FRR accepted |
+|---|---|---|
+| IPv4, with BSR / Auto-RP / MSDP / SSM | 52 | 38 of 38 |
+| IPv6, PIM6 / MLD / embedded RP / BSR | 34 | 30 of 30 |
+
+Then on an image carrying the packages, configured only through `set` and
+`commit`: `pim6d` starts by itself, the operational tree gains `pim6`, `mld`
+and `msdp`, and all 63 operational commands resolve.
+
+### Verified as protocol
+
+Configuration generating correctly is not the protocol running. Both ends were
+configured on the three-router topology so each protocol had someone to talk
+to:
+
+| | evidence |
+|---|---|
+| BSR | R2 elected (`Elected: Yes`), R3 learned it (`ACCEPT_PREFERRED`) and picked up the candidate RP through it — R3's RP table reads `Source: BSR`, not Static |
+| MSDP | `established` on both ends |
+| IPv6 PIM | adjacency up on both ends of the R2–R3 link |
+| MLD | `ff0e::1 JOIN` registered, and PIM6 built `(*, ff0e::1)` with an outgoing list |
+| SSM | `show ip pim group-type` reports the configured range in place of the 232.0.0.0/8 default |
+
+### Not verified
+
+- **Auto-RP.** Configuration generates and FRR reports discovery and
+  announcement enabled, but no RP was ever discovered through it (`count=0`);
+  a mapping agent and a second announcing router were never set up.
+- **No multicast traffic was forwarded over any of this.** The first round
+  proved the dataplane with counters; this round stops at protocol state. An
+  SSM forwarding test and an IPv6 forwarding test are both still open.
+- **embedded RP** was configured, never exercised.
+- **MSDP SA exchange.** The session establishes; no source was ever advertised
+  across it (`SaCnt 0`).
+
+### Four false failures, all of them the test
+
+Each of these looked like a broken feature and none was.
+
+**The whole commit failed on a dangling reference.** `ssm prefix-list SSM-RANGE`
+was set without creating the prefix list. The leafref rejected it and took the
+entire R2 commit with it, so nothing on R2 was configured — and BSR electing
+nothing, MSDP sitting one-sided and zero IPv6 neighbours all followed from
+that. The model did exactly its job; the reading of the result was what went
+wrong.
+
+**`ipv6 address` does not exist.** Addresses of both families go under the
+interface's single `address` node; the `ipv6` node carries protocol
+configuration only.
+
+**MSDP left over the management interface.** The peers are loopbacks, as MSDP
+is normally deployed, and OSPF had not been configured on one end. Without a
+route the TCP session goes out `ens31` into QEMU's user-mode stack and stays in
+`connecting` forever. Same shape as the default-route trap in
+`prep-router.sh`, in a new place.
+
+**`candidate-bsr source address X` is not the CLI path.** The YANG models the
+four alternatives as a `choice`, and a choice and its cases are transparent in
+the data tree, so the node is `address`: `set protocols pim bsr candidate-bsr
+address 2.2.2.2`. FRR's own syntax has the `source` keyword and the generated
+line carries it — `bsr candidate-bsr priority 200 source address 2.2.2.2` — but
+the CLI does not. Configured the wrong way the command is rejected while
+`priority` still applies, so the router reports a candidate BSR with
+`Address: 0.0.0.0` that never wins an election. That reads as BSR being broken.
+
+### Two things FRR does that look like defects
+
+**Defaults are not written back.** `bsr candidate-bsr priority 64`,
+`msdp timers 60 75` and pim6 `keep-alive-timer 210` are all FRR defaults, so
+they are accepted and then absent from `show running-config`. The generated
+file and the running configuration differ by exactly those lines.
+
+**Auto-RP state is not written back at all.** A commit that enables discovery
+and announcement leaves no trace in `show running-config`. `show protocols pim
+autorp` is the only way to see it took, which is why that command exists.
+
+**`ssmpingd` ignores a loopback address.** `ssmpingd 2.2.2.2`, where 2.2.2.2 is
+on `lo1`, produces no entry and no log line; `ssmpingd 65.1.1.3` and
+`ssmpingd 0.0.0.0` both log `starting ssmpingd for source ...` and appear in
+`show ip ssmpingd`. The generated command is correct either way — this is FRR's
+behaviour, recorded so it is not rediscovered as a CLI fault.
+
+### Scripts
+
+`toolkit/vm/` carries three, replacing eight one-off generations:
+
+```
+config-multicast.sh           configure every node through set and commit
+verify-multicast-cli.sh       walk every operational command
+verify-multicast-protocol.sh  configure both ends, check the protocols run
+```
+
+`verify-multicast-cli.sh` derives its command list from the op YANG rather than
+from a list generated beside it. A checked-in list goes stale the moment a
+command is added, and it fails silently — the walk passes because it never
+tried the new command. Derived, it went from 24 commands to 63.
