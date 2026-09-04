@@ -143,6 +143,105 @@ generator leaves a trailing space, as it already does for `redistribute bgp
 [route-map ...]`. `frr-reload.py` strips every line as it loads it, so this
 cannot produce a spurious diff on each reload.
 
-Not yet done: the generated configuration has not been pushed through a running
-router by way of the DANOS CLI. The commands are known good and the translation
-is known correct; what remains untested is a `commit` end to end.
+## End to end, through the CLI
+
+Done on the three-router topology with 1.16.0 installed on the running LIVE
+image, configured only through `set` and `commit` — no `vtysh` anywhere.
+
+`commit` generates, on R3:
+
+```
+interface dp0s9
+ip igmp
+ip igmp join-group 239.1.1.1
+ip igmp query-interval 125
+ip pim
+...
+ip pim rp 2.2.2.2 224.0.0.0/4
+```
+
+PIM neighbours came up on both of R2's interfaces, R2 was elected RP (ASM,
+Static), R3 joined 239.1.1.1 on `dp0s9`, and R2 built `(*, 239.1.1.1)`. 5000
+datagrams later:
+
+```
+R2  dp0s9   in 4997  ->  dp0s10  out 4997
+R3  dp0s10  in 4997  ->  dp0s9   out 4997
+```
+
+`(S,G)` reads `fast/dataplane` on both. The three lost packets are the ones
+ahead of the MFC entry.
+
+### Three silent failures, in the order they were hit
+
+None of them logs anything.
+
+**1. The module was not registered with the VCI component.** `Modules=` in
+`debian/vyatta-frr-vci.component` is an explicit list of the YANG modules whose
+configuration configd hands to the FRR VCI. A module missing from it is never
+delivered, so the translation step does not run. The CLI accepts every command,
+`cli-shell-api showCfg` reads the configuration back correctly, `commit` reports
+success — and `frr.conf` contains no PIM lines at all. This is the expensive one:
+every observable surface says the feature works.
+
+**2. Installing the package stops FRR.** The postinst stops
+`vyatta-routing-frr-early.target`, which systemd refuses
+(`RefuseManualStop`), and FRR is left down. Every subsequent commit then fails
+its reload with `vtysh: failed to connect to any daemons`. Pre-existing
+behaviour, not introduced here, but it makes an in-place upgrade look like a
+broken package.
+
+**3. A commit with nothing to commit regenerates nothing.** Re-running the same
+`set` commands after they are already in the configuration yields "Node exists"
+for each and "No configuration changes to commit" — so `frr.conf` is never
+rewritten. If a previous run left the configuration in place but the file stale,
+only `delete` then `set` forces the regeneration.
+
+### Operational commands: FRR verified, CLI not verifiable this way
+
+All 24 commands the op YANG defines were walked, checking two things separately
+because one masks the other — whether the CLI resolves the path, and whether FRR
+accepts the underlying `vtysh` command.
+
+**FRR side: 24 of 24.** Every command exists in FRR 10.3 and returned real data
+from the running routers. This is the half most likely to be wrong, since the
+syntax was written against 10.3 without all of it being exercised, and it is now
+settled.
+
+**CLI side: 0 of 24**, all `Invalid command: show protocols [pim]`, and this is
+not evidence about the module. A control experiment settles it: injecting a
+throwaway command into the *shipping, working* `vyatta-op-protocols-frr-ldp-v1`
+module and restarting configd does not make it appear either —
+`show protocols mpls-ldp` keeps exactly its original children. Operational
+commands from a package installed after boot do not enter the op tree, whatever
+module they come from.
+
+Ruled out along the way: the augment point (`show protocols ospf neighbor`
+works), packaging (both op packages install one file to the same directory, with
+no maintainer scripts), module structure, brace balance, unescaped quotes in
+description strings, `configd -yangdir` (defaults to exactly that directory),
+and restarting the VCI bus as well as configd. Nothing is logged at any point.
+
+The instrument that finally gave a straight answer is `opc -op=children <path>`,
+which lists what the op tree actually contains. Note that
+`cli-shell-api getTmplChildren` is *not* that instrument — it returns
+`Invalid operation`.
+
+So the op CLI has to be verified with the package present at boot, which means
+built into the image.
+
+### Two wrong readings during the diagnosis
+
+Both were a probe that had never been checked, taken as a result.
+
+`cli-shell-api getTmplChildren protocols` was used to ask whether the `pim` node
+existed. It returns `Invalid operation` — it was never answering the question,
+and its empty output was read as "the node is missing".
+
+Separately, `Configuration path: ... is not valid` alongside `Node exists` was
+read as the whole configuration tree having failed, when it means the node was
+already set. `showCfg` showed the configuration sitting there correctly the
+whole time.
+
+The pattern is the same one this port produced repeatedly: an unverified
+instrument returning something that looks like a product defect.
