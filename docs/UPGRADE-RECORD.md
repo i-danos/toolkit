@@ -34,6 +34,45 @@ carrying cosmetic changes.
 plumbing, and the vendor FAL plugins are dropped. This is what makes the
 Debian 13 move tractable at all; those paths were pinned to old toolchains.
 
+## Where this leaves the project against the original DANOS architecture
+
+The 2018 Linux Foundation architecture put a control plane (dNOS, with FRR for
+the protocol stack) over a network virtualisation layer that was meant to reach
+programmable ASICs three ways — SONiC SAI, SDKLT, and P4Runtime/Stratum — on
+"any white box or hypervisor".
+
+2608 realises one of those paths and abandons the other. Both halves of that
+sentence matter, and the second is easy to overstate away.
+
+**No vendor closed source remains.** Five repositories carry it —
+`opennsl-binary`, `libfal-opennsl`, `accton-hwdiag`, `bcm-kbp-linux-modules`,
+`bcm-linux-bde-modules` — and none of them exists on OBS at all; not disabled,
+never created. The four package names in the image that match broadcom or bcm
+are harmless: `librte-crypto-bcmfs25` comes from Debian's own DPDK 24.11, and
+the other three are YANG *deviation* modules, which only declare that a
+platform does not support certain nodes and contain no vendor code.
+
+**But the hardware path was removed, not reimplemented in the open.** This is
+the distinction worth keeping straight. The abstraction layer in that
+architecture was already open — SAI is an OCP project, P4 and Stratum are open
+too. What was closed was the vendor SDK underneath it, and DANOS's actual
+implementation went through those SDKs. Dropping them did not leave an open
+replacement in place: the FAL interface code is still in the dataplane
+(`src/ip_mcast_fal_interface.c` and its siblings), with no backend behind it.
+
+So the accurate statement of what 2608 is:
+
+> DANOS forks replaced by upstream components — FRR 7.6 to Debian's FRR 10.3,
+> DPDK 20.11 to 24.11, kernel 5.4 to 6.12 — and every trace of vendor closed
+> source removed. That realises the original architecture's **software
+> forwarding plus upstream protocol stack** path. The path to programmable
+> ASICs was deliberately given up and *not* replaced with SAI or anything else.
+
+The consequence is about deployment, not credit: everything verified here runs
+on a hypervisor. QEMU/KVM is the only target that has been tested, and the
+white-box switch half of that diagram has neither code nor verification behind
+it. See "What 'verified' covers, and what it does not".
+
 ## Repository topology
 
 The official project publishes 189 repositories. Locally they live under
