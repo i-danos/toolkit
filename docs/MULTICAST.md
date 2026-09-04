@@ -378,6 +378,23 @@ The IPv6 path needed OSPFv3 for the unicast reachability RPF depends on, a
 static RP on R2's loopback, and an MLD join on R3. All three converged and
 `fcstat6` shows `(2001:db8:65::2, ff0e::1)` carrying 1309214 bytes.
 
+### Re-verified on OBS-built packages
+
+The packages above were built locally. The image that ships is built from OBS,
+which is a different build environment, and the failure this round turned on --
+a module missing from the VCI component -- produces no error anywhere. So the
+whole chain was run again against an image built from OBS packages only:
+
+```
+pimd=1 pim6d=1     op tree: bgp igmp isis mld mpls-ldp msdp ospf ospfv3 pim pim6
+VCI component: both modules registered
+operational commands: 63 of 63
+SSM   R2 5000 in / 5000 out, R3 5000 / 5000, wrong_if 0, punted 0
+IPv6  R2 4999 out, R3 4998 / 4998, wrongif 0, punted 1
+```
+
+Identical to the local build.
+
 ### Not verified
 
 - **Auto-RP.** Configuration generates and FRR reports discovery and
