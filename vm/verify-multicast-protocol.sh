@@ -26,6 +26,13 @@
 #     "Address: 0.0.0.0 ... not currently operating as Candidate BSR" and no
 #     election ever happens. The priority is applied and visible, which makes
 #     it look configured.
+#
+#     Note the path: "candidate-bsr address", not "candidate-bsr source
+#     address". The YANG models the four alternatives as a choice, and a
+#     choice and its cases are transparent in the data tree, so the node is
+#     "address". FRR's own syntax has the "source" keyword and the generated
+#     line carries it -- "bsr candidate-bsr priority 200 source address
+#     2.2.2.2" -- but the CLI does not.
 set -u
 
 OUT=${OUT:-/home/aikon/danos/.obs/verify-multicast-protocol.log}
@@ -60,8 +67,8 @@ cli $R2 "set interfaces dataplane dp0s9 address 65.1.1.3/24" \
         "set policy route prefix-list SSM-RANGE rule 1 prefix 232.0.0.0/8" \
         "set protocols pim ssm prefix-list SSM-RANGE" \
         "set protocols pim bsr candidate-bsr priority 200" \
-        "set protocols pim bsr candidate-bsr source address 2.2.2.2" \
-        "set protocols pim bsr candidate-rp source address 2.2.2.2" \
+        "set protocols pim bsr candidate-bsr address 2.2.2.2" \
+        "set protocols pim bsr candidate-rp address 2.2.2.2" \
         "set protocols pim bsr candidate-rp priority 10" \
         "set protocols pim bsr candidate-rp group 239.0.0.0/8" \
         "set protocols pim msdp peer 3.3.3.3 source-address 2.2.2.2" \
