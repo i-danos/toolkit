@@ -358,14 +358,31 @@ to:
 | MLD | `ff0e::1 JOIN` registered, and PIM6 built `(*, ff0e::1)` with an outgoing list |
 | SSM | `show ip pim group-type` reports the configured range in place of the 232.0.0.0/8 default |
 
+### Verified as forwarding
+
+Both gaps are closed. Counters from the dataplane's own tables, 5000 datagrams
+each:
+
+| | R2 in / out | R3 in / out | entry counters |
+|---|---|---|---|
+| SSM, IPv4 | 5000 / 5000 | 5000 / 5000 | 5000 packets, `wrong_if 0`, `punted 0` |
+| ASM, IPv6 | 4997 / 4997 | 4995 / 4995 | 4997 packets, `wrongif 0`, `punted 0` |
+
+SSM losing nothing at all, with `punted 0`, is the reading worth keeping. The
+entry is built by the `(S,G)` join before any traffic arrives, so there is no
+first packet going to the controller to create it — unlike ASM, where the IPv6
+run loses the usual few ahead of the entry, exactly as the first round's IPv4
+ASM did.
+
+The IPv6 path needed OSPFv3 for the unicast reachability RPF depends on, a
+static RP on R2's loopback, and an MLD join on R3. All three converged and
+`fcstat6` shows `(2001:db8:65::2, ff0e::1)` carrying 1309214 bytes.
+
 ### Not verified
 
 - **Auto-RP.** Configuration generates and FRR reports discovery and
   announcement enabled, but no RP was ever discovered through it (`count=0`);
   a mapping agent and a second announcing router were never set up.
-- **No multicast traffic was forwarded over any of this.** The first round
-  proved the dataplane with counters; this round stops at protocol state. An
-  SSM forwarding test and an IPv6 forwarding test are both still open.
 - **embedded RP** was configured, never exercised.
 - **MSDP SA exchange.** The session establishes; no source was ever advertised
   across it (`SaCnt 0`).
@@ -422,10 +439,26 @@ behaviour, recorded so it is not rediscovered as a CLI fault.
 `toolkit/vm/` carries three, replacing eight one-off generations:
 
 ```
-config-multicast.sh           configure every node through set and commit
-verify-multicast-cli.sh       walk every operational command
-verify-multicast-protocol.sh  configure both ends, check the protocols run
+config-multicast.sh              configure every node through set and commit
+verify-multicast-cli.sh          walk every operational command
+verify-multicast-protocol.sh     configure both ends, check the protocols run
+verify-multicast-forwarding.sh   send traffic, read the dataplane counters
+send4.py / send6.py              the senders it drives
 ```
+
+Three traps the forwarding script now guards against, each of which produced a
+result that looked like broken forwarding:
+
+- **The sender goes over as a file.** Inline, the quoting did not survive the
+  driving shell, ssh and vbash — no output, no error, and counters that were
+  zero because nothing had been sent. The send is asserted before any counter
+  is read.
+- **The dataplane commands are `multicast mif6`, not `multicast6 mif`.** The
+  second is the natural guess and answers `Unknown command: multicast6`, which
+  reads as IPv6 multicast being absent from the dataplane. It is not; see
+  `mcast_cmds[]` in `vyatta-dataplane/src/rt_commands.c`.
+- **The JSON key follows the command.** `mif6` returns `{"mif6": ...}`;
+  hardcoding `mif` printed nothing for the whole IPv6 pass.
 
 `verify-multicast-cli.sh` derives its command list from the op YANG rather than
 from a list generated beside it. A checked-in list goes stale the moment a
