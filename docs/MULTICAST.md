@@ -230,6 +230,33 @@ which lists what the op tree actually contains. Note that
 So the op CLI has to be verified with the package present at boot, which means
 built into the image.
 
+**Verified on an image carrying 1.16.0: 24 of 24, both sides.** `opc -op=children
+show protocols` returns `bgp igmp isis mpls-ldp ospf ospfv3 pim`, and with the
+topology configured through the CLI the commands render live state:
+
+```
+show protocols pim neighbor      dp0s9 65.1.1.2 / dp0s10 66.1.1.2
+show protocols pim rp-info       2.2.2.2  224.0.0.0/4  lo1  yes  Static  ASM
+show protocols pim mroute count  65.1.1.2  239.1.1.1  5000 packets  1140000 bytes
+show protocols igmp groups       dp0s9  239.1.1.1  EXCL  3 groups total
+```
+
+`WrongIf` on that entry reads 2, not 0 — two packets arrived on an unexpected
+interface while RPF was still settling. Expected during convergence, recorded
+because it is not zero.
+
+Getting there took two more rebuilds, both of which produced a clean image with
+`exit=0` and no error:
+
+- The repository HTTP server on 8080 was started a minute after `lb build` ran
+  its `apt update`. Every DANOS package came back `Unable to locate` — 850 of
+  them — and the failure is only visible in `build_test.log`, not in the build
+  script's own output, which reported `exit=123` with no error text.
+- The image installs a curated package list, not the contents of the
+  repository. Adding the packages to the repository and reindexing left the ISO
+  with every other 1.16.0 binary and neither PIM package. They have to be named
+  in `config/package-lists/vyatta-yang-protocols-frr.list.chroot`.
+
 ### Two wrong readings during the diagnosis
 
 Both were a probe that had never been checked, taken as a result.
