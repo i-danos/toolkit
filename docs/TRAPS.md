@@ -132,26 +132,34 @@ checked before being acted on.
   second full build-and-verify cycle. The 18.3 baseline had all four in the
   right stage and would have answered it in one step.
 
-## 补丁"能应用"取决于是谁在应用
+## Whether a patch applies depends on who is applying it
 
-`debian/patches-vyatta` 这一组由 `debian/rules.real` 用
-`quilt push -a -q --fuzz=0` 应用,**不允许任何 fuzz**。
+`debian/rules.real` applies the `debian/patches-vyatta` set with
+`quilt push -a -q --fuzz=0` — **no fuzz at all**.
 
-本地用 `quilt push -a -f` 验证是无效的:`-f` 恰恰是"允许 fuzz、不生成
-reject"。所以本地零 reject 与 OBS 上构建失败可以同时成立,而且必然在
-stable 导入之后出现——上游只要在补丁的上下文附近插入几行(6.12.107 在
-`dev_get_stats()` 的变量声明和 `if (ops->ndo_get_stats64)` 之间加了一整块
-`BUILD_BUG_ON`),补丁的下文就对不上了。
+Checking that locally with `quilt push -a -f` proves nothing, because `-f` is
+precisely "allow fuzz and generate no rejects". Zero rejects locally and a
+failed OBS build are therefore both true at once, and the combination is bound
+to appear after a stable import: upstream only has to insert a few lines near a
+patch's context for its trailing hunk to stop matching. In 6.12.107 that was a
+whole `BUILD_BUG_ON` block added between the variable declarations of
+`dev_get_stats()` and `if (ops->ndo_get_stats64)`.
 
-正确的自查方式是复刻构建的那一步:把 series 触及的文件抽成一棵小树
-(53 个文件,2.5 MB),按 series 顺序逐个 `patch -p1 -F0`,统计失败数。
-不需要 1.8 GB 的完整内核树。
+The self-check that works reproduces the build's own step: extract just the
+files the series touches into a small tree (53 files, 2.5 MB), apply them in
+series order with `patch -p1 -F0`, and count the failures. The full 1.8 GB
+kernel tree is not needed.
 
-注意两组补丁的应用者不同,不能互相推断:
-- `debian/patches` 由 `dpkg-source` 应用(构建日志里的 `applying ...`);
-- `debian/patches-vyatta` 由 `debian/rules.real` 在 `binary-indep` 阶段应用,
-  失败点在构建中段,而不是解包时。
+The two patch sets have different appliers, so neither says anything about the
+other:
 
-修复方式是**重新生成上下文**,不是加 fuzz 容忍:在 series 里补丁之前的状态
-下带 fuzz 应用一次,`diff -u` 出新的 hunk,替换掉原补丁里对应文件那一段。
-这样补丁语义不变,而上下文重新对齐到当前源码。
+- `debian/patches` is applied by `dpkg-source` — the `applying ...` lines in
+  the build log;
+- `debian/patches-vyatta` is applied by `debian/rules.real` during
+  `binary-indep`, so it fails midway through the build rather than at unpack.
+
+The fix is to **regenerate the context**, not to allow fuzz. Apply the patch
+with fuzz once against the state that precedes it in the series, `diff -u` the
+result to get the new hunk, and replace that file's section of the original
+patch. The patch means the same thing afterwards; its context is realigned to
+the current source.
