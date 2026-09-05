@@ -223,3 +223,79 @@ Private VLAN has no equivalent shortcut: primary/secondary VLAN mapping and the
 three port roles are forwarding logic end to end.
 
 `toolkit/vm/verify-dot1x-viability.sh` reproduces both halves of this.
+
+## The "daemon ships, CLI missing" pattern, and where it stops
+
+Multicast, BFD and RIP were all the same shape: FRR ships the daemon, DANOS
+never enabled it, and no YANG existed. Each cost a CLI and nothing else.
+
+That made the pattern worth searching for deliberately. FRR 10.3 ships 20
+daemons and `daemons.danos` enabled eight. Going through the other twelve:
+
+| Daemon | DANOS YANG | Verdict |
+|---|---|---|
+| `ripd` / `ripngd` | none | **Done** — the pattern held |
+| `vrrpd` | 17 modules, `vyatta-vrrp-vci.service` running | DANOS has its own; leaving FRR's off is correct |
+| `pbrd` | 4 modules, `vyatta-policy-pbr-*` | DANOS has its own; same |
+| `pathd` | none | Not the pattern — see below |
+| `nhrpd` | none | Not the pattern — see below |
+| `babeld`, `eigrpd`, `fabricd` | none | Niche, and absent from OcNOS too |
+
+### RIP had been recorded as already covered. It was not.
+
+The earlier gap analysis marked RIP present. The grep behind that matched
+`container rip` at line 235 of `vyatta-protocols-frr-ospf-v1.yang`, which is
+OSPF's redistribute list naming RIP as a *source*. Zero RIP modules existed.
+
+Checking the dataplane first, as VPLS taught: a prefix advertised only in RIP
+arrived as `proto rip` in the kernel, appeared in the dataplane route table and
+forwarded. RIP needs nothing below the control plane.
+
+One detail worth keeping. The first attempt used a prefix OSPF also carried and
+came back `proto ospf` — RIP had learned the route and lost the election, since
+its distance of 120 loses to OSPF's 110. A RIP-only prefix was needed to get a
+clean reading.
+
+### pathd: the dataplane has label stacks, not segment routing
+
+`NH_MAX_OUT_LABELS` is 16, so depth is not the constraint. But `srgb`,
+`srv6`, `segment-routing` and `binding-sid` are all **zero hits** across the
+dataplane. Depth is not semantics: SR needs the dataplane to understand a
+global label block, to push a SID list, and to handle binding SIDs. None of
+that exists, and `pathd` additionally speaks PCEP to a controller.
+
+This belongs with VPLS — new dataplane work — not with RIP.
+
+### nhrpd: the dataplane is ready and the daemon is not
+
+This one inverted the usual finding, which is why it was worth running.
+
+The dataplane already implements multipoint GRE: peer management and
+encapsulation in `src/if/gre.c`, an mGRE branch in
+`pipeline/nodes/l3_v4_encap.c`, NHRP netlink notifications handled in
+`ip_netlink.c`. DANOS's tunnel model already accepts
+`encapsulation gre-multipoint`. Both tunnels came up correctly —
+`gre remote any local 66.1.1.2` is exactly the multipoint form.
+
+What did not work is NHRP itself. Each router built its own local cache entry,
+the spoke saw the NHS, and registration never completed: the NHS stayed at
+`(unspec)` and the hub's cache never gained the spoke. `nhrpd` then crashed
+once — `state -> down: read returned EOF`, with zebra reporting
+`Client 94 'nhrp' encountered an error` — and was restarted by watchfrr.
+
+One real prerequisite was found on the way, and it would have to appear as a
+`must` in any YANG written for this: **nhrpd requires the tunnel address to be
+a host prefix**. With a /24 it refuses outright — `tun0: 172.30.0.2/24 is not
+a host prefix` — and with /32 it proceeds.
+
+Writing the CLI first would have produced configuration that generates, that
+FRR accepts, and that does not bring up a DMVPN. The next step here is
+diagnosing the nhrpd fault, which is FRR-side work, not CLI work.
+
+### What the pattern actually predicts
+
+A shipped daemon is necessary but not sufficient. Of the three candidates that
+looked identical from the daemon list, one held (RIP), one needs dataplane
+features (pathd), and one is blocked in the daemon itself (nhrpd). The check
+that separates them is cheap — configure it by hand and see — and it is worth
+running before any YANG is written.
