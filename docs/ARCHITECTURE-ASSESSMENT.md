@@ -139,3 +139,87 @@ What the proposal sets out to achieve has already been achieved here: 2608
 carries no vendor closed source, its protocol stack is upstream FRR 10.3 and its
 data plane is DPDK 24.11. What is missing is an open backend for the hardware
 abstraction, and that is a plugin behind FAL, not a new building.
+
+## Closing the gap against OcNOS: what "borrowing" actually buys
+
+Three items from the OcNOS feature comparison were done by adding a CLI over
+capability that was already present: multicast, BFD, and BGP L3VPN. Each is
+recorded with its forwarding evidence in `MULTICAST.md` and the commit history.
+
+The remaining three are not that shape, and the reason matters when someone
+proposes borrowing from VyOS or SONiC.
+
+### The dataplane check comes first
+
+`vyatta-dataplane` is 228k lines and does its own L2 and L3 forwarding. That
+single fact decides what is borrowable:
+
+| Feature | Dataplane keyword hits | Verdict |
+|---|---|---|
+| VPLS / VPWS | `pseudowire`, `vpls`, `l2vpn`, `pw-id` — **0** | New dataplane work |
+| 802.1x | `dot1x`, `eapol`, `authenticator` — **0** | See below |
+| Private VLAN | `pvlan`, `isolated`, `community`, `secondary-vlan` — **0** | New dataplane work |
+
+The 24 hits for `promiscuous` are NIC promiscuous mode in `if.c`, unrelated to
+the private-VLAN port role of the same name.
+
+### Why VyOS and SONiC transfer differently
+
+**VyOS forwards in the kernel.** Its 802.1x is hostapd plus kernel
+configuration; its port isolation is the Linux bridge's `BR_ISOLATED` flag.
+The behaviour is a good reference and the code does not transfer, because our
+packets never reach the kernel bridge.
+
+**SONiC forwards in an ASIC.** Its L2 features are largely SAI calls, and we
+have no SAI backend. The architecture is worth reading; the forwarding code is
+not ours to reuse.
+
+So for anything that is fundamentally forwarding logic, neither project
+shortens the work.
+
+### 802.1x is the exception, and it was measured
+
+The authentication half is not forwarding logic, and it is already packaged.
+`hostapd`, `wpasupplicant` and `freeradius` are all in Debian 13.
+
+Verified on a router rather than argued: hostapd in wired-driver mode with its
+built-in RADIUS server, wpa_supplicant as supplicant, over a kernel veth pair,
+completes EAP-MD5:
+
+```
+hostapd     CTRL-EVENT-EAP-SUCCESS
+            STA 2a:c0:da:59:44:a9 IEEE 802.1X: authenticated
+supplicant  EAP authentication completed successfully
+            Connection to 01:80:c2:00:00:03 completed
+```
+
+`01:80:c2:00:00:03` is the EAPOL group address, so that is a real frame
+exchange. Only one dependency was missing from the image, `libpcsclite1`.
+
+Then the same hostapd on a DPDK interface, which is where it stops:
+
+```
+dp0s9: interface state UNINITIALIZED->ENABLED
+dp0s9: AP-ENABLED
+recv: Network is down
+```
+
+It starts and enables, and receives nothing: EAPOL frames are consumed by the
+fast path and never reach the shadow interface.
+
+That turns an estimate into a scope:
+
+| Part | Work |
+|---|---|
+| EAP state machine, RADIUS, session handling | none — hostapd |
+| Punt EAPOL (`ETH_P_PAE`, 0x888e) | `shadow_receive.c`, which already punts slow-protocol frames |
+| Honour port authorisation in the fast path | L2 forwarding path |
+| CLI: YANG, mappings, hostapd config generation | ordinary |
+
+An order of magnitude less than implementing 802.1x, which is the point of
+running the viability check before writing any of it.
+
+Private VLAN has no equivalent shortcut: primary/secondary VLAN mapping and the
+three port roles are forwarding logic end to end.
+
+`toolkit/vm/verify-dot1x-viability.sh` reproduces both halves of this.
