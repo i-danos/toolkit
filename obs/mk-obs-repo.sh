@@ -12,6 +12,10 @@
 # still points at http://127.0.0.1:8080/; only the directory it serves moves
 # here.
 #
+# Packages come from the public mirror, with the OBS API as a fallback for the
+# hours after a rebuild when the mirror still serves the previous build. See
+# step 2.
+#
 # One trap worth stating explicitly: the build container uses bridge
 # networking, so 127.0.0.1 inside it is the container, not this host. Serving
 # this directory from the host leaves live-build fetching from whatever is
@@ -100,7 +104,31 @@ echo "== 2. download =="
 # return a 25-byte <directory></directory>. The public URL is also faster than
 # osc api and follows redirects to a nearby mirror.
 DL=https://download.opensuse.org/repositories/home:/i-danos/2608
-export DL NEW
+
+# ...but the mirror can lag the published index by hours. Seen after a
+# vyatta-protocols-frr rebuild: the index already named the new vyatta-frr-vci
+# (SHA256 673965ff...) while every mirror still served the previous build
+# (8dff1e74...) for over two hours. The SHA256 check below is what makes that
+# survivable -- it refuses the stale file rather than assembling a repository
+# that looks complete and installs yesterday's package -- but the result was a
+# missing package and an ISO built without it.
+#
+# So when the mirror never produces the SHA256 the index promises, ask the API
+# for the built file directly. The API serves from the build result, not from
+# the mirror network, so it has no lag to catch up on.
+#
+# The API path is /build/<project>/<repo>/<arch>/<SOURCE package>/<file>, and
+# the source package is not the binary package name -- vyatta-frr-vci is built
+# by vyatta-protocols-frr. The index carries that mapping in Source:, which
+# Debian omits when it equals the binary name, so fall back to Package: when
+# it is absent.
+#
+# Architecture is the build arch, x86_64, for arch:all binaries too: they are
+# produced by the same x86_64 build and live under that path, not under a
+# "noarch" of their own.
+BUILD="/build/home:i-danos/2608/x86_64"
+APILOG=$(mktemp)
+export DL NEW OSC BUILD APILOG
 
 # Downloading serially takes about 23 seconds per package -- almost all of it
 # round-trip latency to download.opensuse.org, not bandwidth. Over 823 packages
@@ -119,11 +147,13 @@ export DL NEW
 # mid-transfer. Observed: vci-template-go arrived as 130684 of 1539088 bytes
 # after an SSL "unexpected eof", and `dpkg-deb -f` still printed its name --
 # a repository that passes its own validity check and installs nothing.
-awk '/^Filename: /{f=$2} /^SHA256: /{s=$2}
-     /^$/{if (f!="" && s!="") print f, s; f=""; s=""}
-     END{if (f!="" && s!="") print f, s}' "$NEW/.Packages.src" \
-  | xargs -P "${JOBS:-12}" -n2 sh -c '
-      p=$1; want=$2; b=$(basename "$p")
+awk '/^Package: /{pkg=$2} /^Source: /{src=$2}
+     /^Filename: /{f=$2} /^SHA256: /{s=$2}
+     /^$/{if (f!="" && s!="") print f, s, (src!="" ? src : pkg)
+          pkg=""; src=""; f=""; s=""}
+     END{if (f!="" && s!="") print f, s, (src!="" ? src : pkg)}' "$NEW/.Packages.src" \
+  | xargs -P "${JOBS:-12}" -n3 sh -c '
+      p=$1; want=$2; src=$3; b=$(basename "$p")
       if [ -s "$NEW/$b" ] \
          && [ "$(sha256sum "$NEW/$b" | cut -d" " -f1)" = "$want" ]; then
         exit 0
@@ -135,11 +165,29 @@ awk '/^Filename: /{f=$2} /^SHA256: /{s=$2}
         fi
         sleep 3
       done
-      echo "   failed: $p" >&2; rm -f "$NEW/$b"' _
+      # The mirror never produced what the index promised. Ask the API for the
+      # build result directly. Redirecting into the file truncates it first, so
+      # a failed call leaves a short file -- which is exactly what the SHA256
+      # check below catches, and why the file is removed when it does not match.
+      if timeout 300 $OSC api "$BUILD/$src/$b" < /dev/null > "$NEW/$b" 2>/dev/null \
+         && [ "$(sha256sum "$NEW/$b" | cut -d" " -f1)" = "$want" ]; then
+        printf "%s\n" "$b" >> "$APILOG"
+        exit 0
+      fi
+      echo "   failed: $p (mirror stale and API had no $src/$b)" >&2
+      rm -f "$NEW/$b"' _
 
 n=$(ls "$NEW"/*.deb 2>/dev/null | wc -l)
 fail=$((total - n))
+viaapi=$(wc -l < "$APILOG" 2>/dev/null || echo 0)
 echo "   $n present, $fail missing"
+if [ "$viaapi" -gt 0 ]; then
+	# Worth naming: it means the mirror is behind the index for these, so a
+	# plain curl of the public URL right now still returns the old file.
+	echo "   $viaapi fetched from the API because the mirror was stale:"
+	sed 's/^/     /' "$APILOG"
+fi
+rm -f "$APILOG"
 
 echo "== 3b. drop packages no longer in the index =="
 # Replaces the old "rm -rf at the start". Same staleness guarantee, but a
