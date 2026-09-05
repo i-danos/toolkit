@@ -133,7 +133,7 @@ for p in "${pkgs[@]}"; do
       # ufispace-apollo-linux-modules) have git trees in the patches-applied
       # state while debian/patches/series still lists those patches. Synthesizing
       # an orig from such a tree makes dpkg-source apply them a second time:
-      # "Reversed (or previously applied) patch detected"。
+      # "Reversed (or previously applied) patch detected".
       # So reverse them out one at a time, in reverse order, to recover the
       # actual upstream state.
       if [ -f "$work/debian/patches/series" ]; then

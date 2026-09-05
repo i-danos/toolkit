@@ -48,7 +48,7 @@ detect_time() {
   echo ">60"
 }
 
-echo "===== 1. 基础配置：OSPF，暂不加 BFD ====="
+echo "===== 1. Baseline: OSPF, no BFD yet ====="
 cli $R2 "set interfaces dataplane dp0s10 address 66.1.1.3/24" \
         "set interfaces loopback lo1 address 2.2.2.2/32" \
         "set protocols ospf area 0 network 66.1.1.0/24" \
@@ -60,19 +60,19 @@ cli $R3 "set interfaces dataplane dp0s10 address 66.1.1.2/24" \
         "set protocols ospf area 0 network 3.3.3.3/32" \
         "set protocols ospf parameters router-id 3.3.3.3"
 sleep 45
-echo "--- OSPF 邻居 ---"; S $R2 'sudo vtysh -c "show ip ospf neighbor"' | tail -3
+echo "--- OSPF neighbour ---"; S $R2 'sudo vtysh -c "show ip ospf neighbor"' | tail -3
 
-echo; echo "===== 2. 不带 BFD：断链，测 OSPF 自己多久发现 ====="
-echo "  切断 R3 的链路端..."
+echo; echo "===== 2. Without BFD: break the link, time how long OSPF alone takes ====="
+echo "  Breaking the link at R3 ..."
 docker exec danos-robot true 2>/dev/null
-# 断链：把 R3 的 dp0s10 从 dataplane 层拔掉，协议侧收不到任何通知
+# Break the link from below: taking R3 dp0s10 down gives the protocol no notification
 S $R3 'sudo ip link set dp0s10 down' >/dev/null
 T_PLAIN=$(detect_time $R2)
-echo "  OSPF 单独检测用时: ${T_PLAIN}s（dead interval 默认 40s）"
+echo "  OSPF alone detected in ${T_PLAIN}s (dead interval defaults to 40s)"
 S $R3 'sudo ip link set dp0s10 up' >/dev/null
 sleep 50
 
-echo; echo "===== 3. 加 BFD ====="
+echo; echo "===== 3. Add BFD ====="
 cli $R2 "set protocols bfd profile FAST detect-multiplier 3" \
         "set protocols bfd profile FAST transmit-interval 300" \
         "set protocols bfd profile FAST receive-interval 300" \
@@ -85,23 +85,23 @@ cli $R3 "set protocols bfd profile FAST detect-multiplier 3" \
         "set interfaces dataplane dp0s10 ip ospf bfd profile FAST"
 sleep 40
 
-echo "--- 生成的 frr.conf（BFD 部分） ---"
+echo "--- Generated frr.conf, BFD part ---"
 S $R2 'sudo grep -nE "^bfd| profile| detect-multiplier| transmit-interval| receive-interval|ospf bfd" /etc/vyatta-routing/frr.conf'
-echo "--- BFD 会话 ---"; S $R2 "$OP show protocols bfd peers" | tail -12
+echo "--- BFD session ---"; S $R2 "$OP show protocols bfd peers" | tail -12
 
-echo; echo "===== 4. 计数是否在动（证明真在收发，不是状态卡住） ====="
+echo; echo "===== 4. Are the counters moving: up and working, or up and idle ====="
 c1=$(S $R2 'sudo vtysh -c "show bfd peers counters"' | grep -oE "Control packet input: [0-9]+" | head -1 | grep -oE "[0-9]+")
 sleep 6
 c2=$(S $R2 'sudo vtysh -c "show bfd peers counters"' | grep -oE "Control packet input: [0-9]+" | head -1 | grep -oE "[0-9]+")
-echo "  6 秒内控制包收包数: ${c1:-?} -> ${c2:-?}"
+echo "  Control packets received over six seconds: ${c1:-?} -> ${c2:-?}"
 
-echo; echo "===== 5. 带 BFD：同样断链，测检测用时 ====="
+echo; echo "===== 5. With BFD: same break, same measurement ====="
 S $R3 'sudo ip link set dp0s10 down' >/dev/null
 T_BFD=$(detect_time $R2)
-echo "  带 BFD 检测用时: ${T_BFD}s"
+echo "  Detected in ${T_BFD}s with BFD"
 S $R3 'sudo ip link set dp0s10 up' >/dev/null
 
-echo; echo "===== 结果 ====="
-printf "  OSPF 单独:  %ss\n  加 BFD 后:  %ss\n" "$T_PLAIN" "$T_BFD"
-echo "  （BFD 有效的判据是后者显著小于前者，而非会话显示 up）"
-echo "===== 完成 ====="
+echo; echo "===== Result ====="
+printf "  OSPF alone:  %ss\n  With BFD:    %ss\n" "$T_PLAIN" "$T_BFD"
+echo "  BFD works if the second is far smaller than the first, not if the session reads up"
+echo "===== Done ====="

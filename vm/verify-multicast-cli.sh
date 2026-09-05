@@ -62,7 +62,7 @@ S() { docker exec danos-robot timeout 90 sshpass -p vyatta ssh $SSH_OPTS "vyatta
 host_for() { case "$1" in *igmp*) echo 192.168.203.157;; *) echo 192.168.203.156;; esac; }
 
 pass=0; badcli=0; badfrr=0
-printf '%-46s %-8s %s\n' "命令" "CLI" "FRR"
+printf '%-46s %-8s %s\n' "Command" "CLI" "FRR"
 printf '%s\n' "----------------------------------------------------------------------"
 
 while IFS=$'\t' read -r path kind vt; do
@@ -82,8 +82,8 @@ while IFS=$'\t' read -r path kind vt; do
   vt_out=$(S "$h" "sudo vtysh -c \"$vt_cmd\"")
 
   cli_st=OK; frr_st=OK
-  case "$cli_out" in *"Invalid command"*|*"Ambiguous"*) cli_st=失败; badcli=$((badcli+1));; esac
-  case "$vt_out"  in *"Unknown command"*|*"There is no matched command"*) frr_st=失败; badfrr=$((badfrr+1));; esac
+  case "$cli_out" in *"Invalid command"*|*"Ambiguous"*) cli_st=FAIL; badcli=$((badcli+1));; esac
+  case "$vt_out"  in *"Unknown command"*|*"There is no matched command"*) frr_st=FAIL; badfrr=$((badfrr+1));; esac
   [ "$cli_st" = OK ] && [ "$frr_st" = OK ] && pass=$((pass+1))
 
   printf '%-46s %-8s %s\n' "$cli_path" "$cli_st" "$frr_st"
@@ -94,4 +94,4 @@ while IFS=$'\t' read -r path kind vt; do
 done < "$LIST"
 
 echo
-echo "通过 $pass，CLI 路径失败 $badcli，FRR 命令失败 $badfrr"
+echo "passed $pass, CLI path failures $badcli, FRR command failures $badfrr"

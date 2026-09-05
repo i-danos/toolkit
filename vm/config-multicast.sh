@@ -25,22 +25,22 @@ cli() {
     | grep -viE "^\s*$"
 }
 
-echo "===== 1. 准备三台 ====="
+echo "===== 1. Prepare the three routers ====="
 sleep 110
 for r in r1 r2 r3; do "$VM/prep-router.sh" /home/aikon/danos/.obs/run/$r/console.sock > /tmp/p-$r.$$ 2>&1 & done
 wait
 for r in r1 r2 r3; do printf '  %-4s ' "$r"; grep -hoE "NOPASSWD_OK|NOPASSWD_FAILED" /tmp/p-$r.$$ | tail -1; rm -f /tmp/p-$r.$$; done
 
-echo; echo "===== 2. pim6d 是否随镜像启用 ====="
+echo; echo "===== 2. Does pim6d start from the image ====="
 for h in $R1 $R2 $R3; do
   printf '  %-16s ' "$h"
   S "$h" 'printf "pimd=%s pim6d=%s\n" "$(pgrep -c pimd)" "$(pgrep -c pim6d)"' | tail -1
 done
 
-echo; echo "===== 3. op 树新增节点 ====="
+echo; echo "===== 3. New nodes in the operational tree ====="
 S $R2 '/opt/vyatta/bin/opc -op=children show protocols'
 
-echo; echo "===== 4. IPv4：BSR / Auto-RP / MSDP / SSM 走 CLI ====="
+echo; echo "===== 4. IPv4: BSR / Auto-RP / MSDP / SSM through the CLI ====="
 cli $R2 "set interfaces dataplane dp0s9 address 65.1.1.3/24" \
         "set interfaces dataplane dp0s10 address 66.1.1.3/24" \
         "set interfaces loopback lo1 address 2.2.2.2/32" \
@@ -74,7 +74,7 @@ cli $R2 "set interfaces dataplane dp0s9 address 65.1.1.3/24" \
         "set interfaces dataplane dp0s9 ip igmp" \
         "set interfaces dataplane dp0s9 ip igmp version 3"
 
-echo; echo "===== 5. IPv6：PIM6 / MLD / embedded-rp 走 CLI ====="
+echo; echo "===== 5. IPv6: PIM6 / MLD / embedded-RP through the CLI ====="
 cli $R2 "set interfaces dataplane dp0s9 ipv6 address 2001:db8:65::3/64" \
         "set interfaces dataplane dp0s10 ipv6 address 2001:db8:66::3/64" \
         "set interfaces loopback lo1 ipv6 address 2001:db8::2/128" \
@@ -96,13 +96,13 @@ cli $R2 "set interfaces dataplane dp0s9 ipv6 address 2001:db8:65::3/64" \
         "set interfaces dataplane dp0s9 ipv6 mld query-interval 125" \
         "set interfaces dataplane dp0s9 ipv6 mld join-group ff0e::1"
 
-echo; echo "===== 6. commit 生成的 frr.conf ====="
+echo; echo "===== 6. The frr.conf that commit generated ====="
 S $R2 'sudo cat /etc/vyatta-routing/frr.conf'
 
-echo; echo "===== 7. FRR 运行配置（确认真的加载了） ====="
+echo; echo "===== 7. FRR running config, to confirm it actually loaded ====="
 S $R2 'sudo vtysh -c "show running-config" 2>/dev/null | sed -n "/^router pim/,/^end/p"'
 
-echo; echo "===== 8. 新的操作模式命令 ====="
+echo; echo "===== 8. The new operational commands ====="
 OP=/opt/vyatta/bin/vyatta-op-cmd-wrapper
 for c in "show protocols pim bsr" "show protocols pim rp-info" \
          "show protocols pim6 interface" "show protocols pim6 rp-info" \
@@ -111,4 +111,4 @@ for c in "show protocols pim bsr" "show protocols pim rp-info" \
   S $R2 "$OP $c" | head -6
 done
 
-echo; echo "===== 完成 ====="
+echo; echo "===== Done ====="
