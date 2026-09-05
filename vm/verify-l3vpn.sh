@@ -56,7 +56,7 @@ cli() {
     | grep -viE "^\s*$" | tail -4
 }
 
-echo "===== 1. 核心：OSPF + LDP（全局表） ====="
+echo "===== 1. Core: OSPF and LDP in the global table ====="
 echo "--- R1 (PE1) ---"
 cli $R1 "set interfaces dataplane dp0s9 address 65.1.1.2/24" \
         "set interfaces loopback lo1 address 1.1.1.1/32" \
@@ -91,12 +91,12 @@ cli $R3 "set interfaces dataplane dp0s10 address 66.1.1.2/24" \
         "set protocols mpls-ldp address-family ipv4 label-policy allocate host-routes" \
         "set protocols mpls-ldp address-family ipv4 discovery interfaces interface dp0s10"
 
-echo; echo "===== 2. 等核心收敛 ====="
+echo; echo "===== 2. Wait for the core to converge ====="
 sleep 55
-echo "--- R2 的 LDP 邻居 ---"; S $R2 "$OP show protocols mpls-ldp neighbor" | tail -5
-echo "--- R1 到 PE2 环回的标签 ---"; S $R1 'sudo vtysh -c "show mpls table"' | tail -5
+echo "--- R2 LDP neighbour ---"; S $R2 "$OP show protocols mpls-ldp neighbor" | tail -5
+echo "--- R1 label for the PE2 loopback ---"; S $R1 'sudo vtysh -c "show mpls table"' | tail -5
 
-echo; echo "===== 3. VRF 与 VPN-IPv4 会话 ====="
+echo; echo "===== 3. VRFs and the VPN-IPv4 session ====="
 echo "--- R1 (PE1) ---"
 cli $R1 "set routing routing-instance red instance-type vrf" \
         "set routing routing-instance red interface dp0s8" \
@@ -124,23 +124,23 @@ cli $R3 "set routing routing-instance red instance-type vrf" \
         "set protocols bgp 65001 neighbor 1.1.1.1 update-source lo1" \
         "set protocols bgp 65001 neighbor 1.1.1.1 address-family vpnv4-unicast"
 
-echo; echo "===== 4. 生成的 frr.conf（R1 的 VPN 部分） ====="
+echo; echo "===== 4. Generated frr.conf, R1 VPN part ====="
 S $R1 'sudo grep -nE "address-family ipv4 vpn|rd vpn|rt vpn|import vpn|export vpn|activate|router bgp" /etc/vyatta-routing/frr.conf'
 
-echo; echo "===== 5. 等 BGP 收敛 ====="
+echo; echo "===== 5. Wait for BGP to converge ====="
 sleep 60
-echo "--- VPN-IPv4 会话（R1） ---"
+echo "--- VPN-IPv4 session on R1 ---"
 S $R1 'sudo vtysh -c "show bgp ipv4 vpn summary"' | tail -6
-echo "--- R3 的 VRF red 路由表：应含 R1 的 10.1.1.0/24 ---"
+echo "--- R3 VRF red route table, should hold R1's 10.1.1.0/24 ---"
 S $R3 'sudo vtysh -c "show ip route vrf vrfred"' | grep -E "10\.1\.1|B>" | head -4
-echo "--- R3 收到的 VPN 路由与 RD ---"
+echo "--- The VPN route R3 received, with its RD ---"
 S $R3 'sudo vtysh -c "show bgp ipv4 vpn"' | grep -E "65001:100|10\.1\.1" | head -4
 
-echo; echo "===== 6. 转发验证：PE1 的 VRF 去 ping PE2 的 VRF ====="
+echo; echo "===== 6. Forwarding: ping PE2's VRF from PE1's VRF ====="
 # ip vrf exec, not "vrf exec". The latter does not exist here and fails as
 # "command not found", which a || fallback does not catch the way a non-zero
 # exit would -- the run reported it as the forwarding result twice before the
 # command name was checked.
 S $R1 'sudo ip vrf exec vrfred ping -c 5 -W 2 -I 10.1.1.1 172.16.1.1 2>&1 | tail -3'
 
-echo; echo "===== 完成 ====="
+echo; echo "===== Done ====="

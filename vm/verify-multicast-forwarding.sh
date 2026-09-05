@@ -22,6 +22,13 @@
 #
 # SSM needs no RP. IPv6 uses a static RP on R2's loopback and OSPFv3 for the
 # unicast reachability RPF depends on.
+#
+# Every router is configured from nothing here, addresses and OSPF included.
+# An earlier version set only the SSM prefix list on the transit router and
+# passed, because a protocol run in the same boot had already configured the
+# interfaces. On a freshly booted image it produced a multicast interface table
+# holding only pimreg, no forwarding entry and zero counters -- which is
+# indistinguishable from the dataplane not forwarding.
 set -u
 
 OUT=${OUT:-/home/aikon/danos/.obs/verify-multicast-forwarding.log}
@@ -63,7 +70,7 @@ send() {
   if printf '%s' "$out" | grep -q "^sent "; then
     echo "  $out"
   else
-    echo "  发送失败，后面的计数无意义: ${out:-（无输出）}"
+    echo "  send failed, the counters below mean nothing: ${out:-(no output)}"
     return 1
   fi
 }
@@ -80,14 +87,14 @@ key = '$cmd'
 try:
     d = json.load(sys.stdin)
 except Exception as e:
-    print('    解析失败:', e); raise SystemExit
+    print('    parse failed:', e); raise SystemExit
 for m in d.get(key, []):
     print('    %-8s in=%-7d out=%-7d punt=%d' % (m['interface'], m['pkt_in'], m['pkt_out'], m['pkt_out_punt']))
 "
 }
 
-echo "===== 1. IPv4 SSM 配置 ====="
-echo "--- R1（源侧） ---"
+echo "===== 1. IPv4 SSM configuration ====="
+echo "--- R1, the source ---"
 cli $R1 "set interfaces dataplane dp0s9 address 65.1.1.2/24" \
         "set interfaces loopback lo1 address 1.1.1.1/32" \
         "set protocols ospf area 0 network 65.1.1.0/24" \
@@ -98,39 +105,58 @@ cli $R1 "set interfaces dataplane dp0s9 address 65.1.1.2/24" \
         "set protocols pim ssm prefix-list SSM-RANGE" \
         "set interfaces dataplane dp0s9 ip pim" \
         "set interfaces loopback lo1 ip pim"
-echo "--- R2（中转） ---"
-cli $R2 "set policy route prefix-list SSM-RANGE rule 1 action permit" \
+echo "--- R2, transit ---"
+cli $R2 "set interfaces dataplane dp0s9 address 65.1.1.3/24" \
+        "set interfaces dataplane dp0s10 address 66.1.1.3/24" \
+        "set interfaces loopback lo1 address 2.2.2.2/32" \
+        "set protocols ospf area 0 network 65.1.1.0/24" \
+        "set protocols ospf area 0 network 66.1.1.0/24" \
+        "set protocols ospf area 0 network 2.2.2.2/32" \
+        "set protocols ospf parameters router-id 2.2.2.2" \
+        "set interfaces dataplane dp0s9 ip pim" \
+        "set interfaces dataplane dp0s10 ip pim" \
+        "set interfaces loopback lo1 ip pim" \
+        "set policy route prefix-list SSM-RANGE rule 1 action permit" \
         "set policy route prefix-list SSM-RANGE rule 1 prefix 232.0.0.0/8" \
         "set protocols pim ssm prefix-list SSM-RANGE"
-echo "--- R3（接收侧，IGMPv3 源特定加入） ---"
-cli $R3 "set policy route prefix-list SSM-RANGE rule 1 action permit" \
+echo "--- R3, the receiver, source-specific IGMPv3 join ---"
+cli $R3 "set interfaces dataplane dp0s10 address 66.1.1.2/24" \
+        "set interfaces dataplane dp0s9 address 172.16.1.2/24" \
+        "set interfaces loopback lo1 address 3.3.3.3/32" \
+        "set protocols ospf area 0 network 66.1.1.0/24" \
+        "set protocols ospf area 0 network 3.3.3.3/32" \
+        "set protocols ospf parameters router-id 3.3.3.3" \
+        "set interfaces dataplane dp0s10 ip pim" \
+        "set interfaces dataplane dp0s9 ip pim" \
+        "set interfaces loopback lo1 ip pim" \
+        "set policy route prefix-list SSM-RANGE rule 1 action permit" \
         "set policy route prefix-list SSM-RANGE rule 1 prefix 232.0.0.0/8" \
         "set protocols pim ssm prefix-list SSM-RANGE" \
         "set interfaces dataplane dp0s9 ip igmp" \
         "set interfaces dataplane dp0s9 ip igmp version 3" \
         "set interfaces dataplane dp0s9 ip igmp join-group $SSM_GROUP source $SSM_SOURCE"
 
-echo; echo "===== 2. 等 SSM 树建立 ====="
+echo; echo "===== 2. Wait for the SSM tree ====="
 sleep 45
-echo "--- R3 的 (S,G) 加入 ---"
+echo "--- The (S,G) join on R3 ---"
 S $R3 "sudo vtysh -c \"show ip igmp join\"" | grep -E "$SSM_GROUP|Interface" | head -3
-echo "--- R2 的 mroute ---"
+echo "--- R2 mroute ---"
 S $R2 "sudo vtysh -c \"show ip mroute\"" | grep -E "$SSM_GROUP|Source" | head -3
 
-echo; echo "===== 3. SSM 发送前计数 ====="
+echo; echo "===== 3. SSM counters before sending ====="
 echo "R2:"; counters $R2 mif
 echo "R3:"; counters $R3 mif
 
-echo; echo "===== 4. R1 向 $SSM_GROUP 发 5000 包 ====="
+echo; echo "===== 4. R1 sends 5000 packets to $SSM_GROUP ====="
 send $R1 send4.py "$SSM_GROUP $SSM_SOURCE 5000"
 sleep 3
 
-echo; echo "===== 5. SSM 发送后计数 ====="
+echo; echo "===== 5. SSM counters after sending ====="
 echo "R2:"; counters $R2 mif
 echo "R3:"; counters $R3 mif
-echo "--- R2 的 SSM 转发表项 ---"
+echo "--- The SSM forwarding entry on R2 ---"
 S $R2 'sudo /opt/vyatta/bin/vplsh -l -c "multicast route"' | grep -E "source|group|input|output|forwarding" | tail -5
-echo "--- R2 的 fcstat（该表项的包数/错误接口计数） ---"
+echo "--- R2 fcstat: packet count and wrong-interface count for that entry ---"
 S $R2 'sudo /opt/vyatta/bin/vplsh -l -c "multicast fcstat"' | python3 -c "
 import sys, json
 for e in json.load(sys.stdin).get('fcstat', []):
@@ -139,7 +165,7 @@ for e in json.load(sys.stdin).get('fcstat', []):
               (e['origin'], e['group'], e['packets'], e['bytes'], e['wrong_if'], e['punted']))
 "
 
-echo; echo "===== 6. IPv6 配置 ====="
+echo; echo "===== 6. IPv6 configuration ====="
 echo "--- R1 ---"
 cli $R1 "set interfaces dataplane dp0s9 address 2001:db8:65::2/64" \
         "set interfaces loopback lo1 address 2001:db8::1/128" \
@@ -148,7 +174,7 @@ cli $R1 "set interfaces dataplane dp0s9 address 2001:db8:65::2/64" \
         "set interfaces dataplane dp0s9 ipv6 pim" \
         "set interfaces loopback lo1 ipv6 pim" \
         "set protocols pim6 rp 2001:db8::2 group ff00::/8"
-echo "--- R2（RP） ---"
+echo "--- R2, the RP ---"
 cli $R2 "set interfaces dataplane dp0s9 address 2001:db8:65::3/64" \
         "set interfaces dataplane dp0s10 address 2001:db8:66::3/64" \
         "set interfaces loopback lo1 address 2001:db8::2/128" \
@@ -159,7 +185,7 @@ cli $R2 "set interfaces dataplane dp0s9 address 2001:db8:65::3/64" \
         "set interfaces dataplane dp0s10 ipv6 pim" \
         "set interfaces loopback lo1 ipv6 pim" \
         "set protocols pim6 rp 2001:db8::2 group ff00::/8"
-echo "--- R3（接收侧） ---"
+echo "--- R3, the receiver ---"
 cli $R3 "set interfaces dataplane dp0s10 address 2001:db8:66::2/64" \
         "set interfaces dataplane dp0s9 address 2001:db8:72::2/64" \
         "set interfaces loopback lo1 address 2001:db8::3/128" \
@@ -174,29 +200,29 @@ cli $R3 "set interfaces dataplane dp0s10 address 2001:db8:66::2/64" \
         "set interfaces dataplane dp0s9 ipv6 mld join-group $V6_GROUP" \
         "set protocols pim6 rp 2001:db8::2 group ff00::/8"
 
-echo; echo "===== 7. 等 IPv6 收敛 ====="
+echo; echo "===== 7. Wait for IPv6 to converge ====="
 sleep 60
-echo "--- R1 是否有到 RP 的 IPv6 路由 ---"
+echo "--- Does R1 have an IPv6 route to the RP ---"
 S $R1 'sudo vtysh -c "show ipv6 route 2001:db8::2/128"' | tail -4
-echo "--- R2 的 PIM6 邻居 ---"
+echo "--- R2 PIM6 neighbours ---"
 S $R2 'sudo vtysh -c "show ipv6 pim neighbor"' | tail -4
-echo "--- R2 的 IPv6 mroute ---"
+echo "--- R2 IPv6 mroute ---"
 S $R2 'sudo vtysh -c "show ipv6 mroute"' | tail -4
 
-echo; echo "===== 8. IPv6 发送前计数 ====="
+echo; echo "===== 8. IPv6 counters before sending ====="
 echo "R2:"; counters $R2 mif6
 echo "R3:"; counters $R3 mif6
 
-echo; echo "===== 9. R1 向 $V6_GROUP 发 5000 包 ====="
+echo; echo "===== 9. R1 sends 5000 packets to $V6_GROUP ====="
 send $R1 send6.py "$V6_GROUP dp0s9 5000"
 sleep 3
 
-echo; echo "===== 10. IPv6 发送后计数 ====="
+echo; echo "===== 10. IPv6 counters after sending ====="
 echo "R2:"; counters $R2 mif6
 echo "R3:"; counters $R3 mif6
-echo "--- R2 的 IPv6 转发表项 ---"
+echo "--- The IPv6 forwarding entry on R2 ---"
 S $R2 'sudo /opt/vyatta/bin/vplsh -l -c "multicast route6"' | grep -E "source|group|input|output|forwarding" | tail -5
-echo "--- R2 的 fcstat6 ---"
+echo "--- R2 fcstat6 ---"
 S $R2 'sudo /opt/vyatta/bin/vplsh -l -c "multicast fcstat6"' | head -20
 
-echo; echo "===== 完成 ====="
+echo; echo "===== Done ====="

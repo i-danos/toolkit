@@ -99,27 +99,27 @@ cli $R3 "set interfaces dataplane dp0s10 address 66.1.1.2/24" \
         "set interfaces dataplane dp0s9 ipv6 mld join-group ff0e::1" \
         "set protocols pim6 rp 2001:db8::2 group ff00::/8"
 
-echo; echo "===== 等收敛 ====="
+echo; echo "===== Wait for convergence ====="
 sleep 110
 
-echo; echo "--- 1. BSR（R3 视角） ---"
+echo; echo "--- 1. BSR, as R3 sees it ---"
 S $R3 "$OP show protocols pim bsr"
-echo "--- R3 学到的 BSR RP ---"
+echo "--- The RP R3 learned through BSR ---"
 S $R3 "$OP show protocols pim bsr rp-info"
 
-echo; echo "--- 2. MSDP 会话 ---"
+echo; echo "--- 2. MSDP session ---"
 echo "R2:"; S $R2 "$OP show protocols msdp peer"
 echo "R3:"; S $R3 "$OP show protocols msdp peer"
 
-echo; echo "--- 3. IPv6 PIM 邻居 ---"
+echo; echo "--- 3. IPv6 PIM neighbours ---"
 echo "R2:"; S $R2 "$OP show protocols pim6 neighbor"
 echo "R3:"; S $R3 "$OP show protocols pim6 neighbor"
 
-echo; echo "--- 4. SSM 组范围是否生效 ---"
+echo; echo "--- 4. Is the SSM group range in effect ---"
 S $R2 'sudo vtysh -c "show ip pim group-type" 2>&1 | head -3'
 
-echo; echo "--- 5. MLD 加入与 PIM6 树 ---"
+echo; echo "--- 5. MLD join and the PIM6 tree ---"
 S $R3 "$OP show protocols mld joins" | grep -E "ff0e|Group" | head -3
 S $R3 'sudo vtysh -c "show ipv6 pim state" 2>&1 | tail -4'
 
-echo; echo "===== 完成 ====="
+echo; echo "===== Done ====="

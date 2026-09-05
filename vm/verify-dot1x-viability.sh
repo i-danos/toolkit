@@ -36,13 +36,14 @@ SUPP=/usr/sbin/wpa_supplicant
 exec > "$OUT" 2>&1
 S() { docker exec danos-robot timeout 180 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$H" "$1" 2>&1; }
 
-echo "===== 1. 准备 veth 对与配置 ====="
+echo "===== 1. Set up the veth pair and the configuration ====="
 S 'sudo ip link del vauth 2>/dev/null; sudo ip link add vauth type veth peer name vsupp
    sudo ip link set vauth up; sudo ip link set vsupp up
    ip -br link show vauth; ip -br link show vsupp'
 
-# hostapd：有线驱动 + 内置 RADIUS 服务器。eap_user 文件给出一个 MD5 账号，
-# 因为 EAP-MD5 不需要证书，最短路径验证认证流程本身。
+# hostapd with the wired driver and its built-in RADIUS server. The eap_user
+# file holds one MD5 account: EAP-MD5 needs no certificates, which is the
+# shortest path to exercising the exchange itself.
 S 'sudo tee /etc/hostapd/eap_user >/dev/null <<EOF
 "testuser"	MD5	"testpass"
 EOF
@@ -68,9 +69,9 @@ network={
 	eapol_flags=0
 }
 EOF
-echo "  配置已写入"'
+echo "  configuration written"'
 
-echo; echo "===== 2. 启动 authenticator 与 supplicant ====="
+echo; echo "===== 2. Start the authenticator and the supplicant ====="
 S "for p in \$(pgrep -x hostapd; pgrep -x wpa_supplicant); do sudo kill \"\$p\" 2>/dev/null; done
    sudo $HOSTAPD -B -t -f /tmp/hostapd.log /etc/hostapd/wired.conf
    sleep 3
@@ -78,26 +79,26 @@ S "for p in \$(pgrep -x hostapd; pgrep -x wpa_supplicant); do sudo kill \"\$p\" 
    sleep 8
    printf '  hostapd=%s supplicant=%s\n' \"\$(pgrep -c hostapd)\" \"\$(pgrep -c wpa_supplicant)\""
 
-echo; echo "===== 3. 认证结果 ====="
-echo "--- hostapd 日志 ---"
+echo; echo "===== 3. Authentication result ====="
+echo "--- hostapd log ---"
 S 'sudo grep -iE "authentic|success|fail|EAP" /tmp/hostapd.log 2>/dev/null | tail -8'
-echo "--- supplicant 状态 ---"
+echo "--- supplicant state ---"
 S "sudo $SUPP -Dwired -ivsupp -c /etc/wpa_supplicant/wired.conf -B -f /tmp/supp2.log 2>/dev/null
    sleep 5
    sudo grep -iE 'EAP|authenticat|success|state' /tmp/supp.log 2>/dev/null | tail -8"
 
-echo; echo "===== 4. 端口授权状态（hostapd 的判定） ====="
+echo; echo "===== 4. Port authorisation, as hostapd decided it ====="
 S 'sudo grep -iE "authorizing|unauthorized|AUTHORIZED" /tmp/hostapd.log 2>/dev/null | tail -4'
 
-echo; echo "===== 5. 第二步：同一 hostapd 挂到 dp0s 接口 ====="
+echo; echo "===== 5. Step two: the same hostapd on a dp0s interface ====="
 S "sudo pkill -f hostapd 2>/dev/null; sleep 1
    sudo sed 's/^interface=vauth/interface=dp0s9/' /etc/hostapd/wired.conf > /tmp/wired-dp.conf
    sudo $HOSTAPD -B -t -f /tmp/hostapd-dp.log /tmp/wired-dp.conf 2>&1 | tail -3
    sleep 5
-   printf '  hostapd 在 dp0s9 上=%s\n' \"\$(pgrep -c hostapd)\"
+   printf '  hostapd on dp0s9=%s\n' \"\$(pgrep -c hostapd)\"
    sudo tail -6 /tmp/hostapd-dp.log 2>/dev/null"
 
-echo; echo "===== 清理 ====="
+echo; echo "===== Cleanup ====="
 S 'for p in $(pgrep -x hostapd; pgrep -x wpa_supplicant); do sudo kill "$p" 2>/dev/null; done
-   sudo ip link del vauth 2>/dev/null; echo 已清理'
-echo "===== 完成 ====="
+   sudo ip link del vauth 2>/dev/null; echo cleaned up'
+echo "===== Done ====="
