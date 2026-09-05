@@ -256,6 +256,18 @@ came back `proto ospf` — RIP had learned the route and lost the election, sinc
 its distance of 120 loses to OSPF's 110. A RIP-only prefix was needed to get a
 clean reading.
 
+The finished CLI was then verified on the built image, `toolkit/vm/verify-rip.sh`,
+two routers over the R2–R3 link with no OSPF configured anywhere:
+
+| Level | Result |
+|---|---|
+| CLI generates a block FRR accepts | `router rip` / ` network …` / ` version 2` / `exit` |
+| Neighbour and routes | gateway `66.1.1.2`, 0 bad packets, 0 bad routes; `3.3.3.3/32` and `9.9.9.9/32` learned at metric 2 |
+| Dataplane and forwarding | kernel `9.9.9.9 via 66.1.1.2 dev dp0s10 proto rip`, dataplane route present, 5/5 ping, avg 1.6 ms |
+
+`9.9.9.9/32` exists on R3 solely to be a prefix no other protocol carries, so
+the `proto rip` reading cannot be confused with the OSPF election above.
+
 ### pathd: the dataplane has label stacks, not segment routing
 
 `NH_MAX_OUT_LABELS` is 16, so depth is not the constraint. But `srgb`,
