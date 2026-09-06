@@ -538,10 +538,53 @@ afterwards it checks the built chroot. That check needs `dataplane.conf` to
 the file is missing, reporting an image with no dataplane configuration as a
 clean product image.
 
-**What this does not cover:** the suites cannot run against the product image
-as they stand, because they clear the dataplane configuration and would take
-their own management path down with it. Verification here is the boot, the
-management path and the service health, not the 74 test cases.
+### Running the suites against the product image
+
+The suites originally could not run here at all: they open by deleting
+configuration -- `delete interfaces dataplane`, or in IPSEC_VPN and MPLS_LDP
+the wider `delete interfaces` -- and on this image that deletes their own way
+in. Nothing reports it as an error; the commit succeeds and the connection
+stops.
+
+The fix is not to narrow the delete, which would let residue from an earlier
+suite survive. It is to put the management address back **inside the same
+configuration session**. configd is transactional and commits the net
+difference, so the port's final state is unchanged and it never goes down.
+Checked on its own first, over SSH, before touching any suite: a test address
+on `dp0s4` was removed, `dp0s3` kept `10.0.2.15/24`, and the session stayed up
+throughout.
+
+`keyword/mgmt_keywords.robot` holds the shared keyword and the two variables.
+`${MGMT_restore}` is empty by default, so the test image behaves exactly as
+before; a product-image run passes `--variable MGMT_restore:dp0s31`. Slot 31 is
+the QEMU user-mode NIC carrying the hostfwd ports and is not one of the slots
+the suites use (3, 8, 9, 10). `prep-router.sh` takes the management interface as
+an optional second argument and adds `set interfaces dataplane <if> address
+dhcp` to the same console batch, which is what an operator does on a fresh box.
+
+Both directions were measured, because a no-op that is only *supposed* to be a
+no-op is not evidence:
+
+| | Test image, default | Product image, `MGMT_restore` |
+|---|---|---|
+| FIREWALL | 16/16 | **16/16** |
+| IPSEC_VPN | 10/10 | — |
+| MPLS_LDP | 11/11 | — |
+| BGP | 16/16 | — |
+| REST | 21/21 | — |
+
+All three clear-step shapes were edited and all three were re-run: inline writes
+with `delete interfaces dataplane` (FIREWALL, REST), inline writes with
+`delete interfaces` (IPSEC_VPN, MPLS_LDP), and the data-driven `DeleteCommand`
+(BGP). On the product image all three routers showed `ens` interface count 0 and
+management on `dp0s31`.
+
+One trap in the implementation, caught before it shipped. The conditional was
+first written into the middle of the console batch's `for c in ... \` list.
+With no management interface given it expands to nothing, and having no
+continuation of its own it terminates the list -- so the *unset* case, which is
+every existing test-image call, would have been the broken one. It belongs at
+the end of the list, where an empty expansion is harmless.
 
 ## The 9 disabled OBS packages
 

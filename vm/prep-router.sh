@@ -59,10 +59,23 @@
 #     there is none.
 #   - The session has to be set up before vcli will accept -s at all.
 #
-# Usage: prep-router.sh <console.sock>
+# Usage: prep-router.sh <console.sock> [<management-dataplane-interface>]
+#
+# The second argument is for the PRODUCT image. That image has no
+# exclude-interfaces and no /etc/network/interfaces.d/mgmt, so every NIC is
+# claimed by the dataplane and nothing brings management up at boot -- there is
+# no ens31 to reach the box on, and the closing "ip -4 -br addr show ens31"
+# below correctly prints nothing. Naming a dataplane interface here adds
+# "set interfaces dataplane <if> address dhcp" to the same CLI batch, which is
+# what an operator does from the console on a fresh box.
+#
+# Omit it for the test image, where management is a kernel-side NIC the CLI
+# does not own; setting a dataplane address there would hand the suites an
+# interface they expect to configure themselves.
 
 set -u
-SOCK=${1:?usage: prep-router.sh <console.sock>}
+SOCK=${1:?usage: prep-router.sh <console.sock> [<management-dataplane-interface>]}
+MGMT_IF=${2:-}
 # OBS_DIR is where the operational state lives -- dsc/ (generated source
 # packages), the osc wrapper, run/ (console sockets), fixes/. It is deliberately
 # separate from this toolkit: the scripts are worth keeping in version control,
@@ -135,7 +148,7 @@ echo "== console: configuration, through the CLI only =="
   'for c in "set system login user vyatta level superuser" \
             "set system login user vyatta authentication plaintext-password vyatta" \
             "set service ssh" "set service https" "set service telnet" \
-            "set protocols static route '"$BLACKHOLE"' blackhole"; do
+            "set protocols static route '"$BLACKHOLE"' blackhole" '"${MGMT_IF:+\"set interfaces dataplane $MGMT_IF address dhcp\"}"'; do
      vcli -s $SID -c "$c" 2>&1 | grep -vi "node exists\|is not valid" || true
    done; echo set_done' \
   'vcli -s $SID -c "commit" 2>&1 | grep -viE "sssd|configuration db" | tail -3; echo committed' \
