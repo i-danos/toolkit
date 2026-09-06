@@ -224,6 +224,62 @@ three port roles are forwarding logic end to end.
 
 `toolkit/vm/verify-dot1x-viability.sh` reproduces both halves of this.
 
+### 802.1X: the punt was one line, and the exchange now completes
+
+The earlier viability check put hostapd and wpa_supplicant on a kernel veth
+pair and EAP-MD5 completed, which proved the userland and said nothing about
+forwarding. On a dataplane port nothing happened, and the reason turned out to
+be a single branch in `ether_forward_process()`:
+
+```c
+if (unlikely(ntohs(et) > ETH_P_802_3_MIN)) {
+        /* Drop unknown protocols */
+        if_incr_unknown(pkt->in_ifp);
+        return ETHER_FORWARD_DROP;
+}
+```
+
+EAPOL is 0x888E, 34958, well above 0x0600. Measured before the change: 50
+EAPOL-Start frames sent at R2's `dp0s3` moved its `rx_non_ip` -- `ifi_unknown`,
+`if.c:3600` -- from 0 to 50, with nothing on the kernel device. Adding
+`ETH_P_PAE` beside the existing `ETH_P_SLOW` case punts it instead.
+
+With that on both routers, the full exchange runs over the DPDK path:
+
+```
+STA 52:54:00:01:03:01 IEEE 802.1X: received EAPOL-Start from STA
+CTRL-EVENT-EAP-PROPOSED-METHOD vendor=0 method=4
+received EAP packet (code=2 id=232 len=22) from STA: EAP Response-MD5 (4)
+CTRL-EVENT-EAP-SUCCESS 52:54:00:01:03:01
+STA 52:54:00:01:03:01 IEEE 802.1X: authenticated
+```
+
+and the supplicant logs `EAP authentication completed successfully`.
+
+One piece of behaviour worth not mistaking for a bug. A supplicant's first frame
+goes to the PAE group address, and `local_packet_filter()` in
+`shadow_receive.c` drops a multicast the interface has not joined. Measured both
+ways: with hostapd stopped, `ip maddr show dp0s3` has no `01:80:c2:00:00:03` and
+30 multicast EAPOL frames arrive as 0; with hostapd running the address is there
+and they arrive. That is correct -- the filter is doing its job -- but it means
+the punt has to be tested with a unicast frame to the authenticator's MAC, or
+the filter's behaviour is read as the punt not working.
+
+**What is still missing.** Two things, and neither is small.
+
+`hostapd` and `wpasupplicant` are **not in the image** -- neither appears in
+`filesystem.packages` nor in the OBS repository. The runs above installed them
+by hand from Debian. Shipping 802.1X means adding them to
+`config/package-lists/`.
+
+And nothing authorises ports. The punt lets authentication happen; it does not
+stop an unauthenticated port from forwarding. That belongs in a feature at the
+`ether-lookup` feature point, which already carries six ordered per-interface
+features (`bridge-in`, `sw-vlan-in`, `capture-in`, `portmonitor-in`,
+`vlan-modify-in`, `hw-hdr-in`) and exposes what is attached as
+`ether_lookup_features` in the interface JSON. That, plus the YANG and the
+hostapd integration, is the remaining work.
+
 ## The "daemon ships, CLI missing" pattern, and where it stops
 
 Multicast, BFD and RIP were all the same shape: FRR ships the daemon, DANOS
