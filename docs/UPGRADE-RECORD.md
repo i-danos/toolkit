@@ -652,7 +652,11 @@ empty input as an answer — the same shape as the CDN empty response that made
   `pimd`, but nothing was reachable through configd. The forwarding path was
   verified on a booted image first — 7997 of 7998 packets replicated in the DPDK
   fast path — and a CLI written on top of it in `vyatta-protocols-frr` 1.16.0.
-  See `MULTICAST.md`. Not yet pushed through a DANOS `commit` end to end.
+  See `MULTICAST.md`. Since verified end to end through the CLI: the module
+  had to be added to `vyatta-frr-vci.component`'s `Modules=` allowlist before
+  a commit reached the VCI at all -- until then the CLI accepted every
+  command, the configuration stored, the commit reported success and
+  `frr.conf` came out empty, with nothing logged anywhere.
 - The 9 disabled OBS packages were re-checked on 2026-09-02, after the kernel
   and three package bumps this round, and all 9 stay disabled. See below.
 - `linux-vyatta` was at 6.12.101-1vyatta1, six stable releases behind. Imported
