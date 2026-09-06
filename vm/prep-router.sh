@@ -96,6 +96,39 @@ CONSOLE=${CONSOLE:-$(dirname "$0")/console.py}
 # management path -- but both do, so keep it narrow.
 BLACKHOLE=${BLACKHOLE:-172.16.0.0/12}
 
+# Wait for the router to reach a login prompt before touching it. Started too
+# early, console.py times out waiting for the prompt -- and because both console
+# phases below are pipelines, whose exit status is grep's rather than
+# console.py's, this script used to exit 0 having configured nothing.
+#
+# Exiting 0 there is worse than failing. A driver script reports the router
+# ready, the suite runs against a box with no vyatta account, and every test
+# fails with "SSHException: Error reading SSH protocol banner" -- which reads as
+# a broken image, not a router that was never prepared. That cost a full
+# IPSEC_VPN and MPLS_LDP run, 0/10 and 0/11, on an image that was fine.
+#
+# The probe is a login that runs `true`: it tests exactly what the phases below
+# need, and it takes no configuration session, so it cannot pin
+# VYATTA_CONFIG_SID for the rest of the VM's uptime the way an early
+# getSessionEnv does.
+echo "== console: wait for a login prompt =="
+ready=""
+for i in $(seq 1 "${LOGIN_TRIES:-40}"); do
+  if "$CONSOLE" "$SOCK" tmpuser tmppwd 'true' >/dev/null 2>&1; then
+    ready=yes
+    echo "   reached after $i attempt(s)"
+    break
+  fi
+  sleep 10
+done
+if [ -z "$ready" ]; then
+  echo "   no login prompt on $SOCK -- the router is not up" >&2
+  exit 1
+fi
+# Leave a fresh login prompt for the phase below, as it expects.
+"$CONSOLE" "$SOCK" tmpuser tmppwd 'exit' >/dev/null 2>&1 || true
+sleep 2
+
 echo "== console: configuration, through the CLI only =="
 "$CONSOLE" "$SOCK" tmpuser tmppwd \
   'SID=${VYATTA_CONFIG_SID:-$$}; eval "$(cli-shell-api getSessionEnv $SID)"; cli-shell-api setupSession; cli-shell-api inSession && echo "session=$SID ok" || echo "session=$SID FAILED"' \
@@ -108,6 +141,10 @@ echo "== console: configuration, through the CLI only =="
   'vcli -s $SID -c "commit" 2>&1 | grep -viE "sssd|configuration db" | tail -3; echo committed' \
   'show configuration commands 2>/dev/null | grep -E "login user vyatta|service (ssh|https|telnet)|static route" | sed "s/^/  /"' \
   2>&1 | grep -v '__CONSOLE_DONE__\|__CONSOLE_READY__'
+# A pipeline's status is the last command's, so grep's success would otherwise
+# hide a console.py that never logged in. See the comment above the wait loop.
+rc=${PIPESTATUS[0]}
+[ "$rc" -eq 0 ] || { echo "   console phase failed, console.py exit $rc" >&2; exit 1; }
 
 echo "== console as vyatta: the one step the CLI has no form for =="
 # Log out of tmpuser and back in as the account just created. vyatta is a
@@ -129,3 +166,10 @@ sleep 2
   'sudo -n true && echo NOPASSWD_OK || echo NOPASSWD_FAILED' \
   'ip -4 -br addr show ens31 2>/dev/null || ip -4 -br addr show ens30 2>/dev/null' \
   2>&1 | grep -v '__CONSOLE_DONE__\|__CONSOLE_READY__'
+rc=${PIPESTATUS[0]}
+if [ "$rc" -ne 0 ]; then
+  # Logging in as vyatta is the proof the account was created. Failing here
+  # means the phase above reported success but did not take effect.
+  echo "   could not log in as vyatta, console.py exit $rc" >&2
+  exit 1
+fi
