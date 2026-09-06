@@ -24,8 +24,21 @@ PRJ=home:i-danos
 PKG=${1:?usage: push-api.sh <package> [commit message]}
 MSG=${2:-Rebuild for Debian 13}
 
-files=$(ls "$OBS/dsc/${PKG}_"*.dsc "$OBS/dsc/${PKG}_"*.tar.* 2>/dev/null)
-[ -n "$files" ] || { echo "no files for $PKG under dsc/" >&2; exit 1; }
+# One version, the newest, and its own tarballs. Uploading every match puts two
+# source packages in one OBS directory, which OBS cannot build: it sits before
+# scheduling, in no column of osc results at all. dsc/ accumulates -- 12
+# packages there hold two or more versions -- so this is reachable today, and
+# the tarball names come from the .dsc's Files: list because a quilt package's
+# debian tarball carries an extra name component.
+VER=$(ls "$OBS/dsc/${PKG}_"*.dsc 2>/dev/null | sed "s|.*/${PKG}_||; s|\.dsc$||" | sort -V | tail -1)
+[ -n "$VER" ] || { echo "no files for $PKG under dsc/" >&2; exit 1; }
+DSC="$OBS/dsc/${PKG}_${VER}.dsc"
+files="$DSC"
+while read -r t; do
+  [ -n "$t" ] || continue
+  [ -f "$OBS/dsc/$t" ] || { echo "$t named in the .dsc is missing" >&2; exit 1; }
+  files="$files $OBS/dsc/$t"
+done < <(awk '/^Files:/{f=1; next} /^[^ ]/{f=0} f && NF>=3 {print $3}' "$DSC")
 
 for f in $files; do
   b=$(basename "$f")
