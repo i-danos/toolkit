@@ -496,6 +496,53 @@ silently discards the whole DANOS configuration, and `RECIPEFILE` defaults from
 set. The `96-os-release.chroot` hook replaces keys in place via `readlink -f`
 rather than appending, so re-running it does not accumulate duplicates.
 
+### The product image, and why it needed its own verification
+
+Everything above ran on the **test** image. `90-mk-test-iso.sh` produces it by
+staging `test-overlay/` into live-build's search path, two files:
+
+| File | Effect |
+|---|---|
+| `etc/vyatta/dataplane.conf` | adds `exclude-interfaces=ens31,ens30` |
+| `etc/network/interfaces.d/mgmt` | brings those NICs up by DHCP at boot |
+
+They exist because the suites open with `delete interfaces dataplane`, which
+cuts the connection when management shares a dataplane port. `91-mk-product-iso.sh`
+builds the image without them.
+
+That is a small difference with a large consequence, and it is the reason the
+product image cannot be assumed to work because the test image does: with no
+`exclude-interfaces`, **every** NIC is claimed by the dataplane, there is no
+kernel-side `ens*` at all, and nothing brings management up at boot. Before a
+management address exists the only way in is the serial console.
+
+Built and booted as `i-danos_2608_20260906T0427-amd64.hybrid.iso`:
+
+- both NICs came up as dataplane ports, `dp0s3` and `dp0s4`; `ip -br link` shows
+  no `ens*`, and `prep-router.sh`'s closing `ip -4 -br addr show ens31` prints
+  nothing, which on this image is correct rather than a fault
+- `exclude-interfaces` count 0, `/etc/network/interfaces.d/` empty
+- management brought up the way an operator would, from the console:
+  `set interfaces dataplane dp0s3 address dhcp` then `commit`, giving
+  `dp0s3 UP 10.0.2.15/24` and a default route through it
+- SSH over that port then works, and `VERSION_ID="2608"`
+- `vyatta-dataplane`, `configd` and `frr` all active, 0 dataplane core dumps,
+  `ldpd.sock` present with 0 `restart ldpd`, watchfrr running `-i 15`
+
+The build script verifies the artefact rather than the configuration that was
+meant to produce it: it refuses to start if any test-overlay file is staged (a
+killed test build leaves them behind, and a product image carrying
+`exclude-interfaces` is something nothing downstream would notice), and
+afterwards it checks the built chroot. That check needs `dataplane.conf` to
+**exist** and lack the setting -- `grep -q ... 2>/dev/null` alone passes when
+the file is missing, reporting an image with no dataplane configuration as a
+clean product image.
+
+**What this does not cover:** the suites cannot run against the product image
+as they stand, because they clear the dataplane configuration and would take
+their own management path down with it. Verification here is the boot, the
+management path and the service health, not the 74 test cases.
+
 ## The 9 disabled OBS packages
 
 Re-checked on 2026-09-02. All 9 stay disabled, and none of them needs deleting
