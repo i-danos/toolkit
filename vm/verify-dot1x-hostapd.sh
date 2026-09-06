@@ -56,6 +56,38 @@ if [ "$missing" -ne 0 ]; then
 	exit 1
 fi
 
+echo; echo "===== 1b. Bring $IF up on both ends ====="
+# hostapd opens a packet socket on the interface; on an admin-down interface
+# the recv fails with ENETDOWN and hostapd logs one line -- "recv: Network is
+# down" -- then sits there having reported AP-ENABLED. Nothing else says the
+# interface is the problem, and the run reads as authentication silently not
+# happening.
+#
+# A DANOS dataplane interface is down until it is configured, so a freshly
+# booted topology has every port down. An address is the simplest thing that
+# brings one up, and a real authenticator port would be configured anyway.
+cli() {
+	local h=$1; shift
+	local c=""
+	for x in "$@"; do c="$c vcli -s \$SID -c \"$x\" >/dev/null 2>&1;"; done
+	S "$h" "SID=\$\$; eval \"\$(cli-shell-api getSessionEnv \$SID)\"; cli-shell-api setupSession; $c
+	        vcli -s \$SID -c commit 2>&1 | grep -viE 'sssd|configuration db|grub|boot-loader|crash dump' | tail -1"
+}
+cli $AUTH "set interfaces dataplane $IF address 201.1.1.2/24" > /dev/null
+cli $SUPP "set interfaces dataplane $IF address 201.1.1.1/24" > /dev/null
+sleep 5
+down=0
+for h in $AUTH $SUPP; do
+	printf '  %-16s ' "$h"
+	line=$(S "$h" "ip -br link show $IF | awk '{print \$1, \$2}'" | tail -1)
+	echo "$line"
+	case "$line" in *UP*) ;; *) down=1 ;; esac
+done
+if [ "$down" -ne 0 ]; then
+	echo "  $IF is not up -- hostapd would report only \"recv: Network is down\"" >&2
+	exit 1
+fi
+
 echo; echo "===== 2. Stop anything left over, and write the configuration ====="
 for h in $AUTH $SUPP; do
 	S "$h" 'for p in $(pgrep -x hostapd; pgrep -x wpa_supplicant); do sudo kill "$p" 2>/dev/null; done; sleep 1; echo cleared' | tail -1
