@@ -61,14 +61,34 @@ push_pkg() {
   fi
   dsc="$DSC/${p}_${ver}.dsc"
 
-  # Resumable: skip if a .dsc of the same name is already on OBS. The session
-  # cookie expires after roughly 24 hours, so a batch that dies halfway through
-  # can be rerun without starting over.
-  local want remote
+  # Resumable: skip if OBS already holds this exact source. The session cookie
+  # expires after roughly 24 hours, so a batch that dies halfway through can be
+  # rerun without starting over.
+  #
+  # Compare the content, not the name. This project accumulates changes into one
+  # version -- 1.16.0 has carried PIM, BFD and RIP in turn -- so a name-only
+  # check reports "already on OBS" for a source package that differs from the
+  # one up there, and the summary counts that skip as an upload. A real change
+  # then never reaches OBS while the run looks successful.
+  #
+  # The .dsc's own md5 is enough: it carries the checksums of its tarballs, so
+  # any change anywhere in the source changes the .dsc too.
+  local want remote_md5 local_md5
   want=$(basename "$dsc")
-  remote=$(timeout 60 $OSC ls "$PRJ" "$p" < /dev/null 2>/dev/null | grep -Fx "$want")
-  if [ -n "$remote" ]; then
-    printf '  %-42s SKIP  already on OBS\n' "$p"; return 0
+  local_md5=$(md5sum "$dsc" | cut -d' ' -f1)
+  remote_md5=$(timeout 60 $OSC api "/source/$PRJ/$p" < /dev/null 2>/dev/null \
+    | awk -v n="$want" 'match($0, /<entry name="[^"]*" md5="[^"]*"/) {
+        e = substr($0, RSTART, RLENGTH)
+        split(e, a, "\"")
+        if (a[2] == n) print a[4]
+      }' | head -1)
+  if [ -n "$remote_md5" ] && [ "$remote_md5" = "$local_md5" ]; then
+    # 2, not 0: the caller counts this separately. Reporting a skip as an
+    # upload is how a change that never reached OBS still read as "1 uploaded".
+    printf '  %-42s SKIP  identical source already on OBS\n' "$p"; return 2
+  fi
+  if [ -n "$remote_md5" ]; then
+    printf '  %-42s changed since the copy on OBS, re-uploading\n' "$p"
   fi
 
   mkdir -p "$CO"
@@ -115,8 +135,15 @@ if [ ${#pkgs[@]} -eq 0 ]; then
   mapfile -t pkgs < <(ls "$DSC"/*.dsc 2>/dev/null | xargs -n1 basename | sed 's/_[^_]*\.dsc$//' | sort -u)
 fi
 
-ok=0; fail=0
-for p in "${pkgs[@]}"; do push_pkg "$p" && ok=$((ok+1)) || fail=$((fail+1)); done
+ok=0; fail=0; skip=0
+for p in "${pkgs[@]}"; do
+  push_pkg "$p"
+  case $? in
+    0) ok=$((ok+1)) ;;
+    2) skip=$((skip+1)) ;;
+    *) fail=$((fail+1)) ;;
+  esac
+done
 echo
-echo "$ok uploaded, $fail failed"
+echo "$ok uploaded, $skip unchanged, $fail failed"
 echo "build status: $OBS/osc -A https://api.opensuse.org results $PRJ"
