@@ -69,8 +69,20 @@ for p in "${pkgs[@]}"; do
 
   work="$STAGE/${src}-${upstream}"
   rm -rf "$work"; mkdir -p "$work"
-  if ! git -C "$repo" archive "$ref" | tar -x -C "$work" 2>/dev/null; then
+  # Read git's own status rather than the pipeline's, which is tar's.
+  #
+  # The common case was already caught by accident: with a bad ref git archive
+  # writes nothing, tar rejects the empty input and exits 2, so the pipeline
+  # failed anyway -- measured, not assumed. What is not caught that way is a
+  # failure part-way through a stream that is still a valid prefix: tar
+  # extracts what arrived and exits 0, and the export continues with a
+  # truncated tree. Hence PIPESTATUS, and the emptiness check behind it.
+  git -C "$repo" archive "$ref" 2>/dev/null | tar -x -C "$work" 2>/dev/null
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
     printf '  %-42s FAIL  git archive failed\n' "$p"; rm -rf "$work"; fail=$((fail+1)); continue
+  fi
+  if [ -z "$(ls -A "$work" 2>/dev/null)" ]; then
+    printf '  %-42s FAIL  git archive produced an empty tree\n' "$p"; rm -rf "$work"; fail=$((fail+1)); continue
   fi
 
   # Prune accidentally committed debhelper output.
