@@ -41,17 +41,31 @@ set_meta() {
 
 push_pkg() {
   local p="$1"
-  local files
-  files=$(ls "$DSC/${p}_"*.dsc 2>/dev/null | head -1)
-  if [ -z "$files" ]; then
+  local dsc ver
+  # dsc/ accumulates: mk-dsc.sh writes the current version and never removes the
+  # previous one, so 12 packages there currently hold two or more. Both halves
+  # of this used to go wrong.
+  #
+  # "head -1" took the lowest version, not the newest -- vyatta-protocols-frr
+  # 1.15.3 ahead of 1.16.0 -- so the "already on OBS" check below asked about a
+  # version nobody was uploading, never matched, and the resumable skip could
+  # not work. And the copy took *every* matching .dsc and tarball, which puts
+  # two source packages in one OBS directory. OBS builds one per directory and
+  # cannot choose between them: the upload succeeds, the revision climbs, and
+  # the package sits before scheduling, in no column of osc results at all.
+  #
+  # Pick the newest by version and carry only that pair.
+  ver=$(ls "$DSC/${p}_"*.dsc 2>/dev/null | sed "s|.*/${p}_||; s|\.dsc$||" | sort -V | tail -1)
+  if [ -z "$ver" ]; then
     printf '  %-42s SKIP  no %s_*.dsc under dsc/\n' "$p" "$p"; return 1
   fi
+  dsc="$DSC/${p}_${ver}.dsc"
 
   # Resumable: skip if a .dsc of the same name is already on OBS. The session
   # cookie expires after roughly 24 hours, so a batch that dies halfway through
   # can be rerun without starting over.
   local want remote
-  want=$(basename "$files")
+  want=$(basename "$dsc")
   remote=$(timeout 60 $OSC ls "$PRJ" "$p" < /dev/null 2>/dev/null | grep -Fx "$want")
   if [ -n "$remote" ]; then
     printf '  %-42s SKIP  already on OBS\n' "$p"; return 0
@@ -64,7 +78,21 @@ push_pkg() {
   $OSC api -X PUT "/source/$PRJ/$p/_meta" -f "$CO/.pkgmeta.xml" < /dev/null > /dev/null 2>&1
 
   rm -rf "$CO/$p"; mkdir -p "$CO/$p"
-  cp "$DSC/${p}_"*.dsc "$DSC/${p}_"*.tar.* "$CO/$p/" 2>/dev/null
+  cp "$dsc" "$CO/$p/" || return 1
+  # Take the tarball names from the .dsc's own Files: list rather than globbing
+  # on the version. Globbing looks right and is not: a quilt package's debian
+  # tarball carries an extra name component --
+  # linux_6.12.107-1vyatta1.debian.tar.xz, not linux_6.12.107-1vyatta1.tar.xz --
+  # so ${p}_${ver}.tar.* misses it and uploads a .dsc whose tarball is absent.
+  # The Files: list is authoritative and needs no knowledge of the format.
+  local f
+  while read -r f; do
+    [ -n "$f" ] || continue
+    if ! cp "$DSC/$f" "$CO/$p/" 2>/dev/null; then
+      printf '  %-42s FAIL  %s named in the .dsc is missing\n' "$p" "$f"
+      rm -rf "$CO/$p"; return 1
+    fi
+  done < <(awk '/^Files:/{f=1; next} /^[^ ]/{f=0} f && NF>=3 {print $3}' "$dsc")
 
   ( cd "$CO" && $OSC co "$PRJ" "$p" -o "$p.co" < /dev/null > /dev/null 2>&1
     cp "$p/"* "$p.co/" 2>/dev/null
