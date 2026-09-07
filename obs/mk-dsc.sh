@@ -176,13 +176,22 @@ for p in "${pkgs[@]}"; do
       ;;
   esac
 
-  # dpkg-source writes its output to CWD, so run it inside OUT
-  if (cd "$OUT" && dpkg-source --no-check -b "$work" >/dev/null 2>&1); then
+  # dpkg-source writes its output to CWD, so run it inside OUT.
+  #
+  # Keep its stderr. Discarding it left "FAIL dpkg-source -b" as the entire
+  # report, and the reasons it gives are ones no amount of staring at the
+  # repository reveals -- a Maintainer field that is not a valid RFC822
+  # address, for instance, which looks perfectly reasonable to a human.
+  dsclog=$(mktemp)
+  if (cd "$OUT" && dpkg-source --no-check -b "$work" >/dev/null 2>"$dsclog"); then
     sz=$(du -sh --apparent-size "$OUT/${src}_"*.tar.* 2>/dev/null | awk '{s=$1} END{print s}')
     printf '  %-42s OK    %-16s %-14s %s\n' "$p" "$ver" "${fmt:-1.0}" "${sz:-?}"
     ok=$((ok+1))
+    rm -f "$dsclog"
   else
     printf '  %-42s FAIL  dpkg-source -b\n' "$p"
+    grep -v '^dpkg-source: warning' "$dsclog" | sed 's/^/      /' >&2
+    rm -f "$dsclog"
     fail=$((fail+1))
   fi
   rm -rf "$work"
