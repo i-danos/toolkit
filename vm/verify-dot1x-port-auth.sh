@@ -12,10 +12,17 @@
 # turns "hostapd authenticated this station" into "detach the feature". That
 # link is the next piece of work, not a fault here.
 #
-# The state is the feature's attachment, not a flag: attached means
-# unauthorised. That is visible without any new tooling --
-# "vplsh -l -c 'ifconfig <if>'" lists it under ether_lookup_features -- and this
-# script reads it there rather than trusting the command it just ran.
+# There are three states, not two, and the earlier version of this script could
+# not tell two of them apart because the dataplane could not either:
+#
+#   unconfigured           no 802.1X on the port
+#   blocked-except-eapol   configured, not yet authenticated
+#   forwarding             configured and authenticated
+#
+# "dot1x show" reports which, and the feature's attachment -- listed under
+# ether_lookup_features in "vplsh -l -c 'ifconfig <if>'" -- says only whether
+# the port is configured. This script reads both rather than trusting the
+# command it just ran.
 #
 # Runs on the bgp topology, which wires R1.dp0s3 to R2.dp0s3.
 set -u
@@ -69,7 +76,7 @@ cli $R2 "set interfaces dataplane $IF address 201.1.1.2/24" > /dev/null
 sleep 5
 S $R1 "ip -4 -br addr show $IF" | sed 's/^/  R1 /'
 S $R2 "ip -4 -br addr show $IF" | sed 's/^/  R2 /'
-S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x unblock $IF'" > /dev/null
+S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x disable $IF'" > /dev/null
 sleep 2
 
 echo; echo "===== 2. Authorised: the port forwards ====="
@@ -77,7 +84,7 @@ printf '  feature attached on R2: %s\n' "$(feat_attached $R2)"
 printf '  ping R1 -> R2         : %s of 4\n' "$(ping_ok)"
 
 echo; echo "===== 3. Block the port ====="
-S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x block $IF'; sudo /opt/vyatta/bin/vplsh -l -c 'dot1x show $IF'" | tail -3 | sed 's/^/  /'
+S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x enable $IF'; sudo /opt/vyatta/bin/vplsh -l -c 'dot1x show $IF'" | tail -3 | sed 's/^/  /'
 sleep 2
 printf '  feature attached on R2: %s\n' "$(feat_attached $R2)"
 before=$(rx_dropped $R2)
@@ -148,12 +155,25 @@ for h in $R2 $R1; do
 	S "$h" 'for p in $(pgrep -x hostapd; pgrep -x wpa_supplicant); do sudo kill "$p" 2>/dev/null; done' > /dev/null
 done
 
-echo; echo "===== 5. Unblock: forwarding returns ====="
-S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x unblock $IF'" > /dev/null
+echo; echo "===== 4b. Authorise, as the authenticator's watcher would ====="
+# This is the step the exchange above cannot take on its own: nothing yet
+# turns "hostapd authenticated this station" into "authorise the port".
+S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x authorize $IF'" > /dev/null
+sleep 2
+S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x show $IF'" | head -1 | sed 's/^/  /'
+printf '  ping while authorised: %s of 4\n' "$(ping_ok)"
+S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x unauthorize $IF'" > /dev/null
+sleep 2
+printf '  ping after unauthorise: %s of 4\n' "$(ping_ok)"
+
+echo; echo "===== 5. Disable: forwarding returns ====="
+S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'dot1x disable $IF'" > /dev/null
 sleep 2
 printf '  feature attached on R2: %s\n' "$(feat_attached $R2)"
 printf '  ping R1 -> R2         : %s of 4\n' "$(ping_ok)"
 
 echo; echo "===== Verdict ====="
-echo "  A port is authorised when the feature is detached and blocked when it is"
-echo "  attached. Both readings above come from the interface's own feature list."
+echo "  unconfigured -> forwards; enabled -> blocked but still able to"
+echo "  authenticate; authorised -> forwards; unauthorised -> blocked again."
+echo "  Step 4b is done by hand here: nothing yet turns hostapd's success into"
+echo "  an authorise call, and that is the remaining piece of 802.1X."
