@@ -115,18 +115,25 @@ for p in "${pkgs[@]}"; do
   # These address problems a clean OBS build exposes and the local build cannot
   # see: GCC 14's promoted errors are suppressed by -Wno-error in
   # 50-build_danos_packages.sh, and incomplete Build-Depends are masked by the
-  # cumulative chroot. The patches live here rather than in the repositories
-  # because the .git directories of 189 repositories are owned by root and the
-  # current user cannot commit; once that ownership is fixed they should be
-  # committed into each repository.
+  # cumulative chroot.
+  #
+  # Since 2026-08-23 they all live in their repositories as well, so failing to
+  # apply is the *expected* outcome for most of them -- see fixes/README.md.
+  # Warning about that fired 35 times a run and taught the reader to skip
+  # warnings, which is how a real one gets missed. A patch that is already in
+  # the tree reverses cleanly, so ask that question before warning: only a
+  # patch that neither applies nor reverses is genuinely stale.
   if [ -d "$FIXES/$p" ]; then
     for pt in "$FIXES/$p"/*.patch; do
       [ -e "$pt" ] || continue
       if (cd "$work" && patch -p1 -f --dry-run -i "$pt" >/dev/null 2>&1); then
         (cd "$work" && patch -p1 -f -i "$pt" >/dev/null 2>&1)
         printf '  %-42s FIX   %s\n' "$p" "$(basename "$pt")"
+      elif (cd "$work" && patch -p1 -R -f --dry-run -i "$pt" >/dev/null 2>&1); then
+        : # already committed to the repository; nothing to do and nothing to say
       else
-        printf '  %-42s WARN  fix patch does not apply: %s\n' "$p" "$(basename "$pt")"
+        printf '  %-42s WARN  fix patch neither applies nor is already in the tree: %s\n' \
+          "$p" "$(basename "$pt")"
       fi
     done
   fi
