@@ -265,20 +265,64 @@ and they arrive. That is correct -- the filter is doing its job -- but it means
 the punt has to be tested with a unicast frame to the authenticator's MAC, or
 the filter's behaviour is read as the punt not working.
 
+### Port authorisation, and what still is not there
+
+A feature at the `ether-lookup` feature point blocks a port that has not
+authenticated, passing only EAPOL so that it can. The state is the feature's own
+attachment rather than a flag: attached means unauthorised. An authorised port
+then carries no feature in its chain at all -- not a branch, not a load, on a
+path that runs per packet per core -- and the blocked state is already visible
+under `ether_lookup_features` in the interface JSON.
+
+Ordering is after the monitoring features, so a capture still sees what a
+blocked port drops, and before `vlan-modify-in` and `bridge-in`, so nothing is
+forwarded, bridged or cross-connected off it.
+
+Verified on the image that ships it -- `i-danos_2608_20260906T2306`, binary from
+the `vyatta-dataplane` package, nothing installed by hand:
+
+| | |
+|---|---|
+| detached | ping 4 of 4 |
+| attached | ping 0 of 4, `rx_dropped` up by exactly the 4 requests |
+| attached | EAP-MD5 still completes, `IEEE 802.1X: authenticated` |
+| detached | ping 4 of 4 |
+
+Five suites 74/74 on the same image, which the change earns: it sits on the
+path every packet takes.
+
+**Two traps, both silent.**
+
+`pl_gen_fused` supports only one feature declaring `visit_after` on a given
+feature -- `features[feature.visit_after].next_feature = feature` overwrites --
+and the loser is also removed from `head_features`, so it vanishes from the
+generated switch **with no warning**. `vlan-modify-in` already claimed
+`portmonitor-in`. The first version therefore parsed, compiled, registered, and
+was absent from `pipeline_fused_ether_lookup_features()`. Inserting into the
+chain means editing the successor, not naming the same predecessor twice.
+
+And punted EAPOL only surfaces on the kernel device when something has the
+interface open. Checking with `tcpdump` and no listener captured 0 of 30, which
+reads exactly like the feature dropping EAPOL; on a router carrying no `dot1x`
+feature at all the same check captured 0 with hostapd stopped and all 30 with it
+running, while `rx_packets` rose by 30 and `rx_non_ip` stayed flat throughout.
+Test the exchange, not the frame.
+
 **What is still missing.** Two things, and neither is small.
 
-`hostapd` and `wpasupplicant` are **not in the image** -- neither appears in
-`filesystem.packages` nor in the OBS repository. The runs above installed them
-by hand from Debian. Shipping 802.1X means adding them to
-`config/package-lists/`.
+Nothing turns authentication into authorisation. hostapd completes the
+exchange on a blocked port and the port stays blocked -- the ping is still 0 of
+4 afterwards -- because nothing watches hostapd's control interface and calls
+`dot1x unblock`. That link does not exist in any form.
 
-And nothing authorises ports. The punt lets authentication happen; it does not
-stop an unauthenticated port from forwarding. That belongs in a feature at the
-`ether-lookup` feature point, which already carries six ordered per-interface
-features (`bridge-in`, `sw-vlan-in`, `capture-in`, `portmonitor-in`,
-`vlan-modify-in`, `hw-hdr-in`) and exposes what is attached as
-`ether_lookup_features` in the interface JSON. That, plus the YANG and the
-hostapd integration, is the remaining work.
+And there is no YANG or CLI: the only way to reach any of it is
+`vplsh -l -c 'dot1x ...'`, which is a debugging interface, not a product one.
+
+One limit to state rather than let someone assume otherwise: this is **port**
+authorisation. The whole port is open or closed. Real 802.1X in multi-host mode
+authorises each supplicant by MAC. Port-based single-host is the standard
+baseline and what OcNOS's basic mode does, but it is not the multi-host
+feature.
 
 ## The "daemon ships, CLI missing" pattern, and where it stops
 
