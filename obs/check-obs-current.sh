@@ -19,9 +19,28 @@
 set -u
 
 OBS=${OBS_DIR:-/home/aikon/danos/.obs}
-OSC="$OBS/osc -A https://api.opensuse.org"
+# setsid: no controlling terminal, so an expired osc session fails fast instead
+# of blocking on a /dev/tty password prompt that SIGTTIN then stops. See the
+# long note in upload.sh.
+OSC="setsid --wait $OBS/osc -A https://api.opensuse.org"
 SRC=/home/aikon/danos/build-iso/danos-sources
 PRJ=home:i-danos
+
+# Probe authentication before reporting anything.
+#
+# An unauthenticated API call fails, the md5 comes back empty, and the loop
+# below reads that as "not on OBS" -- for every package, including the 150 that
+# are up there and building. The run looks like a catastrophic finding rather
+# than an expired cookie. A check that answers confidently when it cannot see
+# anything is worse than one that refuses to run.
+if ! timeout 30 $OSC api "/source/$PRJ" < /dev/null > /dev/null 2>&1; then
+	echo "Cannot reach $PRJ: the osc session has expired." >&2
+	echo "Without it every package would be reported as \"not on OBS\", so this" >&2
+	echo "check refuses to run. Refresh the session yourself:" >&2
+	echo >&2
+	echo "    $OBS/osc -A https://api.opensuse.org api /person/i-danos > /dev/null && echo OK" >&2
+	exit 1
+fi
 
 printf '  %-34s %-12s %s\n' REPOSITORY DSC STATUS
 for d in "$SRC"/*/; do

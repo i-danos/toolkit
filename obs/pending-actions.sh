@@ -16,7 +16,10 @@ OBS=${OBS_DIR:-/home/aikon/danos/.obs}
 # invoked from $OBS, back when the scripts were duplicated into the operational
 # directory; that copy is gone and $OBS now holds only state.
 HERE=$(cd "$(dirname "$0")" && pwd)
-OSC="$OBS/osc -A https://api.opensuse.org"
+# setsid: no controlling terminal, so an expired osc session fails fast instead
+# of blocking on a /dev/tty password prompt that SIGTTIN then stops. See the
+# long note in upload.sh.
+OSC="setsid --wait $OBS/osc -A https://api.opensuse.org"
 PRJ=home:i-danos
 
 if ! timeout 45 $OSC api /person/i-danos < /dev/null > /dev/null 2>&1; then
