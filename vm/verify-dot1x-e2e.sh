@@ -89,6 +89,37 @@ cli $AUTH "set interfaces dataplane $IF dot1x radius-server address 202.1.1.3" \
           "set interfaces dataplane $IF dot1x radius-server secret $SECRET" | sed 's/^/  /'
 sleep 10
 
+# Stop here if the dataplane did not recognise the topic.
+#
+# The component stores its configuration under "vyatta:dot1x". If the dataplane
+# has no handler registered for that topic, the store entry is replayed on every
+# resync, the resync aborts, and the dataplane resets and reconnects every ten
+# seconds -- forever. systemctl still reports it active and nothing dumps core.
+# Restarting the dataplane does not clear it, restarting vplane-controller does
+# not clear it, and deleting the configuration adds a second unknown topic. The
+# router has to be reinstalled.
+#
+# That has happened once here, from a text command stored on a protobuf-only
+# path. Continuing past it costs the rest of the run and the router with it, so
+# check before going on.
+# The package ships vyatta-dataplane.service with no Alias, so "journalctl -u
+# dataplane" matches no unit -- and journalctl prints nothing and exits 0 for a
+# unit that does not exist, so that spelling fails silently rather than loudly.
+# Ask for the unit and the syslog identifier together and take whichever
+# answers.
+DPLOG="sudo journalctl --no-pager --since '-2min' -u vyatta-dataplane -t dataplane 2>/dev/null"
+n=$(S $AUTH "$DPLOG | grep -cE 'unknown topic|RESET, reconnecting'" | tail -1 | tr -dc '0-9')
+if [ -z "$n" ]; then
+	echo "  WARN: could not read the dataplane log; continuing without this check."
+elif [ "$n" -gt 0 ]; then
+	echo "  ABORT: the dataplane is rejecting the store entry -- unknown topic."
+	echo "  The store entry replays on every resync, so this does not clear by"
+	echo "  itself. Removing the configuration adds another unknown topic."
+	S $AUTH "$DPLOG | grep -E 'unknown topic|RESET, reconnecting' | tail -3" | sed 's/^/    /'
+	echo "  Reinstall this router before retrying; do not commit anything else to it."
+	exit 1
+fi
+
 echo "  -- what the component did --"
 S $AUTH 'printf "  hostapd=%s hostapd_cli=%s\n" "$(pgrep -xc hostapd)" "$(pgrep -xc hostapd_cli)"
   echo "  generated configuration:"; sudo sed -n "1,4p;/auth_server/p" /run/vyatta-dot1x/'"$IF"'.conf 2>/dev/null | sed "s/^/    /"' | tail -8
