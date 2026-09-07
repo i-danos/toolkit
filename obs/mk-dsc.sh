@@ -184,6 +184,11 @@ for p in "${pkgs[@]}"; do
   # address, for instance, which looks perfectly reasonable to a human.
   dsclog=$(mktemp)
   if (cd "$OUT" && dpkg-source --no-check -b "$work" >/dev/null 2>"$dsclog"); then
+    # Record which commit this .dsc was made from. Without it the only way to
+    # ask "has the repository moved since?" is to compare timestamps, which
+    # answers yes for every commit that never reached a .dsc -- a .gitignore
+    # line, a comment -- and a check that always fires is one nobody reads.
+    git -C "$repo" rev-parse "$ref" > "$OUT/${src}_${ver}.commit" 2>/dev/null || true
     sz=$(du -sh --apparent-size "$OUT/${src}_"*.tar.* 2>/dev/null | awk '{s=$1} END{print s}')
     printf '  %-42s OK    %-16s %-14s %s\n' "$p" "$ver" "${fmt:-1.0}" "${sz:-?}"
     ok=$((ok+1))
