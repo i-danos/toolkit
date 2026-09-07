@@ -168,3 +168,37 @@ with fuzz once against the state that precedes it in the series, `diff -u` the
 result to get the new hunk, and replace that file's section of the original
 patch. The patch means the same thing afterwards; its context is realigned to
 the current source.
+
+## An `osc` batch that hangs forever, printing nothing
+
+`~/.config/osc/oscrc` uses `TransientCredentialsManager`: the password lives in
+one `osc` process and is never written to disk. The session cookie is therefore
+all that carries authentication between invocations, and it lasts about a day.
+
+When it expires, `osc` asks for the password again — through `/dev/tty`, which
+`< /dev/null` does not cover, because `getpass()` opens the terminal directly.
+That alone would be survivable. What makes it fatal is that `timeout` runs its
+child in a **new process group**: reading the terminal from a process group
+that is not the terminal's foreground group raises `SIGTTIN`, which *stops* the
+reader. `timeout` sits in that same group, so it stops too, and its alarm never
+fires.
+
+The result is a batch that hangs indefinitely with no output whatsoever. Both
+processes sit in state `T`. It looks exactly like OBS not answering, and no
+amount of waiting changes it.
+
+```
+1901899 T  timeout 30 .../osc -A https://api.opensuse.org api /person/i-danos
+1901900 T  python3 .../osc -A https://api.opensuse.org api /person/i-danos
+```
+
+Run every `osc` call under `setsid`. With no controlling terminal `getpass()`
+cannot open one and an expired session fails in about three seconds with
+`EOFError`, which a caller can act on.
+
+The same expiry had a quieter second effect worth naming separately: an
+unauthenticated API call returns nothing, so a script that reads "no md5 came
+back" as "the package is not on OBS" reports **every** package as missing —
+including the 150 that are up there and building. A check that answers
+confidently when it cannot see anything is worse than one that refuses to run.
+Probe authentication first and exit.
