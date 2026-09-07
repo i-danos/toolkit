@@ -17,18 +17,35 @@ set -u
 # separate from this toolkit: the scripts are worth keeping in version control,
 # 2 GB of build output is not. Override it if your working directory differs.
 OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
-OSC="$OBS/osc -A https://api.opensuse.org"
+# Every osc call in this script runs without a controlling terminal.
+#
+# oscrc uses TransientCredentialsManager: the password is held in one osc
+# process and never written to disk, so once the session cookie expires -- about
+# a day -- osc asks for it again. It asks through /dev/tty, which "< /dev/null"
+# does not cover, and "timeout" runs its child in a new process group. Reading
+# the terminal from a background process group raises SIGTTIN, which *stops* the
+# reader; timeout is in that same group, so it stops too and its alarm never
+# fires. The result is a batch that hangs indefinitely, printing nothing at all,
+# with both processes in state T. It looks like OBS is not answering.
+#
+# Under setsid there is no controlling terminal, getpass() cannot open one, and
+# an expired session fails in about three seconds with EOFError instead.
+OSC="setsid --wait $OBS/osc -A https://api.opensuse.org"
 PRJ=home:i-danos
 DSC="$OBS/dsc"
 CO="$OBS/checkout"
 
-# Without credentials osc blocks on an interactive prompt and hangs there
-# indefinitely. Probe authentication once with a timeout and bail out on
-# failure, rather than letting the whole batch stall.
+# Probe authentication once and bail out on failure, rather than letting the
+# whole batch run into it one package at a time.
 check_auth() {
   if ! timeout 30 $OSC api /person/i-danos < /dev/null > /dev/null 2>&1; then
-    echo "Authentication failed: no usable credentials in ~/.config/osc/oscrc." >&2
-    echo "Log in yourself per step 1 of README-OBS.md; this script never enters your password." >&2
+    echo "Authentication failed: the osc session has expired." >&2
+    echo "oscrc stores no password (TransientCredentialsManager), so the session" >&2
+    echo "cookie is all there is and it lasts about a day. Refresh it yourself:" >&2
+    echo >&2
+    echo "    $OBS/osc -A https://api.opensuse.org api /person/i-danos > /dev/null && echo OK" >&2
+    echo >&2
+    echo "then rerun this script. It never enters your password." >&2
     exit 1
   fi
 }

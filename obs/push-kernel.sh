@@ -13,7 +13,10 @@ set -u
 # separate from this toolkit: the scripts are worth keeping in version control,
 # 2 GB of build output is not. Override it if your working directory differs.
 OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
-OSC="$OBS/osc -A https://api.opensuse.org"
+# setsid: no controlling terminal, so an expired osc session fails fast instead
+# of blocking on a /dev/tty password prompt that SIGTTIN then stops. See the
+# long note in upload.sh.
+OSC="setsid --wait $OBS/osc -A https://api.opensuse.org"
 MSG=${1:-Rebuild}
 D=$OBS/dsc
 for b in linux_6.12.101-1vyatta1.dsc linux_6.12.101-1vyatta1.debian.tar.xz; do
