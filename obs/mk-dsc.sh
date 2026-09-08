@@ -179,7 +179,33 @@ for p in "${pkgs[@]}"; do
       # the current directory, and anywhere else gives
       # "no upstream tarball found at ./<pkg>_<version>.orig.tar.{...}"
       orig="$OUT/${src}_${upstream}.orig.tar.gz"
-      tar -czf "$orig" -C "$STAGE" --exclude="${src}-${upstream}/debian" "${src}-${upstream}" 2>/dev/null
+
+      # Reuse an orig that is already here in another compression rather than
+      # synthesizing a second one beside it. dpkg-source refuses outright when
+      # it finds two:
+      #
+      #   several orig.tar files found (./linux_6.12.107.orig.tar.gz and
+      #   ./linux_6.12.107.orig.tar.xz) but only one is allowed
+      #
+      # linux is the case that hits this: its .dsc comes from mk-kernel-dsc.sh
+      # with an .xz orig, and every bulk run here synthesized a .gz next to it
+      # and then failed on the pair it had just created. Reusing also matches
+      # what the kernel needs anyway -- its orig cannot be re-uploaded, so
+      # regenerating the .dsc and debian.tar.xz against the existing one is the
+      # whole point of mk-kernel-dsc-reuse.sh.
+      keep=$(ls "$OUT/${src}_${upstream}".orig.tar.* 2>/dev/null | grep -v '\.gz$' | head -1)
+      if [ -n "$keep" ]; then
+        # A .gz from an earlier run of this script is what created the pair.
+        # Move it aside rather than deleting it: it is reproducible, but this
+        # script should not remove files it cannot prove are unreferenced.
+        if [ -f "$orig" ]; then
+          mkdir -p "$OUT/stale"
+          mv "$orig" "$OUT/stale/" 2>/dev/null
+        fi
+        printf '  %-42s ORIG  reusing %s\n' "$p" "$(basename "$keep")"
+      else
+        tar -czf "$orig" -C "$STAGE" --exclude="${src}-${upstream}/debian" "${src}-${upstream}" 2>/dev/null
+      fi
       ;;
   esac
 
