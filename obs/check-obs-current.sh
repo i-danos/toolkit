@@ -42,10 +42,24 @@ if ! timeout 30 $OSC api "/source/$PRJ" < /dev/null > /dev/null 2>&1; then
 	exit 1
 fi
 
+# Only consider the repositories build_order.txt actually builds.
+#
+# Some source packages have two directories claiming them. encoding and
+# golang-github-danos-encoding-rfc7951 both set
+# "Source: golang-github-danos-encoding"; the second is a stale ancestor, which
+# is why build_order.txt carries it commented out. Walking every directory
+# compared the stale ancestor's HEAD against a .dsc generated from the live
+# repository and reported "regenerate and upload" for a package that was
+# already current -- the last false positive in this check.
+declare -A BUILT=()
+while read -r n; do BUILT["$n"]=1; done < <(
+  grep -vE '^\s*(#|$)' "$SRC/toolkit/build/build_order.txt" | sed 's/\s*#.*//' | grep .)
+
 printf '  %-34s %-12s %s\n' PACKAGE DSC STATUS
 for d in "$SRC"/*/; do
 	r=$(basename "$d")
 	[ -d "$d/.git" ] || continue
+	[ -n "${BUILT[$r]:-}" ] || continue
 
 	# The source package name is not always the directory name --
 	# vyatta-cfg-dataplane produces vplane-config -- so take it from
