@@ -221,7 +221,13 @@ for p in "${pkgs[@]}"; do
     # ask "has the repository moved since?" is to compare timestamps, which
     # answers yes for every commit that never reached a .dsc -- a .gitignore
     # line, a comment -- and a check that always fires is one nobody reads.
-    git -C "$repo" rev-parse "$ref" > "$OUT/${src}_${ver}.commit" 2>/dev/null || true
+    #
+    # Name it after the .dsc, which means dropping any epoch: dpkg-source
+    # writes lu_0.2.dsc for version 1:0.2, and anything looking the .commit up
+    # from a .dsc filename will never find lu_1:0.2.commit. Ten packages here
+    # carry an epoch, and all ten stayed "unknown: .dsc predates commit
+    # recording" through a full regeneration that had in fact recorded them.
+    git -C "$repo" rev-parse "$ref" > "$OUT/${src}_${ver#*:}.commit" 2>/dev/null || true
     sz=$(du -sh --apparent-size "$OUT/${src}_"*.tar.* 2>/dev/null | awk '{s=$1} END{print s}')
     printf '  %-42s OK    %-16s %-14s %s\n' "$p" "$ver" "${fmt:-1.0}" "${sz:-?}"
     ok=$((ok+1))

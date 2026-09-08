@@ -42,7 +42,7 @@ if ! timeout 30 $OSC api "/source/$PRJ" < /dev/null > /dev/null 2>&1; then
 	exit 1
 fi
 
-printf '  %-34s %-12s %s\n' REPOSITORY DSC STATUS
+printf '  %-34s %-12s %s\n' PACKAGE DSC STATUS
 for d in "$SRC"/*/; do
 	r=$(basename "$d")
 	[ -d "$d/.git" ] || continue
@@ -107,6 +107,12 @@ for d in "$SRC"/*/; do
 	elif [ "$remote_md5" != "$local_md5" ]; then
 		status="source unchanged at $(echo "$head" | cut -c1-8); no upload recorded, so whether OBS has it cannot be told from here"
 	fi
-	[ -n "$status" ] && printf '  %-34s %-12s %s\n' "$p" "$dsc" "$status"
+	# Show the package name, and the repository too when it differs -- the
+	# header used to say REPOSITORY while this printed the package, and
+	# "regenerate golang-github-danos-ifmgrd" then fails with "not a git
+	# repository" because the directory is called ifmgrd.
+	label="$p"
+	[ "$p" != "$r" ] && label="$p ($r)"
+	[ -n "$status" ] && printf '  %-34s %-12s %s\n' "$label" "$dsc" "$status"
 done
-echo "  --- repositories not listed are current ---"
+echo "  --- packages not listed are current ---"
