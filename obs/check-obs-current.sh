@@ -75,16 +75,37 @@ for d in "$SRC"/*/; do
 	head=$(cd "$d" && git rev-parse HEAD 2>/dev/null)
 	made=""
 	[ -f "$OBS/dsc/${p}_${dsc}.commit" ] && made=$(cat "$OBS/dsc/${p}_${dsc}.commit")
+	# What upload.sh recorded as actually pushed, which is the only thing that
+	# answers this script's question directly.
+	up=""
+	[ -f "$OBS/dsc/${p}_${dsc}.uploaded" ] && up=$(cat "$OBS/dsc/${p}_${dsc}.uploaded")
 
+	# Ask about commits, not about the .dsc's checksum.
+	#
+	# The md5 used to come first, and it answers a different question than the
+	# one at the top of this file. Generating a .dsc is not reproducible: quilt
+	# rewrites file mtimes on push/refresh/pop, so the same source produces a
+	# different tarball checksum every run -- which is why mk-kernel-dsc-reuse.sh
+	# exists at all. A bulk regeneration therefore changed the md5 of every
+	# package without changing a line of source, and this script reported 46 of
+	# them as "differs from OBS -- upload". Checked against OBS, the entire
+	# content difference for the one sampled was a debian/.gitignore.
+	#
+	# So: prefer what upload.sh recorded as pushed, fall back to the commit the
+	# .dsc was made from, and use the md5 only where neither is available. Where
+	# the answer is genuinely unknown, say so rather than saying "upload".
 	status=""
 	if [ -z "$remote_md5" ]; then
 		status="not on OBS"
-	elif [ "$remote_md5" != "$local_md5" ]; then
-		status="dsc/ differs from OBS -- upload"
+	elif [ -n "$up" ]; then
+		[ "$up" != "$head" ] && \
+			status="OBS has $(echo "$up" | cut -c1-8), HEAD is $(echo "$head" | cut -c1-8) -- regenerate and upload"
 	elif [ -z "$made" ]; then
 		status="unknown: .dsc predates commit recording -- regenerate to find out"
 	elif [ "$made" != "$head" ]; then
 		status="HEAD $(echo "$head" | cut -c1-8) != .dsc $(echo "$made" | cut -c1-8) -- regenerate and upload"
+	elif [ "$remote_md5" != "$local_md5" ]; then
+		status="source unchanged at $(echo "$head" | cut -c1-8); no upload recorded, so whether OBS has it cannot be told from here"
 	fi
 	[ -n "$status" ] && printf '  %-34s %-12s %s\n' "$p" "$dsc" "$status"
 done
