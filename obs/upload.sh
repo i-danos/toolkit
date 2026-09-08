@@ -137,7 +137,20 @@ push_pkg() {
       && $OSC ci -m "DANOS on Debian 13 (branch i-danos/2608)" < /dev/null > /dev/null 2>&1 )
   local rc=$?
   rm -rf "$CO/$p" "$CO/$p.co"
-  [ $rc -eq 0 ] && printf '  %-42s OK\n' "$p" || printf '  %-42s FAIL  upload\n' "$p"
+  if [ $rc -eq 0 ]; then
+    # Record the commit this upload carried.
+    #
+    # Without it, "does OBS have my latest commit?" can only be approached
+    # through the .dsc's md5, and that cannot answer it: .dsc generation is not
+    # reproducible (quilt rewrites mtimes), so a regeneration alone makes the
+    # md5 differ while the source is identical. check-obs-current.sh reported 46
+    # packages as needing upload on exactly that basis, and the one sampled
+    # against OBS differed by a single debian/.gitignore.
+    [ -f "$DSC/${p}_${ver}.commit" ] && cp "$DSC/${p}_${ver}.commit" "$DSC/${p}_${ver}.uploaded"
+    printf '  %-42s OK\n' "$p"
+  else
+    printf '  %-42s FAIL  upload\n' "$p"
+  fi
   return $rc
 }
 
