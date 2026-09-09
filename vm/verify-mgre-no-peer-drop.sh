@@ -143,3 +143,26 @@ echo; echo "  -- nhrpd is still sending, i.e. the generator really is running --
 S $SPOKE "sudo journalctl -t nhrpd --no-pager -n 3 2>/dev/null | sed 's/^/    /'" | tail -3
 echo "  -- registration still fails, as expected: this change does not fix NHRP --"
 S $SPOKE 'sudo vtysh -c "show ip nhrp nhs" 2>&1 | tail -2 | sed "s/^/    /"' | tail -2
+
+echo; echo "===== 6. Clean up ====="
+# Leave the routers as they were found.
+#
+# The first run of this script did not, and the tunnels and nhrpd it left
+# behind failed three BGP cases on the next suite -- "Cannot exit:
+# configuration modified", which reads as a product fault and is not one. The
+# same thing happened once before with an address left over from the RIP
+# verification, so it is worth the dozen lines.
+for h in $SPOKE $HUB; do
+	S "$h" 'sudo vtysh -c "configure terminal" -c "interface tun0" -c "no ip nhrp network-id 1" -c "end" >/dev/null 2>&1
+	        sudo vtysh -c "configure terminal" -c "no debug nhrp all" -c "end" >/dev/null 2>&1
+	        sudo sed -i "/^nhrpd=/d" /etc/frr/daemons
+	        sudo systemctl restart frr >/dev/null 2>&1' > /dev/null
+	cli "$h" "delete interfaces tunnel tun0" > /dev/null
+done
+sleep 8
+for h in $SPOKE $HUB; do
+	S "$h" 'printf "  %s tun0=%s nhrpd=%s (both should be no/0)\n" \
+	          "$(hostname)" \
+	          "$(ip link show tun0 >/dev/null 2>&1 && echo yes || echo no)" \
+	          "$(pgrep -xc nhrpd)"' | tail -1
+done
