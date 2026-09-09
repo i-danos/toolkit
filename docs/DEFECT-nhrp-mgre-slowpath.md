@@ -46,18 +46,28 @@ retries:
 |---|---|
 | kernel `tun0`, tcpdump | frame present, `Out`, ethertype 0x2001 |
 | kernel `tun0`, counters | **TX 0 packets** |
-| `.spathintf` | RX 13 / TX 13 — the packets do reach the dataplane |
-| dataplane `tun0` | **tx_packets 0** |
-| dataplane `dp0s3` | 11 tx / 11 rx, i.e. the pings and nothing else |
+| `.spathintf`, tx | +1 per registration — kernel hands it to the dataplane |
+| `.spathintf`, rx | +1 per registration — the dataplane hands it straight back |
+| dataplane `tun0` | tx_packets 0, tx_errors 0 |
+| dataplane `dp0s3` | the pings and nothing else |
 
-So the packet crosses into the dataplane and is never encapsulated.
+So the packet crosses into the dataplane, is never encapsulated, and is
+returned to the kernel. Read `.spathintf` in one direction only and it looks
+like a one-way trip into the dataplane, which is the reading that produced the
+first, wrong version of the next section.
 
 ## Cause
 
-Two pieces of code, and the gap is between them.
+> **This section was wrong in its first version and is rewritten.** It said the
+> packet was encapsulated to 0.0.0.0 because `nxt_ip` was NULL. It is not: the
+> mark is present and `nxt_ip` is non-NULL. The error came from reading only
+> one direction of the `.spathintf` counters. Measuring both directions is what
+> corrected it, and the wrong version is worth remembering: it was self
+> consistent, matched the code, and was false.
 
 `shadow.c`, handling a packet the kernel sent on a tunnel, takes the peer's
-NBMA address from the metadata mark and from nowhere else:
+NBMA address from the metadata mark, marks the packet as having come from the
+kernel, and hands it to GRE:
 
 ```c
 if (!(meta.flags & TUN_META_FLAG_MARK))
@@ -67,33 +77,39 @@ else {
         dst = mgre_nbma_to_tun_addr(ifp, &dst_addr);
 }
 ...
+pktmbuf_mdata_set(m, PKT_MDATA_FROM_US);
+...
 gre_tunnel_fragment_and_send(host_ifp, ifp, dst, m, ntohs(pi.proto));
 ```
 
-`meta.mark` is `skb->mark`, carried across the tun device by the Vyatta
-`IFF_META_HDR` extension. The kernel's multipoint GRE transmit path fills it in
-after resolving the **neighbour entry** that holds the NBMA address.
-
-`gre.c`, encapsulating, then does this:
+`gre_tunnel_encap()` then looks the peer up by tunnel address, and on a miss
+punts to the kernel:
 
 ```c
 if (sc->scg_multipoint && nxt_ip) {
-        /* look the peer up by tunnel address */
-} else {
-        outer_ip = &greinfo->iph;
-        t_vrfid = greinfo->t_vrfid;
+        rt_info = mgre_rtinfo_lookup(sc, &tun_addr);
+        if (rt_info) { /* send */ }
+        else          { goto slow_path; }
 }
+...
+slow_path:
+        ip_local_deliver(input_ifp, m);
 ```
 
-A multipoint tunnel with no `nxt_ip` falls into the `else` and uses the
-tunnel's own header — whose destination, for multipoint, is unset:
+For a packet off the forwarding path that punt is correct -- it is how NHRP
+resolution starts. For a packet the kernel just handed over it is a dead end:
+`ip_local_deliver()` gives it straight back to the sender, and it dies there
+having moved no counter on either side.
+
+The `.spathintf` counters show the bounce, and only if both directions are
+read. Over 45 seconds carrying four NHRP registrations:
 
 ```
-dataplane tun0:  source=201.1.1.1 dest=0.0.0.0 flags=0
+.spathintf  tx: 13 -> 17     kernel handed 4 packets to the dataplane
+.spathintf  rx: 13 -> 17     the dataplane handed 4 straight back
+kernel tun0 rx/tx: 0 -> 0
+dataplane tun0 tx_packets 0, tx_errors 0
 ```
-
-The packet is encapsulated to 0.0.0.0 and goes nowhere. Nothing is logged and
-no error counter moves, which is why this looked like a daemon fault.
 
 ## Why it cannot bootstrap
 
@@ -102,32 +118,35 @@ bug: FRR's nhrpd sends its own control packets through an `AF_PACKET` socket
 with the NBMA address in the link-layer destination, deliberately bypassing the
 neighbour table, because the neighbour entry is the thing NHRP exists to create.
 
-So the only channel that can carry a per-packet NBMA destination into the
-dataplane is populated from a neighbour entry, and NHRP's bootstrap packets
-necessarily precede any neighbour entry. Registration can never succeed, and
-no amount of retrying changes that.
+The mGRE peer table that `mgre_rtinfo_lookup()` searches is populated from
+exactly those neighbour messages -- `mgre_newneigh()` in `gre.c`, driven by the
+NHRP netlink notifications `ip_netlink.c` handles. So the lookup cannot succeed
+until the registration it is blocking has succeeded. Registration can never
+complete, and no amount of retrying changes that.
 
 ## What a fix has to do
 
-Give the slow path an NBMA destination for a packet that has no neighbour
-entry. The link-layer destination nhrpd already sets is the natural source —
-on a GRE device the hardware address *is* the four-byte NBMA address — but
-`spath_receive()` reads the frame as L3 plus `struct tun_meta` and the
-link-layer destination is not among the fields carried across.
+Give `gre_tunnel_encap()` a peer for a tunnel address that has no neighbour
+entry yet, for the duration of the bootstrap. The link-layer destination nhrpd
+already sets is the natural source -- on a GRE device the hardware address *is*
+the four-byte NBMA address -- but `spath_receive()` reads the frame as L3 plus
+`struct tun_meta`, and the link-layer destination is not among the fields
+carried across.
 
 Two candidate directions, neither yet attempted:
 
-1. Carry the link-layer destination across the tun device alongside `mark`,
-   and use it in `shadow.c` when the mark is absent. Touches the kernel
-   extension as well as the dataplane.
-2. Have the dataplane resolve the destination itself for `ETH_P_NHRP`, from
-   the tunnel's NHS configuration. Confines the change to the dataplane but
-   duplicates knowledge that belongs to nhrpd.
+1. Carry the link-layer destination across the tun device alongside `mark`, and
+   use it when the peer lookup misses. Touches the kernel extension as well as
+   the dataplane.
+2. Seed the mGRE peer table from the tunnel's NHS configuration, so the NHS has
+   an entry before any registration is attempted. Confines the change to the
+   dataplane and the component, but duplicates knowledge that belongs to nhrpd.
 
-Independently of either, the `else` branch in `gre_tunnel_encap()` should not
-silently encapsulate a multipoint packet to `0.0.0.0`. Dropping it and counting
-an output error would have made this a five-minute diagnosis instead of a
-four-hour one.
+What has been done, which is not a fix: the dead-end punt is now counted as an
+output error on the tunnel instead of happening in silence, and a multipoint
+packet with no destination at all is dropped rather than encapsulated to
+0.0.0.0. Neither makes DMVPN work; both make its failure visible, which took
+several hours and a wrong diagnosis to establish the first time.
 
 ## Also found
 
