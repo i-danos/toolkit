@@ -401,8 +401,16 @@ a host prefix**. With a /24 it refuses outright — `tun0: 172.30.0.2/24 is not
 a host prefix` — and with /32 it proceeds.
 
 Writing the CLI first would have produced configuration that generates, that
-FRR accepts, and that does not bring up a DMVPN. The next step here is
-diagnosing the nhrpd fault, which is FRR-side work, not CLI work.
+FRR accepts, and that does not bring up a DMVPN.
+
+**That last conclusion was wrong, and the diagnosis has since been done:**
+nhrpd is not at fault. It sends the registration correctly, with the right NBMA
+pair, and retries on the documented backoff. The packet is lost in the
+dataplane slow path, which takes a multipoint peer's NBMA address only from a
+neighbour entry -- and NHRP's bootstrap packets necessarily precede any
+neighbour entry. `gre_tunnel_encap()` then encapsulates to 0.0.0.0 without a
+log line or an error counter, which is what made this look daemon-side. See
+`DEFECT-nhrp-mgre-slowpath.md`.
 
 ### What the pattern actually predicts
 
