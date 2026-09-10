@@ -32,6 +32,7 @@ OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
 # an expired session fails in about three seconds with EOFError instead.
 OSC="setsid --wait $OBS/osc -A https://api.opensuse.org"
 PRJ=home:i-danos
+SRC=/home/aikon/danos/build-iso/danos-sources
 DSC="$OBS/dsc"
 CO="$OBS/checkout"
 
@@ -56,9 +57,29 @@ set_meta() {
   $OSC meta prj "$PRJ" < /dev/null | grep -E 'repository|path|arch'
 }
 
+# The argument may be a repository name or a source package name, because the
+# two are not always the same -- the vyatta-cfg-dataplane repository builds
+# vplane-config, ifmgrd builds golang-github-danos-ifmgrd -- and mk-dsc.sh takes
+# the repository while this takes the package. Passing the repository name here
+# used to report "no <name>_*.dsc under dsc/", which reads as "you forgot to
+# generate it" when in fact it is sitting there under its other name.
+resolve_pkg() {
+  local n="$1"
+  local ctl="$SRC/$n/debian/control"
+
+  if [ -f "$ctl" ]; then
+    awk '/^Source:/{print $2; exit}' "$ctl"
+    return
+  fi
+  echo "$n"
+}
+
 push_pkg() {
-  local p="$1"
+  local p
+  p=$(resolve_pkg "$1")
   local dsc ver
+
+  [ "$p" = "$1" ] || printf '  %-42s (repository %s)\n' "$p" "$1"
   # dsc/ accumulates: mk-dsc.sh writes the current version and never removes the
   # previous one, so 12 packages there currently hold two or more. Both halves
   # of this used to go wrong.
