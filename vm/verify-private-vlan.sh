@@ -39,14 +39,39 @@ cli() {
 	        vcli -s \$SID -c commit 2>&1 | grep -viE 'sssd|configuration db|grub|boot-loader|crash dump|^\s*\$' | tail -2"
 }
 
+# Setting a role, with the commit's own output kept.
+#
+# This used to discard it, and that hid both of the defects this script was
+# written to catch. The configuration reached the tree and the dataplane never
+# heard about it, twice over -- once because the end script rejected
+# $COMMIT_ACTION=ACTIVE and configd logged "Error with no output", once because
+# the end script ran before bridge-group and the dataplane answered "not a
+# bridge port" into its own log. Both commits printed nothing and returned
+# success. A verification that throws away the one channel an error might come
+# out of is not verifying the configuration path at all.
 role() {   # port role [community]
+	local out
 	if [ -n "${3:-}" ]; then
-		cli $R2 "set interfaces dataplane $1 bridge-group private-vlan port-role $2" \
-		        "set interfaces dataplane $1 bridge-group private-vlan community $3" > /dev/null
+		out=$(cli $R2 "set interfaces dataplane $1 bridge-group private-vlan port-role $2" \
+		              "set interfaces dataplane $1 bridge-group private-vlan community $3")
 	else
-		cli $R2 "delete interfaces dataplane $1 bridge-group private-vlan community" \
-		        "set interfaces dataplane $1 bridge-group private-vlan port-role $2" > /dev/null
+		out=$(cli $R2 "delete interfaces dataplane $1 bridge-group private-vlan community" \
+		              "set interfaces dataplane $1 bridge-group private-vlan port-role $2")
 	fi
+	printf '%s' "$out" | grep -qiE 'fail|error|invalid|not valid' && \
+		printf '    commit said: %s\n' "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
+	return 0
+}
+
+# What the dataplane was actually told, which is the only thing that settles
+# whether a case measured the feature or measured a configuration that never
+# arrived. Printed per case rather than once at the end: a role that failed to
+# reach the dataplane looks exactly like a role that reached it and did nothing.
+roles_now() {
+	S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'bridge br0 horizon'" \
+	  | grep -oE '"port":"[^"]*"[^}]*"role":"[a-z]*"' \
+	  | sed -E 's/.*"port":"([^"]*)".*"group":([0-9]+).*"role":"([a-z]*)".*/\1=\3(\2)/' \
+	  | tr '\n' ' '
 }
 
 horizon() {
@@ -84,6 +109,7 @@ case_is() {   # label r1role r3role want [c1] [c3]
 	printf '  %-34s flood=%-3s %-28s unicast=%-3s %s\n' \
 		"$label" "${f:-?}/3" "$(pass_fail "$f" "$want")" \
 		"${u:-?}/3" "$(pass_fail "$u" "$want")"
+	printf '    dataplane holds: %s\n' "$(roles_now)"
 }
 
 echo "===== 1. Bridge R1 and R3 through R2 ====="
