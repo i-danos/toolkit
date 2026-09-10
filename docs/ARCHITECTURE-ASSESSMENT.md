@@ -156,12 +156,26 @@ single fact decides what is borrowable:
 
 | Feature | Dataplane keyword hits | Verdict |
 |---|---|---|
-| VPLS / VPWS | `pseudowire`, `vpls`, `l2vpn`, `pw-id` — **0** | New dataplane work |
+| VPLS / VPWS | `pseudowire`, `vpls`, `l2vpn`, `pw-id` — **0** | New dataplane work — **but see below: EVPN-VXLAN is the cheaper L2VPN and most of it is already here** |
 | 802.1x | `dot1x`, `eapol`, `authenticator` — **0** | See below |
 | Private VLAN | `pvlan`, `isolated`, `community`, `secondary-vlan` — **0** | New dataplane work |
 
 The 24 hits for `promiscuous` are NIC promiscuous mode in `if.c`, unrelated to
 the private-VLAN port role of the same name.
+
+**The sweep asked about VPLS and never asked about VXLAN.** It has 16 files and
+2167 lines in `src/if/vxlan.c`, and measurement since has shown four of the five
+pieces EVPN-VXLAN needs already working: VXLAN forwards in bridge mode, zebra
+finds the VNI on a DANOS interface unprompted, bgpd brings up an EVPN session,
+and a remote MAC written to the kernel FDB reaches the dataplane. The one thing
+missing is a notification from the dataplane's MAC learning to the kernel, so
+zebra has local MACs to advertise -- one mechanism, against a whole forwarding
+plane for VPLS. **The L2VPN item should be EVPN-VXLAN, not VPLS.** See
+`L2VPN-EVPN-OVER-VPLS.md`.
+
+This is the same lesson as nhrpd, arriving from the other side: a keyword sweep
+answers the question it was asked. Asking "is VPLS here" gets a correct no, and
+says nothing about whether something better is.
 
 ### Why VyOS and SONiC transfer differently
 
