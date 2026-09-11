@@ -12,20 +12,26 @@
 #
 # Blocking the flood path out of R1 does nothing about learning into R1. The
 # two candidate entries have to be told apart by what they are, not by where
-# the traffic can go, and the table says which is which:
+# the traffic can go -- and "type" cannot do it. FRR's remote MACs arrive with
+# an NUD state that maps to IFBAF_DYNAMIC, exactly like a MAC off the wire.
+# What separates them is NTF_EXT_LEARNED on the netlink message, which the
+# dataplane now keeps and the dump reports:
 #
-#   type "dynamic"      the data path learned it
-#   type "permanent"    netlink programmed it, which is how EVPN arrives
+#   origin "data-path"       learned from a frame that arrived
+#   origin "control-plane"   NTF_EXT_LEARNED, which is how EVPN arrives
 #
-# So: clear R1's table, make FRR reprogram it, confirm nothing but the
-# permanent entry is present, and only then send traffic. If the first frame
-# reaches R3, the permanent entry carried it -- there was nothing else. The
-# drop counter says the same thing from the other side: vxlan_output() takes
-# "goto drop" and bumps OutDiscards for an entry it cannot use.
+# So: clear R1's table, make FRR reprogram it, confirm the entry present is
+# the control-plane one, and only then send traffic. If the frame reaches R3,
+# that entry carried it -- there was nothing else, and the data path may no
+# longer overwrite a control-plane entry, so it cannot quietly become the
+# answer half way through. The drop counter says the same from the other side:
+# vxlan_output() takes "goto drop" and bumps OutDiscards for an entry it
+# cannot use.
 #
-# Needs the image with the vxlan_newneigh() IFBAF_ADDR_V4 fix. Older dumps emit
-# "IPAddr" instead of "remote_ip" and the script stops if it sees one, because
-# on that image every reading below is about a different defect.
+# Needs the image with the vxlan_newneigh() IFBAF_ADDR_V4 and NTF_EXT_LEARNED
+# work. Older dumps emit "IPAddr" instead of "remote_ip" and the script stops
+# if it sees one, because on that image every reading below is about a
+# different defect.
 #
 #   R1  VTEP 10.60.60.1, br0 = tun0 only,     tunnel remote-ip 10.60.60.99
 #   R2  VTEP 10.60.60.2, br0 = tun0 + dp0s8,  tunnel remote-ip 10.60.60.1
@@ -53,7 +59,11 @@ cli() {
 
 macs_json() { S $R1 "sudo /opt/vyatta/bin/vplsh -l -c 'vxlan macs show' 2>/dev/null"; }
 
-# Report the entry for R3's MAC as "<type> <remote_ip> <forwards>", or "absent".
+# Report the entry for R3's MAC as "<origin> <type> <remote_ip> <forwards>",
+# or "absent". The MAC is matched in canonical form, which the fixed dump now
+# prints -- ether_ntoa_r() rendered it 52:54:0:3:8:1 and the first version of
+# this check grepped for 52:54:00:03:08:01 and reported a present entry as
+# missing.
 entry_for_mac() {
 	macs_json | python3 -c "
 import sys, json
@@ -67,8 +77,8 @@ for t in d.get('mac_table', []):
         if 'IPAddr' in e:
             print('old-image'); sys.exit()
         if e.get('mac') == want:
-            print('%s %s %s' % (e.get('type'), e.get('remote_ip') or '-',
-                                e.get('forwards')))
+            print('%s %s %s %s' % (e.get('origin'), e.get('type'),
+                                   e.get('remote_ip') or '-', e.get('forwards')))
             sys.exit()
 print('absent')
 " 2>/dev/null | tail -1
@@ -132,9 +142,10 @@ echo "  R3 dp0s8 MAC: $MAC3"
 if [ "$(entry_for_mac)" = "old-image" ]; then
 	echo
 	echo "  STOP: this dataplane still prints IPAddr, so it predates the"
-	echo "  vxlan_newneigh() fix. On that image an EVPN entry carries no"
-	echo "  address flag and vxlan_output() drops it, which is the thing"
-	echo "  this test is meant to measure. Install the new image first."
+	echo "  vxlan_newneigh() work. On that image an EVPN entry carries no"
+	echo "  address flag and vxlan_output() drops it, and there is no"
+	echo "  origin field to tell it from a learned one -- which is the"
+	echo "  thing this test measures. Install the new image first."
 	cleanup
 	exit 2
 fi
@@ -143,7 +154,7 @@ fi
 S $R2 "ping -c 3 -W 2 10.61.61.3 2>&1 | grep -oE '[0-9]+ received'" | tail -1 | sed 's/^/  R2 -> R3 (so R2 learns it): /'
 sleep 4
 echo "  R1 already holds: $(entry_for_mac)"
-echo "  (dynamic here is expected and is exactly why the old test was wrong)"
+echo "  (data-path here is expected, and is exactly why the old test was wrong)"
 
 echo; echo "===== 2. Bring up EVPN ====="
 S $R1 'sudo vtysh -c "configure terminal" -c "router bgp 65000" \
@@ -166,7 +177,7 @@ S $R1 'sudo vtysh -c "clear bgp l2vpn evpn *" >/dev/null 2>&1' > /dev/null
 sleep 50
 entry=$(entry_for_mac)
 echo "  after BGP reprogrammed it, R1 holds: $entry"
-etype=${entry%% *}
+origin=${entry%% *}
 
 echo; echo "===== 4. Send traffic with nothing else in the table ====="
 before=$(outdiscards)
@@ -174,24 +185,31 @@ got=$(ping_r3)
 after=$(outdiscards)
 echo "  OutDiscards: ${before:-?} -> ${after:-?}"
 echo "  R1 -> R3: ${got:-?} of 3"
-echo "  R1 holds afterwards: $(entry_for_mac)"
-echo "  (dynamic afterwards is fine -- R3's replies arrive over the tunnel"
-echo "   and the data path relearns it. What matters is step 3.)"
+after_entry=$(entry_for_mac)
+echo "  R1 holds afterwards: $after_entry"
 
 echo; echo "===== 5. Verdict ====="
 if [ "$entry" = "absent" ] || [ "$entry" = "unreadable" ]; then
 	echo "  INCONCLUSIVE: after the clear and the BGP refresh there was no"
 	echo "  entry for $MAC3 at all, so the ping measured nothing. FRR did"
 	echo "  not reprogram it; check that the session came back up."
-elif [ "$etype" != "permanent" ]; then
-	echo "  INCONCLUSIVE: the entry is \"$entry\", not permanent, so the data"
-	echo "  path relearned it before the traffic went out and this is the"
-	echo "  same confusion the first version of this test fell into."
+elif [ "$origin" != "control-plane" ]; then
+	echo "  INCONCLUSIVE: the entry is \"$entry\", so the data path relearned"
+	echo "  it before the traffic went out and this is the same confusion"
+	echo "  the first version of this test fell into."
 elif [ "${got:-0}" -ge 2 ]; then
 	echo "  THE EVPN ENTRY FORWARDS. The only entry for $MAC3 when the"
-	echo "  traffic went out was the one netlink programmed, and it reached"
-	echo "  R3 with the flood path pointed at 10.60.60.99."
-	[ "$before" = "$after" ] && echo "  OutDiscards did not move, which says the same from the other side."
+	echo "  traffic went out came from the control plane, and it reached R3"
+	echo "  with the flood path pointed at 10.60.60.99."
+	[ "$before" = "$after" ] && \
+	  echo "  OutDiscards did not move, which says the same from the other side."
+	case "$after_entry" in
+	control-plane*) echo "  Still control-plane afterwards: the replies arriving over the"
+	                echo "  tunnel did not take the entry over, which is the point of"
+	                echo "  leaving NTF_EXT_LEARNED entries to their owner." ;;
+	*)              echo "  BUT it reads \"$after_entry\" now. The data path took over a"
+	                echo "  control-plane entry, so BGP no longer decides this MAC." ;;
+	esac
 else
 	echo "  THE EVPN ENTRY DOES NOT FORWARD. It is present, it names the"
 	echo "  right VTEP, and traffic to it does not reach R3."
