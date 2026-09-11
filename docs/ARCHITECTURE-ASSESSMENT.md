@@ -168,10 +168,11 @@ the private-VLAN port role of the same name.
 pieces EVPN-VXLAN needs already working: VXLAN forwards in bridge mode, zebra
 finds the VNI on a DANOS interface unprompted, bgpd brings up an EVPN session,
 and a remote MAC written to the kernel FDB reaches the dataplane. The one thing
-missing is a notification from the dataplane's MAC learning to the kernel, so
+missing was a notification from the dataplane's MAC learning to the kernel, so
 zebra has local MACs to advertise -- one mechanism, against a whole forwarding
-plane for VPLS. **The L2VPN item should be EVPN-VXLAN, not VPLS.** See
-`L2VPN-EVPN-OVER-VPLS.md`.
+plane for VPLS. **That has since been written, and a MAC now travels end to end
+between two routers.** The L2VPN item is EVPN-VXLAN; VPLS is not worth
+starting. See `L2VPN-EVPN-OVER-VPLS.md`.
 
 This is the same lesson as nhrpd, arriving from the other side: a keyword sweep
 answers the question it was asked. Asking "is VPLS here" gets a correct no, and
