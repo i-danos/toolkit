@@ -50,7 +50,7 @@ cli() {
 dump_table() { S $R1 "sudo /opt/vyatta/bin/vplsh -l -c 'vxlan macs show' 2>&1" | sed 's/^/    /'; }
 outdiscards() {
 	S $R1 "sudo /opt/vyatta/bin/vplsh -l -c 'vxlan stats show' 2>/dev/null \
-	       | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"OutDiscards\",\"?\"))' 2>/dev/null" \
+	       | python3 -c 'import sys,json; print(json.load(sys.stdin)[\"vxlan_stats\"][\"OutDiscards\"])' 2>/dev/null" \
 	  | tail -1
 }
 ping_r3() {

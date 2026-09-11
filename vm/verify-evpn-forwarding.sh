@@ -93,10 +93,13 @@ neigh_flags_log() {
 	       | grep -i 'NEWNEIGH' | tail -3" | sed 's/^/    /'
 }
 
+# The counters are nested under "vxlan_stats". Reading the top level instead
+# returned "?" for both samples, and "?" equals "?", so the verdict printed
+# "OutDiscards did not move" as corroboration of a reading that never happened.
 outdiscards() {
 	S $R1 "sudo /opt/vyatta/bin/vplsh -l -c 'vxlan stats show' 2>/dev/null \
-	       | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"OutDiscards\",\"?\"))' 2>/dev/null" \
-	  | tail -1 | tr -dc '0-9?'
+	       | python3 -c 'import sys,json; print(json.load(sys.stdin)[\"vxlan_stats\"][\"OutDiscards\"])' 2>/dev/null" \
+	  | tail -1 | tr -dc '0-9'
 }
 
 # Unicast from the first frame: a static neighbour, so no ARP and therefore no
@@ -214,8 +217,15 @@ elif [ "${got:-0}" -ge 2 ]; then
 	echo "  THE EVPN ENTRY FORWARDS. The only entry for $MAC3 when the"
 	echo "  traffic went out came from the control plane, and it reached R3"
 	echo "  with the flood path pointed at 10.60.60.99."
-	[ "$before" = "$after" ] && \
-	  echo "  OutDiscards did not move, which says the same from the other side."
+	# Only a reading that happened can corroborate anything.
+	if [ -z "$before" ] || [ -z "$after" ]; then
+		echo "  OutDiscards could not be read, so it corroborates nothing here."
+	elif [ "$before" = "$after" ]; then
+		echo "  OutDiscards did not move, which says the same from the other side."
+	else
+		echo "  BUT OutDiscards moved $before -> $after, so vxlan_output() dropped"
+		echo "  something during this run. The ping got through; find out what did not."
+	fi
 	case "$after_entry" in
 	control-plane*) echo "  Still control-plane afterwards: the replies arriving over the"
 	                echo "  tunnel did not take the entry over, which is the point of"
@@ -226,8 +236,9 @@ elif [ "${got:-0}" -ge 2 ]; then
 else
 	echo "  THE EVPN ENTRY DOES NOT FORWARD. It is present, it names the"
 	echo "  right VTEP, and traffic to it does not reach R3."
-	[ "$before" != "$after" ] && \
-	  echo "  OutDiscards moved ${before:-?} -> ${after:-?}: vxlan_output() is dropping."
+	if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+		echo "  OutDiscards moved $before -> $after: vxlan_output() is dropping."
+	fi
 fi
 
 cleanup

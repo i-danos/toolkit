@@ -1,13 +1,14 @@
 # L2VPN: EVPN-VXLAN rather than VPLS
 
-Status: **the control plane carries a MAC end to end; forwarding by it needed a
-dataplane fix, and that fix is written but not yet measured on a built image.**
-The roadmap carried VPLS/VPWS as the remaining L2VPN item. Four of the five
-pieces EVPN-VXLAN needs were already here; the fifth has since been written.
-VPLS has none of the five and is not worth starting.
+Status: **a MAC learned by EVPN forwards, measured on the built image.** The
+roadmap carried VPLS/VPWS as the remaining L2VPN item. Four of the five pieces
+EVPN-VXLAN needs were already here; the fifth has since been written, along
+with four dataplane fixes without which none of it forwarded. VPLS has none of
+the five and is not worth starting.
 
 An earlier revision of this document said "done, end to end" and claimed
-forwarding had been proven. It had not been -- see
+forwarding had been proven. It had not been -- the test could not have shown
+what it claimed, and the feature did not in fact work. See
 [The test that proved nothing](#the-test-that-proved-nothing) below. The
 correction is kept rather than edited away because the way the wrong answer
 arrived is the reusable part.
@@ -275,12 +276,26 @@ configured through the existing tunnel model rather than anything EVPN-aware.
 A CLI is the next piece of work, and it is ordinary work -- the part that was
 uncertain no longer is.
 
+What was measured, on `i-danos_2608_20260911T0944` with the running
+`/usr/sbin/dataplane` checksummed against the binary the verification ran on:
+
+| Reading | Result |
+|---|---|
+| Only entry present when traffic went out | `control-plane dynamic 10.60.60.2 True` |
+| R1 -> R3, flood path pointed at 10.60.60.99 | **3 of 3** |
+| `OutDiscards` across the ping | `0 -> 0` |
+| Entry origin afterwards | still `control-plane` |
+| Five Robot suites | **74 of 74** |
+
+The last row matters because the change adds a branch to the VXLAN ageing
+timer and takes one away from the learning path. The checksum row matters
+because `mk-obs-repo.sh` reported the public mirror still serving the previous
+dataplane build and fell back to the OBS API for it -- without that fallback
+the image would have carried the old binary and every suite would still have
+passed.
+
 What is outstanding:
 
-- **The forwarding fix is written and compiles; it has not run.** Until
-  `verify-evpn-forwarding.sh` passes on an image built from it, the honest
-  statement is that EVPN-learned MACs were *known* not to forward and are
-  *believed* to now.
 - **IPv6 VTEPs do not arrive over netlink at all.** `vxlan_neigh_change()`
   rejects any `NDA_DST` that is not four bytes, so `IFBAF_ADDR_V6` can only
   ever be set by data-path learning. EVPN over an IPv6 underlay is therefore
