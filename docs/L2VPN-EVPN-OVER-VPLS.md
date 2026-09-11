@@ -1,10 +1,11 @@
 # L2VPN: EVPN-VXLAN rather than VPLS
 
-Status: **a MAC learned by EVPN forwards, measured on the built image.** The
-roadmap carried VPLS/VPWS as the remaining L2VPN item. Four of the five pieces
-EVPN-VXLAN needs were already here; the fifth has since been written, along
-with four dataplane fixes without which none of it forwarded. VPLS has none of
-the five and is not worth starting.
+Status: **a MAC learned by EVPN forwards, and it is configurable, both
+measured on the built image.** The roadmap carried VPLS/VPWS as the remaining
+L2VPN item. Four of the five pieces EVPN-VXLAN needs were already here; the
+fifth has since been written, along with four dataplane fixes without which
+none of it forwarded and a configuration model without which none of it
+survived a reboot. VPLS has none of the five and is not worth starting.
 
 An earlier revision of this document said "done, end to end" and claimed
 forwarding had been proven. It had not been -- the test could not have shown
@@ -266,15 +267,59 @@ confident wrong answer first:
   the line removes something that was there by default and leaves the router
   without bgpd for every later run.
 
+## The CLI
+
+Everything above was typed into `vtysh`, which meant the feature survived no
+commit, appeared in no `show configuration`, and was lost on reboot. It is
+modelled now, shaped on the `vpnv4-unicast` containers this repository already
+had:
+
+```
+set protocols bgp 65000 address-family l2vpn-evpn advertise-all-vni
+set protocols bgp 65000 address-family l2vpn-evpn vni 100 rd 65000:100
+set protocols bgp 65000 address-family l2vpn-evpn vni 100 route-target import 65000:777
+set protocols bgp 65000 neighbor 10.60.60.2 address-family l2vpn-evpn
+```
+
+The global container decides which VNIs there are to advertise; the neighbour
+one activates the session for the family. Either alone exchanges no MACs,
+which is the mistake this address family invites and which both descriptions
+state.
+
+Operationally there are two views, and they answer different questions:
+
+| Command | Answers |
+|---|---|
+| `show protocols bgp l2vpn evpn …` | what BGP holds |
+| `show protocols evpn …` | what zebra learned and programmed |
+
+A MAC in the first and missing from the second is the shape of fault this
+document is mostly about, and until now the CLI could show neither.
+
+`toolkit/vm/verify-evpn-cli.sh` covers it: 22 checks, all passing on
+`i-danos_2608_20260911T2143`, including a MAC learned through a session that
+was never configured by hand. The five suites pass 74 of 74 on the same image.
+
+Its first run reported 11 failures and every one was the test. Nine were the
+way it invoked operational commands -- `vcli` is the configuration client and
+answers `show ...` with silence and exit 0. The tell was that `show version`
+came back empty through the same path: a real fault in nine commands does not
+also break an unrelated tenth, and checking that the instrument reads anything
+at all costs one command. Two were the route target value: FRR derives a VNI's
+route target from the AS and the VNI, so `65000:100` on VNI 100 in AS 65000 is
+the derived value, configuring it is a no-op, and the check demanded a line
+the system was entitled not to produce.
+
+That is the same shape as the `OutDiscards` check described above, which
+corroborated a verdict with a reading that had failed. Three times in one
+week, an assertion rested on a signal nobody had confirmed the system emits.
+
 ## What this does not say
 
-That EVPN-VXLAN is finished as a product feature. What has been shown is that
-the mechanism carries a MAC end to end, using the control plane FRR ships and
-the interfaces DANOS already models. There is no YANG for any of it: every EVPN
-knob in these runs was typed into `vtysh` by hand, and the tunnel was
-configured through the existing tunnel model rather than anything EVPN-aware.
-A CLI is the next piece of work, and it is ordinary work -- the part that was
-uncertain no longer is.
+That EVPN-VXLAN is finished as a product feature. The mechanism carries a MAC
+end to end, the dataplane forwards by it, and it is configurable. Not covered:
+EVPN under a routing instance, which is the symmetric IRB case and a larger
+piece of work than any of this.
 
 What was measured, on `i-danos_2608_20260911T0944` with the running
 `/usr/sbin/dataplane` checksummed against the binary the verification ran on:
