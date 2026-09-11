@@ -84,6 +84,15 @@ print('absent')
 " 2>/dev/null | tail -1
 }
 
+# vxlan_neigh_change() already logs ndm_flags on every NEWNEIGH. If the origin
+# check below ever says "data-path" for a MAC only FRR could have supplied,
+# this says whether NTF_EXT_LEARNED (0x10) reached the dataplane at all --
+# which is the difference between the flag not arriving and it not being kept.
+neigh_flags_log() {
+	S $R1 "sudo journalctl -u dataplane --since '-4min' --no-pager 2>/dev/null \
+	       | grep -i 'NEWNEIGH' | tail -3" | sed 's/^/    /'
+}
+
 outdiscards() {
 	S $R1 "sudo /opt/vyatta/bin/vplsh -l -c 'vxlan stats show' 2>/dev/null \
 	       | python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"OutDiscards\",\"?\"))' 2>/dev/null" \
@@ -157,6 +166,7 @@ echo "  R1 already holds: $(entry_for_mac)"
 echo "  (data-path here is expected, and is exactly why the old test was wrong)"
 
 echo; echo "===== 2. Bring up EVPN ====="
+S $R1 "sudo /opt/vyatta/bin/vplsh -l -c 'debug vxlan' >/dev/null 2>&1" > /dev/null
 S $R1 'sudo vtysh -c "configure terminal" -c "router bgp 65000" \
   -c "neighbor 10.60.60.2 remote-as 65000" -c "neighbor 10.60.60.2 update-source 10.60.60.1" \
   -c "address-family l2vpn evpn" -c "neighbor 10.60.60.2 activate" -c "advertise-all-vni" \
@@ -194,9 +204,12 @@ if [ "$entry" = "absent" ] || [ "$entry" = "unreadable" ]; then
 	echo "  entry for $MAC3 at all, so the ping measured nothing. FRR did"
 	echo "  not reprogram it; check that the session came back up."
 elif [ "$origin" != "control-plane" ]; then
-	echo "  INCONCLUSIVE: the entry is \"$entry\", so the data path relearned"
-	echo "  it before the traffic went out and this is the same confusion"
-	echo "  the first version of this test fell into."
+	echo "  INCONCLUSIVE: the entry is \"$entry\", so either the data path"
+	echo "  relearned it before the traffic went out -- the same confusion"
+	echo "  the first version of this test fell into -- or NTF_EXT_LEARNED"
+	echo "  never reached the dataplane. The NEWNEIGH log says which; the"
+	echo "  second flags field is ndm_flags and 0x10 is the bit:"
+	neigh_flags_log
 elif [ "${got:-0}" -ge 2 ]; then
 	echo "  THE EVPN ENTRY FORWARDS. The only entry for $MAC3 when the"
 	echo "  traffic went out came from the control plane, and it reached R3"

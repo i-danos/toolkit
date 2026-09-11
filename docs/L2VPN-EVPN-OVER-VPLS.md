@@ -170,14 +170,55 @@ Two things made this survive as long as it did:
   used was one the defect could satisfy by accident. Asking the table what it
   held took one command and answered immediately.
 
-`toolkit/vm/probe-vxlan-mac-origin.sh` is that probe; `verify-evpn-forwarding.sh`
-has been rewritten around the distinction the table makes — `type: permanent`
-is netlink's, `type: dynamic` is the data path's — rather than around where
-traffic can reach.
+`toolkit/vm/probe-vxlan-mac-origin.sh` is that probe.
 
-## Two defects found on the way
+## The distinction the table could not make
 
-**`vxlan macs show` printed the wrong fields — fixed, and it was not cosmetic.**
+Rewriting the test needed a way to say which entry was which, and the first
+attempt at that was wrong too: `type: permanent` for netlink, `type: dynamic`
+for the data path. FRR's remote MACs come in with an NUD state that maps to
+`IFBAF_DYNAMIC`, exactly like a MAC off the wire, so that discriminator would
+have reported INCONCLUSIVE on every run. The probe log had said so plainly —
+the EVPN entry read `"type": "dynamic"` — and it was read past.
+
+What separates them is `NTF_EXT_LEARNED`, which FRR sets on every remote MAC
+and which nothing in the dataplane kept. Recording it fixed two further
+defects that had the same root:
+
+- **`vxlan_rtexpired()` aged control-plane entries.** It ages anything
+  `IFBAF_DYNAMIC` after thirty minutes of disuse, which included every MAC EVPN
+  had learned. FRR's own state would not have changed, so nothing would have
+  reprogrammed them: a remote host that goes quiet for half an hour simply
+  stops being reachable, and comes back the moment it speaks — the shape of
+  fault that gets filed as "intermittent" and never reproduced.
+- **`vxlan_rtupdate()` let the data path overwrite them.** A frame from any
+  VTEP could repoint an entry BGP had placed. EVPN settles a MAC appearing in
+  two places with type-2 sequence numbers and duplicate-address detection, and
+  both depend on the dataplane not quietly picking a winner of its own.
+
+The dump now reports `origin`: `control-plane` for `NTF_EXT_LEARNED`,
+`data-path` for what the wire taught us, `configured` for a static or permanent
+entry, which is netlink but an operator rather than a protocol. That was the
+first question worth asking of an EVPN fabric and the system could not answer
+it.
+
+The order matters more than the fixes. The earlier test was not merely wrong,
+it was unfixable: its premise was that flooding and EVPN reach different places,
+and the real distinction was never about reachability. Nothing sound could be
+tested until the table could state it. `verify-evpn-forwarding.sh` is built on
+`origin`, and where it cannot conclude it prints the `NEWNEIGH` log line
+carrying `ndm_flags`, so "the flag never arrived" and "the flag was not kept"
+are not confusable.
+
+Trade accepted: entries a control plane owns now never age out of the
+dataplane. If FRR dies without withdrawing them they stay until it restarts and
+resyncs. That is the usual bargain for control-plane ownership, and the
+alternative — ageing out routes a protocol still believes in — is the defect
+that was just fixed.
+
+## The instrument, and the one defect that really was separate
+
+**`vxlan macs show` printed the wrong fields — and it was not cosmetic.**
 One buffer was shared between the MAC and the VTEP, so an entry with no address
 flag printed the leftover MAC in the VTEP field; that buffer was also
 `INET_ADDRSTRLEN`, two bytes short of what `ether_ntoa_r()` can write and thirty
@@ -201,12 +242,14 @@ explicitly.
 
 ## Reproducing
 
-`toolkit/vm/verify-vxlan-evpn-viability.sh`, `verify-evpn-last-hop.sh` and
-`verify-evpn-e2e.sh`, on `TOPO=ipsec`. The last is the one that walks all five
-hops; it needs three routers, because R2 has to bridge a local port with
-something behind it. An earlier version bridged only the tunnel at both ends,
-which left nothing local to advertise -- "0 MACs" was then the correct answer
-to a question worth nothing.
+`toolkit/vm/verify-vxlan-evpn-viability.sh`, `verify-evpn-last-hop.sh`,
+`verify-evpn-e2e.sh` and `verify-evpn-forwarding.sh`, on `TOPO=ipsec`;
+`probe-vxlan-mac-origin.sh` is read-only and answers "what is actually in the
+table" without asserting anything. `verify-evpn-e2e.sh` walks all five hops; it
+needs three routers, because R2 has to bridge a local port with something
+behind it. An earlier version bridged only the tunnel at both ends, which left
+nothing local to advertise -- "0 MACs" was then the correct answer to a
+question worth nothing.
 
 Three things about the harness are worth knowing, because each produced a
 confident wrong answer first:
@@ -244,3 +287,7 @@ What is outstanding:
   not supported, and nothing currently says so to the operator.
 - **Nothing tests a MAC move.** The update path now refreshes the VTEP, which
   is the behaviour a move depends on, and no test exercises it.
+- **Nothing tests the ageing fix.** It takes thirty minutes of silence to
+  trigger, so it needs either patience or a build with the interval shortened;
+  the fix is a two-line guard and the failure it prevents is intermittent,
+  which is the combination least likely to be noticed if it regresses.
