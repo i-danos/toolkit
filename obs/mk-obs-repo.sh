@@ -61,6 +61,22 @@ TMPIDX=$(mktemp)
 TMPIDX2=$(mktemp)
 DLIDX=https://download.opensuse.org/repositories/home:/i-danos/2608/Packages
 
+# An expired osc session is not a disagreement. osc then writes nothing and
+# the count is zero, which read as "osc says there are no packages" and
+# produced three rounds of "two transports never agreed" -- a message that
+# sends you looking at OBS instead of at your own credentials. Probe first and
+# say which it is.
+if ! timeout 120 $OSC api /person/i-danos < /dev/null > /dev/null 2>&1; then
+	echo "   the osc session has expired, so only one transport can read the" >&2
+	echo "   index and the cross-check cannot run. Refresh it yourself:" >&2
+	echo >&2
+	echo "       $OBS/osc -A https://api.opensuse.org api /person/i-danos > /dev/null && echo OK" >&2
+	echo >&2
+	echo "   then rerun this script. It never enters your password." >&2
+	rm -f "$TMPIDX" "$TMPIDX2"
+	exit 1
+fi
+
 agreed=""
 for attempt in 1 2 3; do
 	timeout 600 $OSC api "$PUB/Packages" < /dev/null 2>/dev/null > "$TMPIDX"
@@ -97,6 +113,18 @@ if [ "$prev" -gt 0 ] && [ "$total" -lt $((prev * 9 / 10)) ]; then
 	rm -f "$TMPIDX"
 	exit 1
 fi
+# An index identical to last time is the signature of a rebuild OBS has not
+# published yet. Everything below then succeeds against the previous build,
+# the ISO carries the old binaries, and the regression passes -- which is the
+# worst way for this to go wrong, because nothing looks broken. Say it loudly;
+# it is legitimate when nothing was rebuilt, so it is a warning and not a stop.
+if cmp -s "$TMPIDX" "$NEW/.Packages.src" 2>/dev/null; then
+	echo "   NOTE: the index is byte for byte what it was last run." >&2
+	echo "   If you just rebuilt something, OBS has not published it yet and" >&2
+	echo "   every package below will be the previous build. Wait a few" >&2
+	echo "   minutes and rerun before building an image." >&2
+fi
+
 cp "$TMPIDX" "$NEW/.Packages.src"
 rm -f "$TMPIDX"
 echo "   $total packages (was $prev)"
