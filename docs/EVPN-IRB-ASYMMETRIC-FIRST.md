@@ -1,9 +1,9 @@
 # EVPN IRB: asymmetric works today, symmetric is a dataplane project
 
-Status: **asymmetric IRB verified working on the built image, 9 of 9, with no
-dataplane change and no new configuration model.** Symmetric IRB was the piece
-originally asked for; measuring first showed it needs three dataplane features
-that do not exist here at all.
+Status: **asymmetric IRB verified working on the built image with no dataplane
+change and no new configuration model, and ARP suppression built on top of
+it.** Symmetric IRB was the piece originally asked for; measuring first showed
+it needs three dataplane features that do not exist here at all.
 
 ## The question
 
@@ -108,11 +108,81 @@ set protocols bgp 65000 neighbor 10.60.60.2 address-family l2vpn-evpn
 with the same again for the second bridge domain. The EVPN half of that is
 new this week; the rest predates it.
 
-**ARP suppression is the piece worth doing next**, and it is an optimisation
-rather than a fix. Without it every ARP for a remote host floods across the
-fabric. EVPN already holds what is needed to answer locally -- the arp-cache
-above has the IP and the MAC -- so the work is a knob and the path that
-consumes it, not new information.
+## ARP suppression, which was the piece worth doing next
+
+Done, and it turned out to be a knob and a reply path. One line:
+
+```
+set interfaces bridge br20 arp-suppression
+```
+
+`probe-arp-suppression.sh` sized it before anything was written, by asking
+which half was missing. The information was already there: flush the
+neighbour on a leaf and zebra puts it straight back from the EVPN route as
+`extern_learn`, and the dataplane holds it against the bridge in the same
+table the routing path reads. Only the behaviour had to be built --
+`bridge.c` touched ARP solely to bypass the firewall. So no new table, no
+netlink plumbing.
+
+`verify-arp-suppression.sh`, 9 of 9 on `i-danos_2608_20260912T0211` -- a
+later image than the asymmetric IRB run above, which is why the two cite
+different ones:
+
+| Check | Result |
+|---|---|
+| With it off, the request is encapsulated into the fabric | VXLAN `OutPkts` **+2** |
+| With it on, the request is answered locally | `OutPkts` **+1** -- the ARP is the one that went |
+| The bridge says it answered | `suppressed` 0 → 1, `flooded` unchanged |
+| The answer carries the right MAC | R3 reaches the far SVI, 3 of 3 |
+| An address the table never held still floods | `flooded` 0 → 3 |
+
+The last row is the one that keeps this an optimisation rather than an
+outage: a host EVPN has not advertised yet must still be reachable, at the
+cost of one broadcast.
+
+The five Robot suites pass 74 of 74 on the same image, which matters here
+because the change puts a branch in the bridge's input path. It is behind
+`likely(!sc->scbr_arp_suppress)` and returns before touching the frame when
+the feature is off, but it is on the path every frame that would be flooded
+takes.
+
+### Two things the implementation had to get right
+
+**It is for the hosts, not for the router.** A leaf with an SVI never ARPs for
+a remote host -- zebra has already installed the neighbour, and deleting it
+locally only makes zebra put it back. What floods is a host in the bridge
+domain, which has no BGP session. The first version of the test drove the ARP
+from the router's own stack and measured nothing at all, both counters at
+zero, because no ARP was ever sent.
+
+**Every leaf needs an SVI in every subnet it serves.** Only a leaf with an
+address in the host's subnet learns the host's IP-to-MAC binding; a pure L2
+leaf sees the MAC alone and advertises a MAC-only type-2 route, leaving
+nothing to answer from. That is why the `flooded` counter is not decoration:
+a count that keeps rising is the visible form of that configuration mistake,
+and it is otherwise invisible -- ARP still resolves, just noisily.
+
+### Four measurements that measured nothing
+
+Worth recording, because the shape was identical every time: a reading that
+exists, parses, and does not carry the information.
+
+| Attempt | Read | Why it said nothing |
+|---|---|---|
+| 1 | `[:12]` slice of the sorted key list | cut off at `rx_`, suggesting `tx_packets` did not exist |
+| 2 | `tx_packets`, confirmed on `dp0s8` | confirmed on a physical port, used on a tunnel |
+| 3 | `tun20` `tx_packets` | the field exists and is never incremented |
+| 4 | `vxlan stats` `OutPkts` | incremented on the send path -- correct |
+
+Attempt 3 is the instructive one. A VXLAN interface transmits by building the
+outer packet and handing it to the underlay port, so the tunnel's own counter
+stays at zero while the tunnel carries traffic. It read `0 -> 0` across an ARP
+that had demonstrably crossed, since the far host resolved the address. A
+legitimate zero and a meaningless zero are indistinguishable from the reading
+alone.
+
+The product's four substantive checks passed on the first run that generated
+an ARP at all. All four of these were the corroborating measurement.
 
 ## What this does not say
 
@@ -135,3 +205,8 @@ consumes it, not new information.
 `verify-asymmetric-irb.sh` (three routers, `TOPO=ipsec`).
 `probe-asymmetric-irb.sh` is the earlier, weaker version kept because its
 reading of `show evpn vni` is what turned up the VRF binding.
+
+For suppression, `probe-arp-suppression.sh` (what is already there) and
+`verify-arp-suppression.sh` (whether it stops the flood), both on
+`TOPO=ipsec`. The verification needs all three routers and needs R2 to hold
+an address in the host's subnet, for the reason above.
