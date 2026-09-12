@@ -8,12 +8,25 @@
 #
 # What separates the two is where the request goes, and the dataplane counts
 # it: "bridge <name> arp-suppression" reports how many requests were answered
-# from the neighbour table and how many still flooded. The test drives one ARP
-# with suppression off, then the same ARP with it on, and compares.
+# from the neighbour table and how many still flooded.
 #
-# Both counters matter. A suppressed count that rises while the flooded count
-# also rises means only some requests were answered, which is what a partially
-# populated neighbour table looks like.
+# The ARP has to come from a host in the bridge domain, not from the router.
+# The first version of this test drove it from R1's own L3 stack and measured
+# nothing at all -- both counters stayed zero with suppression on -- because a
+# leaf with an SVI never ARPs for a remote host in the first place: zebra has
+# already installed the neighbour from the EVPN route, and deleting it locally
+# just makes zebra put it back. That is the feature working one layer down,
+# and it is also why suppression exists for the hosts rather than the router:
+# a host attached to the bridge has no BGP session and will flood.
+#
+# So the request comes from R3, through R2, which is the leaf the host is
+# attached to and the one configured to suppress.
+#
+# The counters cannot measure the "off" case: the fast path returns before
+# them when suppression is disabled, deliberately, so a feature nobody enabled
+# costs nothing. The flood itself is measured instead, on R2's tunnel out of
+# the bridge domain -- which is the thing the feature exists to prevent and
+# reads the same in both states.
 #
 #   R1  VTEP 10.60.60.1   br10 10.10.10.1/24 (tun10), br20 10.20.20.1/24 (tun20), both RED
 #   R2  VTEP 10.60.60.2   br10 10.10.10.2/24 (tun10), br20 10.20.20.2/24 (tun20 + dp0s8)
@@ -34,6 +47,8 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Connect
 R1=192.168.203.155
 R2=192.168.203.156
 R3=192.168.203.157
+# What R3 asks about: an address that lives on the far side of the tunnel.
+TARGET=10.20.20.1
 pass=0
 fail=0
 
@@ -55,23 +70,42 @@ bad() { printf '  FAIL  %s\n' "$1"; shift; printf '%s\n' "$@" | head -6 | sed 's
 # so a failure to parse cannot be mistaken for a counter that did not move --
 # that mistake has been made twice in this toolkit already.
 supp_state() {
-	S $R1 "sudo /opt/vyatta/bin/vplsh -l -c 'bridge br20 arp-suppression' 2>/dev/null \
+	S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'bridge br20 arp-suppression' 2>/dev/null \
 	       | python3 -c 'import sys,json
 d=json.load(sys.stdin)[\"arp_suppression\"]
 print(d[\"enabled\"], d[\"suppressed\"], d[\"flooded\"])' 2>/dev/null" | tail -1 | grep -E '^(True|False) [0-9]+ [0-9]+$' || echo unreadable
 }
 
-# One ARP, reliably: forget the host, then send a single packet at it.
+# Packets R2 encapsulated into the fabric. A flooded ARP is one of them; a
+# suppressed one is not.
+#
+# Not the tunnel interface's tx_packets. That field exists in the JSON and is
+# never incremented: a VXLAN interface transmits by building the outer packet
+# and handing it to the underlay port, so the physical port's counters move
+# and the tunnel's do not. Reading it gave "0 -> 0" across an ARP that
+# demonstrably crossed the tunnel -- R3 resolved the address -- which is a
+# counter that exists, parses, and means nothing. VXLAN_STATS_OUTPKTS is
+# incremented on the send path itself.
+vxlan_out() {
+	S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'vxlan stats show' 2>/dev/null \
+	       | python3 -c 'import sys,json
+print(json.load(sys.stdin)[\"vxlan_stats\"][\"OutPkts\"])' 2>/dev/null" | tail -1 | grep -E '^[0-9]+$' || echo ""
+}
+
+# One ARP from a real host in the bridge domain, asking about an address that
+# only exists across the tunnel. R3 has no BGP session, so it must ask -- which
+# is the case suppression is for. The router itself never would: zebra has
+# already given it the answer.
 one_arp() {
-	S $R1 "sudo ip -4 neigh del 10.20.20.3 dev br20 2>/dev/null
-	       sudo ip vrf exec vrfRED ping -c 1 -W 3 -I 10.20.20.1 10.20.20.3 >/dev/null 2>&1
+	S $R3 "sudo ip -4 neigh del $TARGET dev dp0s8 2>/dev/null
+	       ping -c 1 -W 3 $TARGET >/dev/null 2>&1
 	       echo done" > /dev/null
 	sleep 3
 }
 
 cleanup() {
 	echo; echo "===== Clean up ====="
-	cli $R1 "delete interfaces bridge br20 arp-suppression" > /dev/null 2>&1
+	cli $R2 "delete interfaces bridge br20 arp-suppression" > /dev/null 2>&1
 	cli $R1 "delete protocols bgp 65000" "delete routing routing-instance RED" \
 	        "delete interfaces tunnel tun10" "delete interfaces tunnel tun20" \
 	        "delete interfaces bridge br10" "delete interfaces bridge br20" \
@@ -128,21 +162,32 @@ cli $R2 "set interfaces dataplane dp0s3 address 10.60.60.2/24" \
 cli $R3 "set interfaces dataplane dp0s8 address 10.20.20.3/24" \
         "set protocols static route 10.10.10.0/24 next-hop 10.20.20.1" | tail -2
 sleep 50
+# Give both leaves something to advertise, and give R2 a reason to have
+# learned the far SVI.
 S $R2 "ping -c 3 -W 2 10.20.20.3 >/dev/null 2>&1"
+S $R1 "sudo ip vrf exec vrfRED ping -c 3 -W 2 -I 10.20.20.1 10.20.20.2 >/dev/null 2>&1"
 sleep 25
 
 echo
-echo "===== 2. R1 knows the host without having asked for it ====="
-ev=$(S $R1 'sudo vtysh -c "show evpn arp-cache vni 20" 2>&1 | tail -2')
-printf '%s\n' "$ev" | sed 's/^/    /'
-if printf '%s' "$ev" | grep -qE '10\.20\.20\.3 +remote'; then
-	ok "EVPN holds 10.20.20.3 as remote, so there is something to answer from"
+echo "===== 2. R2 can answer for $TARGET without asking the fabric ====="
+# The precondition is about R2 and about the address R3 will ask for. R2 is
+# the leaf that will suppress; if its neighbour table has no entry for the
+# target then suppression has nothing to answer from and will correctly fall
+# through to flooding, which would fail step 5 for a reason that is not a
+# defect.
+ev=$(S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'arp show' 2>/dev/null")
+printf '%s' "$ev" | tr ',' '\n' | grep -A1 "$TARGET" | head -4 | sed 's/^/    /'
+if printf '%s' "$ev" | grep -q "\"ip\":\"$TARGET\""; then
+	ok "R2's neighbour table holds $TARGET, so there is something to answer from"
 else
-	bad "EVPN holds 10.20.20.3 as remote, so there is something to answer from" "$ev"
+	bad "R2's neighbour table holds $TARGET, so there is something to answer from" \
+	    "no entry for $TARGET in R2's arp table"
 fi
+echo "  R2's EVPN view of VNI 20:"
+S $R2 'sudo vtysh -c "show evpn arp-cache vni 20" 2>&1 | tail -3' | sed 's/^/    /' 
 
 echo
-echo "===== 3. Suppression off: the request floods ====="
+echo "===== 3. Suppression off: the request floods out of the fabric ====="
 st=$(supp_state)
 echo "    state: $st"
 if [ "$st" = "unreadable" ]; then
@@ -151,19 +196,27 @@ if [ "$st" = "unreadable" ]; then
 fi
 set -- $st
 [ "$1" = "False" ] && ok "suppression starts off" || bad "suppression starts off" "enabled=$1"
-before_f=$3
+
+# Counters cannot be used here: with suppression off the fast path returns
+# before them. The flood is measured on the tunnel instead.
+tx_before=$(vxlan_out)
 one_arp
-st=$(supp_state); set -- $st
-echo "    state after one ARP: $st"
-if [ "$3" -gt "$before_f" ]; then
-	ok "with it off the request was flooded ($before_f -> $3)"
+tx_after=$(vxlan_out)
+echo "    R2 VXLAN OutPkts: ${tx_before:-unreadable} -> ${tx_after:-unreadable}"
+echo "    R3's ARP cache, which is what the request resolved into:"
+S $R3 "ip -4 neigh show dev dp0s8 | grep '$TARGET'" | sed 's/^/      /' | tail -1
+if [ -z "$tx_before" ] || [ -z "$tx_after" ]; then
+	bad "the tunnel counter is readable" "one of the samples did not parse"
+elif [ "$tx_after" -gt "$tx_before" ]; then
+	ok "with it off the ARP was encapsulated into the fabric ($tx_before -> $tx_after)"
 else
-	bad "with it off the request was flooded" "flooded stayed at $3"
+	bad "with it off the ARP was encapsulated into the fabric" "OutPkts stayed at $tx_after"
 fi
+off_delta=$(( ${tx_after:-0} - ${tx_before:-0} ))
 
 echo
 echo "===== 4. Turn it on ====="
-out=$(cli $R1 "set interfaces bridge br20 arp-suppression")
+out=$(cli $R2 "set interfaces bridge br20 arp-suppression")
 if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then printf '%s\n' "$out" | sed 's/^/    /'; fi
 sleep 8
 st=$(supp_state); set -- $st
@@ -174,30 +227,41 @@ before_f=$3
 
 echo
 echo "===== 5. Suppression on: the request is answered, not flooded ====="
+tx_before=$(vxlan_out)
 one_arp
+tx_after=$(vxlan_out)
 st=$(supp_state); set -- $st
 echo "    state after one ARP: $st"
+echo "    R2 VXLAN OutPkts: ${tx_before:-unreadable} -> ${tx_after:-unreadable}"
 if [ "$2" -gt "$before_s" ]; then
 	ok "the request was answered from the neighbour table ($before_s -> $2)"
 else
 	bad "the request was answered from the neighbour table" "suppressed stayed at $2"
 fi
 if [ "$3" -eq "$before_f" ]; then
-	ok "and nothing was flooded ($before_f unchanged)"
+	ok "the flooded counter did not move ($before_f unchanged)"
 else
-	bad "and nothing was flooded" "flooded moved $before_f -> $3"
+	bad "the flooded counter did not move" "flooded moved $before_f -> $3"
+fi
+# The counters say what the bridge decided; this says what left the box.
+on_delta=$(( ${tx_after:-0} - ${tx_before:-0} ))
+if [ "$on_delta" -lt "$off_delta" ]; then
+	ok "and less was encapsulated than with it off ($off_delta -> $on_delta)"
+else
+	bad "and less went over the tunnel than with it off" \
+	    "off sent $off_delta, on sent $on_delta"
 fi
 
 echo
 echo "===== 6. The host is still reachable ====="
 # Suppression that answers with the wrong MAC would show the same counters and
 # break forwarding, so the counters alone are not enough.
-got=$(S $R1 "sudo ip -4 neigh del 10.20.20.3 dev br20 2>/dev/null
-             sudo ip vrf exec vrfRED ping -c 3 -W 3 -I 10.20.20.1 10.20.20.3 2>&1 | grep -oE '[0-9]+ received'" | tail -1 | tr -dc '0-9')
+got=$(S $R3 "sudo ip -4 neigh del $TARGET dev dp0s8 2>/dev/null
+             ping -c 3 -W 3 $TARGET 2>&1 | grep -oE '[0-9]+ received'" | tail -1 | tr -dc '0-9')
 if [ "${got:-0}" -ge 2 ]; then
-	ok "traffic still reaches 10.20.20.3: $got of 3"
+	ok "R3 still reaches $TARGET: $got of 3"
 else
-	bad "traffic still reaches 10.20.20.3" "got $got of 3 -- the answer may carry the wrong MAC"
+	bad "R3 still reaches $TARGET" "got $got of 3 -- the answer may carry the wrong MAC"
 fi
 
 echo
@@ -205,7 +269,7 @@ echo "===== 7. An unknown address still floods ====="
 # The fallback matters: a host EVPN has not advertised yet must still be
 # reachable, at the cost of one broadcast.
 before_f=$(supp_state | cut -d' ' -f3)
-S $R1 "sudo ip vrf exec vrfRED ping -c 1 -W 2 -I 10.20.20.1 10.20.20.77 >/dev/null 2>&1" > /dev/null
+S $R3 "ping -c 1 -W 2 10.20.20.77 >/dev/null 2>&1" > /dev/null
 sleep 3
 after_f=$(supp_state | cut -d' ' -f3)
 if [ "${after_f:-0}" -gt "${before_f:-0}" ]; then
