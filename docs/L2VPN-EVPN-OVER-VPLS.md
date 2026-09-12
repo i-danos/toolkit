@@ -345,9 +345,21 @@ What is outstanding:
   rejects any `NDA_DST` that is not four bytes, so `IFBAF_ADDR_V6` can only
   ever be set by data-path learning. EVPN over an IPv6 underlay is therefore
   not supported, and nothing currently says so to the operator.
-- **Nothing tests a MAC move.** The update path now refreshes the VTEP, which
-  is the behaviour a move depends on, and no test exercises it.
-- **Nothing tests the ageing fix.** It takes thirty minutes of silence to
-  trigger, so it needs either patience or a build with the interval shortened;
-  the fix is a two-line guard and the failure it prevents is intermittent,
-  which is the combination least likely to be noticed if it regresses.
+Both of the behaviours fixed here and untested at the time now have tests, on
+`i-danos_2608_20260912T0211`:
+
+- **A moved MAC follows**, `verify-vxlan-mac-move.sh`, 8 of 8. The move is
+  injected as zebra sends one, the same MAC with a different `NDA_DST` and
+  `extern_learn` set, and both the table and forwarding are checked in both
+  directions. One move could be the entry being recreated rather than
+  updated, and the update branch is what was wrong. Both VTEPs are pinged
+  first: a move to an address that does not answer would read as "the table
+  updated but forwarding did not follow", which is a different fault.
+- **Ageing leaves control-plane entries alone**, `verify-vxlan-ageing.sh`,
+  4 of 4, and it takes thirty-five minutes because the interval is thirty.
+  It carries its own control -- a control-plane entry that must survive and a
+  data-path entry that must go -- because checking only the first would pass
+  just as well on a dataplane whose ageing had stopped entirely, and that is
+  the one outcome that would make the result meaningless. Measured:
+  `control-plane permanent` still present, `data-path dynamic` absent, after
+  the same silence.
