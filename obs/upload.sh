@@ -19,9 +19,10 @@ set -u
 OBS=${OBS_DIR:-${OBS_DIR:-/home/aikon/danos/.obs}}
 # Every osc call in this script runs without a controlling terminal.
 #
-# oscrc uses TransientCredentialsManager: the password is held in one osc
-# process and never written to disk, so once the session cookie expires -- about
-# a day -- osc asks for it again. It asks through /dev/tty, which "< /dev/null"
+# osc asks for the password again whenever it cannot authenticate -- every day
+# under TransientCredentialsManager, which holds it in one process and writes
+# nothing to disk, and after a keyring is locked or cleared under any of the
+# persistent managers. It asks through /dev/tty, which "< /dev/null"
 # does not cover, and "timeout" runs its child in a new process group. Reading
 # the terminal from a background process group raises SIGTTIN, which *stops* the
 # reader; timeout is in that same group, so it stops too and its alarm never
@@ -40,9 +41,10 @@ CO="$OBS/checkout"
 # whole batch run into it one package at a time.
 check_auth() {
   if ! timeout 30 $OSC api /person/i-danos < /dev/null > /dev/null 2>&1; then
-    echo "Authentication failed: the osc session has expired." >&2
-    echo "oscrc stores no password (TransientCredentialsManager), so the session" >&2
-    echo "cookie is all there is and it lasts about a day. Refresh it yourself:" >&2
+    echo "Authentication failed: osc cannot authenticate to OBS." >&2
+    echo "Under TransientCredentialsManager nothing is stored and the session" >&2
+    echo "lasts about a day; under a keyring it can still fail if the keyring" >&2
+    echo "is locked. Either way, refresh it yourself:" >&2
     echo >&2
     echo "    $OBS/osc -A https://api.opensuse.org api /person/i-danos > /dev/null && echo OK" >&2
     echo >&2
