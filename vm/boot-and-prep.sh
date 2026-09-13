@@ -28,9 +28,31 @@ TOPO=${TOPO:-ipsec}
 HERE=$(dirname "$0")
 
 case "$TOPO" in
-  bgp) ROUTERS="r1 r2 r3 r4"; HOSTS="231 232 233 234" ;;
-  *)   ROUTERS="r1 r2 r3";    HOSTS="155 156 157" ;;
+  bgp) ROUTERS="r1 r2 r3 r4"; HOSTS="231 232 233 234"
+       RELAYS="r1:192.168.203.231:2231 r2:192.168.203.232:2232
+               r3:192.168.203.233:2233 r4:192.168.203.234:2234" ;;
+  *)   ROUTERS="r1 r2 r3";    HOSTS="155 156 157"
+       RELAYS="r1:192.168.203.155:2231 r2:192.168.203.156:2232
+               r3:192.168.203.157:2233" ;;
 esac
+
+# The relays are per-topology too, and they do not come down with the VMs.
+#
+# The two topologies use different management addresses -- .155-.157 for the
+# three-router suites, .231-.234 for BGP -- and each relay is a container
+# holding one of them. Boot the ipsec topology after a BGP run and the VMs are
+# fine while every relay is still answering on the BGP addresses, so all three
+# routers are unreachable at the addresses this run uses. That is what happened
+# here: three "prepped" lines followed by three "not reachable" ones, from a
+# boot that was entirely successful.
+#
+# Rebuilding them is a few seconds and removes the whole class, so it is not
+# conditional on what is already running.
+echo "  relays for TOPO=$TOPO"
+"$HERE/relays.sh" down >/dev/null 2>&1
+# shellcheck disable=SC2086  # deliberate word splitting: one spec per relay
+"$HERE/relays.sh" up $RELAYS >/dev/null 2>&1 || {
+	echo "  FAILED: relays did not come up" >&2; exit 1; }
 
 echo "  booting TOPO=$TOPO"
 TOPO="$TOPO" "$HERE/boot-topo.sh" "$ISO" >/dev/null 2>&1 || {
