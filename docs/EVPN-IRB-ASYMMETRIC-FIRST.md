@@ -1,9 +1,11 @@
-# EVPN IRB: asymmetric works today, symmetric is a dataplane project
+# EVPN IRB: both datapaths work today; the gap is the control plane
 
-Status: **asymmetric IRB verified working on the built image with no dataplane
-change and no new configuration model, and ARP suppression built on top of
-it.** Symmetric IRB was the piece originally asked for; measuring first showed
-it needs three dataplane features that do not exist here at all.
+Status: **both IRB datapaths verified working on the built image with no
+dataplane change and no new configuration model, and ARP suppression built on
+top of the asymmetric one.** Symmetric IRB was the piece originally asked for.
+Measuring first said it needed three dataplane features that do not exist --
+and measuring again, properly, showed it needs none of them. The remaining
+work in both cases is the control plane.
 
 ## The question
 
@@ -17,6 +19,7 @@ variations on one design:
 | Transit encapsulation | the destination L2VNI | a dedicated L3VNI |
 | Needs a router-MAC table | no | yes |
 | Scales to a large fabric | poorly | yes |
+| Works on this dataplane | **measured, 9 of 9** | **measured, 4 of 4** |
 
 Symmetric is what the industry settled on, and it is the better design. That
 is a reason to want it, not evidence that it is reachable.
@@ -25,16 +28,27 @@ is a reason to want it, not evidence that it is reachable.
 
 `probe-irb-viability.sh` asked the cheap question first.
 
-**Symmetric IRB has nothing to build on.** `l3vni`, `rmac` and `svi` match
-nothing in `vyatta-dataplane/src`, and the FAL headers carry no hooks for
-them. It needs a VNI that maps to a VRF for routed traffic, a router-MAC table
-per remote VTEP, and a decapsulate-then-route-then-re-encapsulate path, plus
-the zebra plumbing to fill all of it. That is a feature comparable in size to
-everything else done on EVPN here put together.
+**Symmetric IRB was declared to have nothing to build on, and that was
+wrong.** The claim rested on `l3vni`, `rmac` and `svi` matching nothing in
+`vyatta-dataplane/src`. That is evidence about vocabulary, not about
+mechanism, and measuring settled it the other way: `probe-symmetric-irb.sh`
+forwards 4 of 4, with the two routed hops a traceroute should show and with
+the ingress leaf holding none of the destination's VNI.
 
-One thing invites a misreading: `vxlan.c` already has a `t_vrfid`, and it is
-not the tenant VRF. It is the transport VRF the *outer* packet is looked up
-in. A symmetric IRB L3VNI is about the inner packet.
+What FRR calls an L3VNI is a bridge whose only member is a VXLAN tunnel and
+whose SVI is in the tenant VRF. What it calls a router MAC is that SVI's MAC,
+resolved by ordinary ARP like any other next hop. The decapsulate-then-route
+path is a frame arriving addressed to the bridge's own MAC, delivered locally,
+and routed by an SVI that happens to be in a VRF. Every piece was already
+here under a different name.
+
+The same mistaken reasoning appears twice in this document -- it was made
+about asymmetric IRB first, and repeated about symmetric IRB in the paragraph
+that used to stand here. Grepping for a feature's name answers whether the
+codebase uses that word.
+
+One thing still invites a misreading: `vxlan.c` has a `t_vrfid`, and it is not
+the tenant VRF. It is the transport VRF the *outer* packet is looked up in.
 
 **Asymmetric IRB had every piece already.** A bridge with an address is a
 first-class routing-instance member -- FRR, the kernel and the dataplane all
@@ -189,10 +203,13 @@ an ARP at all. All four of these were the corroborating measurement.
 - **That asymmetric IRB scales.** It was measured with one tenant, two bridge
   domains and two leaves. Its known weakness is that every leaf must host
   every VNI, and nothing here measured what that costs.
-- **That symmetric IRB is not worth building.** It is the better design and
-  the reason is exactly the weakness above. What changed is the estimate: it
-  is a dataplane project, to be scheduled as one, and asymmetric IRB is worth
-  having in the meantime because it costs nothing.
+- **That symmetric IRB is finished.** Its datapath works, measured, and that
+  is the half this document was wrong about. The other half is the control
+  plane: FRR designating a VNI as a VRF's L3VNI, and originating and
+  installing type-5 routes whose next hop is a remote VTEP across it. The
+  probe substitutes static routes for exactly that and says so. Whether zebra
+  can install such a route here has not been measured, and it is now the
+  larger part of what remains.
 - **That the test topology is realistic.** R2 holds a host address in one
   bridge domain while bridging the other, which a real leaf would not do. It
   is the only way to reach the ingress hop with three routers. Every hop R1
