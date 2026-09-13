@@ -159,7 +159,23 @@ DL=https://download.opensuse.org/repositories/home:/i-danos/2608
 # "noarch" of their own.
 BUILD="/build/home:i-danos/2608/x86_64"
 APILOG=$(mktemp)
-export DL NEW OSC BUILD APILOG
+OWNERMAP=$(mktemp)
+
+# Which OBS package produced which binary. Asked of OBS rather than derived
+# from the index, because the index's Source: is Debian's source package name
+# and the two are not the same for anything signed. Without this the API
+# fallback looked for the kernel under "linux-signed", got a 404, and the run
+# carried on and assembled a repository with no kernel in it.
+echo "== 1b. ask OBS which package builds which binary =="
+for pkg in $(timeout 300 $OSC api "/source/home:i-danos" < /dev/null 2>/dev/null \
+             | grep -oE 'name="[^"]*"' | cut -d'"' -f2); do
+	timeout 120 $OSC api "$BUILD/$pkg" < /dev/null 2>/dev/null \
+	  | grep -oE 'filename="[^"]*\.deb"' | cut -d'"' -f2 \
+	  | while read -r bin; do printf '%s %s\n' "$bin" "$pkg"; done
+done > "$OWNERMAP"
+echo "   $(wc -l < "$OWNERMAP") binaries mapped to their OBS package"
+
+export DL NEW OSC BUILD APILOG OWNERMAP
 
 # Downloading serially takes about 23 seconds per package -- almost all of it
 # round-trip latency to download.opensuse.org, not bandwidth. Over 823 packages
@@ -200,25 +216,51 @@ awk '/^Package: /{pkg=$2} /^Source: /{src=$2}
       # build result directly. Redirecting into the file truncates it first, so
       # a failed call leaves a short file -- which is exactly what the SHA256
       # check below catches, and why the file is removed when it does not match.
-      if timeout 300 $OSC api "$BUILD/$src/$b" < /dev/null > "$NEW/$b" 2>/dev/null \
-         && [ "$(sha256sum "$NEW/$b" | cut -d" " -f1)" = "$want" ]; then
-        printf "%s\n" "$b" >> "$APILOG"
-        exit 0
-      fi
-      echo "   failed: $p (mirror stale and API had no $src/$b)" >&2
+      #
+      # Two names to try, because the index Source: field is the Debian source
+      # package and the API path wants the OBS package, and they differ.
+      # linux-image-... says "Source: linux-signed" and is built by the OBS
+      # package "linux"; grub-efi-amd64-signed says "grub2-signed-signed" and
+      # is built by "grub2-signed". OWNER is the mapping OBS itself publishes,
+      # built once in step 1b; $src is the fallback for anything it missed.
+      owner=$(awk -v b="$b" "\$1 == b {print \$2; exit}" "$OWNERMAP" 2>/dev/null)
+      for cand in "$owner" "$src"; do
+        [ -n "$cand" ] || continue
+        if timeout 300 $OSC api "$BUILD/$cand/$b" < /dev/null > "$NEW/$b" 2>/dev/null \
+           && [ "$(sha256sum "$NEW/$b" | cut -d" " -f1)" = "$want" ]; then
+          printf "%s\n" "$b" >> "$APILOG"
+          exit 0
+        fi
+      done
+      echo "   failed: $p (mirror stale; API had it under neither ${owner:-?} nor $src)" >&2
       rm -f "$NEW/$b"' _
 
-n=$(ls "$NEW"/*.deb 2>/dev/null | wc -l)
+# Count index entries that have a file, not files that exist. Those are
+# different numbers and subtracting one from the other hides the failure it is
+# meant to report: stale files are still here at this point -- 3b drops them
+# below -- so two left over from a previous index masked two that had failed
+# to download, and this printed "836 present, 0 missing" directly under two
+# "failed:" lines naming them. The ISO was then built without a kernel.
+n=$(awk '/^Filename: /{print $2}' "$NEW/.Packages.src" \
+    | while read -r f; do [ -s "$NEW/$(basename "$f")" ] && echo x; done | wc -l)
 fail=$((total - n))
 viaapi=$(wc -l < "$APILOG" 2>/dev/null || echo 0)
-echo "   $n present, $fail missing"
+echo "   $n of $total index entries present, $fail missing"
+if [ "$fail" -gt 0 ]; then
+	echo "   REFUSING to assemble a repository that is missing $fail package(s)." >&2
+	echo "   The failures are named above. A repository built without them" >&2
+	echo "   looks complete to apt and produces an image without whatever" >&2
+	echo "   they provide -- a missing kernel reads as four unrelated" >&2
+	echo "   unsatisfiable dependencies, not as a missing kernel." >&2
+	exit 1
+fi
 if [ "$viaapi" -gt 0 ]; then
 	# Worth naming: it means the mirror is behind the index for these, so a
 	# plain curl of the public URL right now still returns the old file.
 	echo "   $viaapi fetched from the API because the mirror was stale:"
 	sed 's/^/     /' "$APILOG"
 fi
-rm -f "$APILOG"
+rm -f "$APILOG" "$OWNERMAP"
 
 echo "== 3b. drop packages no longer in the index =="
 # Replaces the old "rm -rf at the start". Same staleness guarantee, but a
