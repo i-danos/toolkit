@@ -1,8 +1,8 @@
 # EVPN IRB: both datapaths work today; the gap is the control plane
 
 Status: **both IRB datapaths verified working on the built image with no
-dataplane change and no new configuration model, and ARP suppression built on
-top of the asymmetric one.** Symmetric IRB was the piece originally asked for.
+dataplane change, ARP suppression built on top of the asymmetric one, and
+symmetric IRB now configurable from the CLI.** Symmetric IRB was the piece originally asked for.
 Measuring first said it needed three dataplane features that do not exist --
 and measuring again, properly, showed it needs none of them. The remaining
 work in both cases is the control plane.
@@ -20,6 +20,7 @@ variations on one design:
 | Needs a router-MAC table | no | yes |
 | Scales to a large fabric | poorly | yes |
 | Works on this dataplane | **measured, 9 of 9** | **measured, 4 of 4** |
+| Configurable from the CLI | needs no new model | **measured, 16 of 16** |
 
 Symmetric is what the industry settled on, and it is the better design. That
 is a reason to want it, not evidence that it is reachable.
@@ -203,13 +204,23 @@ an ARP at all. All four of these were the corroborating measurement.
 - **That asymmetric IRB scales.** It was measured with one tenant, two bridge
   domains and two leaves. Its known weakness is that every leaf must host
   every VNI, and nothing here measured what that costs.
-- **That symmetric IRB is finished.** Its datapath works, measured, and that
-  is the half this document was wrong about. The other half is the control
-  plane: FRR designating a VNI as a VRF's L3VNI, and originating and
-  installing type-5 routes whose next hop is a remote VTEP across it. The
-  probe substitutes static routes for exactly that and says so. Whether zebra
-  can install such a route here has not been measured, and it is now the
-  larger part of what remains.
+- **That symmetric IRB needed anything built.** It did not. The datapath
+  works, FRR drives it, and it is now configurable:
+
+  ```
+  set routing routing-instance RED vni 5000
+  set routing routing-instance RED protocols bgp 65000 \
+      address-family ipv4-unicast redistribute connected
+  set routing routing-instance RED protocols bgp 65000 \
+      address-family l2vpn-evpn advertise-ipv4-unicast
+  ```
+
+  `verify-symmetric-irb-cli.sh`, 16 of 16 on `i-danos_2608_20260913T1546`,
+  with 74 of 74 beside it: the model emits the vrf block and the VRF's BGP
+  instance, zebra takes the VNI as L3 against the tenant, the type-5 arrives
+  carrying the far leaf's router MAC, zebra installs it against the remote
+  VTEP with that MAC as a neighbour, and traffic takes the two routed hops --
+  with the ingress leaf holding none of the destination's bridge domain.
 - **That the test topology is realistic.** R2 holds a host address in one
   bridge domain while bridging the other, which a real leaf would not do. It
   is the only way to reach the ingress hop with three routers. Every hop R1
@@ -227,3 +238,24 @@ For suppression, `probe-arp-suppression.sh` (what is already there) and
 `verify-arp-suppression.sh` (whether it stops the flood), both on
 `TOPO=ipsec`. The verification needs all three routers and needs R2 to hold
 an address in the host's subnet, for the reason above.
+
+## Two integration seams worth knowing
+
+Neither is a defect and both cost a run.
+
+**A YANG module reaches nothing unless its component lists it.** A component
+declares the modules it is responsible for in `Modules=` in its `.component`
+file and receives nothing outside them.
+`vyatta-protocols-frr-evpn-l3vni-v1` was not listed, so `vni` committed, was
+in the configuration tree, appeared in `show configuration`, and never reached
+FRR. The signature was `vrf vrfRED` immediately followed by `exit-vrf` -- and
+that empty block was not even the L3VNI's, it belongs to `protocols/next-hop`,
+which opens the same one. Read as "the mapping is wrong" it leads nowhere: the
+mapping was correct and verified on the box.
+
+**`advertise ipv4 unicast` advertises a BGP table, not a routing table.** A
+connected subnet is not in the VRF's BGP IPv4 unicast RIB until something puts
+it there. Without `redistribute connected` the command is accepted, appears in
+the running config, and originates nothing, with no error -- which reads as
+bgpd being unable to do this rather than as bgpd having nothing to advertise.
+Both the YANG description and the test's failure hint now say so.
