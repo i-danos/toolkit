@@ -19,6 +19,8 @@ Usage: preflight.py [--repo DIR] [--lists DIR]
 
 import argparse
 import gzip
+import lzma
+from email.utils import parsedate_to_datetime
 import os
 import re
 import subprocess
@@ -30,14 +32,29 @@ from collections import defaultdict
 # exporting OBS_REPO / PKG_LISTS.
 REPO = os.environ.get("OBS_REPO", "/home/aikon/danos/build-iso/danos-build/obs-repo")
 LISTS = os.environ.get("PKG_LISTS", "/home/aikon/danos/build-iso/danos-sources/build-iso/config/package-lists")
-# The chroot's apt sources; see build-iso/config/apt/sources.list.
+# The mirror the chroot installs from. Must match build-iso/auto/config, or
+# this checks a different archive from the one the build will use.
+MIRROR = os.environ.get("DEBIAN_MIRROR", "https://mirrors.tuna.tsinghua.edu.cn")
+
+# The chroot's apt sources; see build-iso/config/apt/sources.list. Packages.xz
+# rather than .gz: several mirrors publish only the xz form, and asking for a
+# .gz that is not there produced a warning on every run that was true, ignored,
+# and unrelated to the failure it was eventually blamed for.
 DEBIAN = [
-    "https://mirrors.aliyun.com/debian/dists/trixie/main/binary-amd64/Packages.gz",
-    "https://mirrors.aliyun.com/debian/dists/trixie/contrib/binary-amd64/Packages.gz",
-    "https://mirrors.aliyun.com/debian/dists/trixie/non-free-firmware/binary-amd64/Packages.gz",
-    "https://mirrors.aliyun.com/debian-security/dists/trixie-security/main/binary-amd64/Packages.gz",
-    "https://mirrors.aliyun.com/debian/dists/trixie-updates/main/binary-amd64/Packages.gz",
+    MIRROR + "/debian/dists/trixie/main/binary-amd64/Packages.xz",
+    MIRROR + "/debian/dists/trixie/contrib/binary-amd64/Packages.xz",
+    MIRROR + "/debian/dists/trixie/non-free-firmware/binary-amd64/Packages.xz",
+    MIRROR + "/debian-security/dists/trixie-security/main/binary-amd64/Packages.xz",
+    MIRROR + "/debian/dists/trixie-updates/main/binary-amd64/Packages.xz",
 ]
+
+# How far behind deb.debian.org the mirror may be before it is a problem. A
+# mirror is a cache and owes nobody freshness; this build installs OBS packages
+# built against current Debian beside Debian packages from here, so a stale one
+# breaks them against each other. Aliyun sat two months behind and served
+# perl 5.40.1-6 while trixie/main had moved to 5.40.1-6+deb13u1, and apt
+# reported held broken packages naming perl -- nothing named the mirror.
+MIRROR_MAX_LAG_DAYS = 3
 
 
 def parse_packages(text):
@@ -111,13 +128,52 @@ def local_packages(repo):
 
 def fetch_debian():
     stanzas = []
+    failed = []
     for url in DEBIAN:
         try:
-            with urllib.request.urlopen(url, timeout=120) as r:
-                stanzas += list(parse_packages(gzip.decompress(r.read()).decode("utf-8", "replace")))
+            with urllib.request.urlopen(url, timeout=180) as r:
+                raw = r.read()
+            text = (lzma.decompress(raw) if url.endswith(".xz")
+                    else gzip.decompress(raw)).decode("utf-8", "replace")
+            stanzas += list(parse_packages(text))
         except Exception as e:                      # noqa: BLE001 - report and continue
-            print(f"  WARN  cannot fetch {url}: {e}", file=sys.stderr)
+            failed.append(f"{url}: {e}")
+    # An index that cannot be read is a hole in the closure check below, and a
+    # hole makes it pass for the wrong reason: nothing can be unsatisfiable
+    # against packages nobody managed to list. These used to be warnings on
+    # every run, which is how two of them came to be scrolled past for weeks.
+    if failed:
+        print("  could not read %d of %d indices:" % (len(failed), len(DEBIAN)))
+        for f in failed:
+            print("    " + f)
+        print("  The dependency closure below would pass by omission, so it is")
+        print("  not run.")
+        sys.exit(1)
     return stanzas
+
+
+def mirror_lag_days():
+    """How far the chroot mirror's trixie trails deb.debian.org's, in days.
+
+    Returns None if either Release is unreadable, which is reported rather
+    than treated as fresh.
+    """
+    def release_date(base):
+        url = base + "/debian/dists/trixie/Release"
+        with urllib.request.urlopen(url, timeout=60) as r:
+            for line in r.read().decode("utf-8", "replace").splitlines():
+                if line.startswith("Date:"):
+                    return parsedate_to_datetime(line[5:].strip())
+        return None
+
+    try:
+        ours = release_date(MIRROR)
+        theirs = release_date("https://deb.debian.org")
+    except Exception:                               # noqa: BLE001
+        return None
+    if ours is None or theirs is None:
+        return None
+    return (theirs - ours).total_seconds() / 86400.0
 
 
 def main():
@@ -129,6 +185,18 @@ def main():
     print(f"local repo: {args.repo}")
     local = local_packages(args.repo)
     print(f"  {len(local)} binary packages")
+    print(f"chroot mirror: {MIRROR}")
+    lag = mirror_lag_days()
+    if lag is None:
+        print("  WARN  could not compare its trixie against deb.debian.org")
+    elif lag > MIRROR_MAX_LAG_DAYS:
+        print(f"  {lag:.0f} days behind deb.debian.org -- too stale to build against.")
+        print("  OBS builds against current Debian, so its packages will depend on")
+        print("  versions this mirror does not carry, and apt will report held")
+        print("  broken packages naming a library rather than the mirror.")
+        sys.exit(1)
+    else:
+        print(f"  {lag:.1f} days behind deb.debian.org")
     print("fetching Debian trixie indices ...")
     debian = fetch_debian()
     print(f"  {len(debian)} Debian packages")
