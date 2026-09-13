@@ -23,7 +23,10 @@
 #   disjoint   an answerable request raises suppressed and never flooded;
 #              a mixed burst splits with no cross-talk.
 #   gated      ARP replies and non-ARP broadcasts take the same flood path and
-#              move neither counter.
+#              move neither counter, and neither does a request for the
+#              bridge's own address -- which the L3 path has already answered,
+#              and which this test is the reason bridge_arp_suppress() now
+#              guards against: it used to count those as misses.
 #   temporary  a rising flooded is a diagnosis, not a steady state: the same
 #              address stops flooding the moment the table can answer for it.
 #
@@ -334,15 +337,29 @@ measure 4 request $MISS
 exact "the same address that flooded four frames ago is now answered, and stops flooding" 4 0
 
 echo
-echo "===== 11. For the record: a request for the bridge's own address ====="
-# Not an assertion. A broadcast request for 10.20.20.2 is delivered to R2's own
-# L3 path first and answered there, and then still falls through to the
-# suppression check, where the neighbour table has no entry for an address that
-# is the interface's own. Whichever way that lands, it is worth having written
-# down: an operator reading a slowly rising flooded on an otherwise quiet
-# bridge should know this is one of the things that can produce it.
+echo "===== 11. A request for the bridge's own address is not a miss ====="
+# This step is why the guard in bridge_arp_suppress() exists. Before it, three
+# requests for R2's own br20 address gave flooded +3: the local copy is
+# delivered to R2's L3 path and answered there, and the frame then still fell
+# through to the suppression check, where an interface's own address is never
+# found -- it is a route, not a neighbour. So the one address a leaf is most
+# certain about was counted as the same kind of event as a host the fabric
+# never advertised, and a climbing flooded on a quiet bridge sent the operator
+# looking for a missing EVPN advertisement.
+#
+# The frame must still flood. A bridge floods broadcasts, duplicate address
+# detection on the segment depends on it, and suppressing it here would also
+# put a second reply on the wire behind the one the L3 path already sent. So
+# the assertion is exactly "counted nowhere, still flooded" -- and OutPkts is
+# what keeps that from being indistinguishable from frames that never arrived.
 measure 3 request 10.20.20.2
-printf '    requests for the SVI itself: suppressed +%d, flooded +%d\n' "$d_supp" "$d_flood"
+exact "requests for the bridge's own address are counted nowhere" 0 0
+if [ "$d_out" -ge 3 ]; then
+	ok "and still flood, as a bridge must (OutPkts +$d_out)"
+else
+	bad "and still flood, as a bridge must" \
+	    "OutPkts +$d_out -- 'counted nowhere' may mean the frames never arrived"
+fi
 
 echo
 echo "===== 12. Result ====="

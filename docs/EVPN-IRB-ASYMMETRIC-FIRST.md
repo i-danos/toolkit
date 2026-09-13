@@ -213,10 +213,9 @@ earlier stops flooding entirely. A rising `flooded` is therefore a condition
 with a cause, not a statistic -- which is what lets it diagnose the missing-SVI
 mistake above.
 
-### One thing it counts that it should not
+### One thing it counted that it should not
 
-A request for the bridge's **own** SVI address raises `flooded`, and is also
-encapsulated into the fabric:
+A request for the bridge's **own** SVI address used to raise `flooded`:
 
 ```
 sent 3 request (10.20.20.2, which is R2's own br20 address)
@@ -225,21 +224,32 @@ sent 3 request (10.20.20.2, which is R2's own br20 address)
 
 It is answered -- the local copy is delivered to R2's L3 path before the
 suppression check, which is deliberate and is why that ordering exists. But
-the suppression check then looks `10.20.20.2` up in the neighbour table, which
+the suppression check then looked `10.20.20.2` up in the neighbour table, which
 does not hold an interface's own address (that is a route, not a neighbour),
-reads a miss, counts it, and lets it flood.
+read a miss, counted it, and let it flood.
 
-So the one address a leaf is most certain about is the one address it does not
-suppress, and the counter reports it as the same kind of event as a host the
-fabric never advertised. On a quiet bridge this is a `flooded` that climbs for
-no reason an operator can find, sending them to look for an EVPN advertisement
+So the one address a leaf is most certain about was the one address it did not
+suppress, and the counter reported it as the same kind of event as a host the
+fabric never advertised. On a quiet bridge that is a `flooded` climbing for no
+reason an operator can find, sending them to look for an EVPN advertisement
 problem that is not there.
 
-`is_local_ipv4(vrfid_t, in_addr_t)` already exists -- `route.h:92`, implemented
-at `route.c:706`, four callers on the forwarding path -- so the guard is two
-lines in `bridge_arp_suppress()`. Recorded rather than fixed in the same
-breath, because the measurement that found it was a verification run and the
-fix wants its own before-and-after.
+`bridge_arp_suppress()` now returns before the lookup for an address the
+bridge holds. The frame still floods -- a bridge floods broadcasts, duplicate
+address detection on the segment depends on seeing them, and suppressing here
+would also put a second reply on the wire behind the one the L3 path already
+sent.
+
+**Which "local" is the right one.** The obvious helper is `is_local_ipv4()`
+(`route.h:92`), and it is the wrong one: it is VRF-scoped, so with `br10` and
+`br20` both in `RED` it would call `10.10.10.2` local for a request arriving on
+`br20`. Nothing would answer that request -- this dataplane replies to ARP only
+for addresses on the *receiving* interface, which `arp_ignore()` in
+`l3_arp.c:172` enforces, Vyatta behaviour equivalent to Linux `arp_ignore=1` --
+so the guard would have stopped counting a miss that really is one. The new
+`ifa_is_local()` in `in.c` asks the same interface-scoped question
+`arp_ignore()` asks, and sits beside `ifa_broadcast()`, which was already
+there asking a neighbouring one.
 
 ### Four measurements that measured nothing
 
