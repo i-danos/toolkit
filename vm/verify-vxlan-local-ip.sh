@@ -19,9 +19,18 @@
 # until the far end filters on it, or until a second address on the egress
 # interface changes what selection returns.
 #
-# Measured where it shows: the source address of the encapsulated packets, on
-# the far end, not in the dump. The dump agreeing is checked too, because that
-# is what someone debugging will look at first.
+# Measured where it shows: the address the far end records for this VTEP, not
+# the dump. The dump agreeing is checked too, because that is what someone
+# debugging looks at first, but it is not the product.
+#
+# Not tcpdump. dp0s3 belongs to the dataplane, so a kernel capture on it sees
+# only what the slow path punts -- the router's own traffic -- and none of what
+# the dataplane forwards. A first version captured on R2 and saw eight packets,
+# every one sourced from R2 itself, which reads exactly like R1 sending nothing.
+#
+# R2's own learning is the observation instead. vxlan_rtupdate() stores the
+# outer source of a received frame as the VTEP for the MAC inside it, so
+# "vxlan macs show" on R2 reports the address R1 actually put on the wire.
 #
 #   R1  dp0s9 10.60.60.1 and 10.60.60.11, tun4 local-ip 10.60.60.11
 #   R2  dp0s3 10.60.60.2, tun4 remote-ip 10.60.60.1
@@ -123,23 +132,34 @@ else
 fi
 
 echo
-echo "===== 3. The packets carry it ====="
-# The dump is not the product. Capture on R2's underlay port and read the
-# outer source of the VXLAN packets, which is what a far end filters on.
-S $R2 "sudo timeout 25 tcpdump -n -i dp0s3 -c 8 'udp port 4789' -w /tmp/v.pcap >/dev/null 2>&1 &" > /dev/null
-sleep 3
+echo "===== 3. The far end sees it ====="
+# R2 learns the VTEP of a MAC from the outer source of the frame that carried
+# it, so its table holds the address R1 put on the wire -- which is the one
+# thing here that the dump cannot fake.
 S $R1 "ping -c 5 -W 2 10.44.44.2 >/dev/null 2>&1" > /dev/null
-sleep 24
-outer=$(S $R2 "sudo tcpdump -n -r /tmp/v.pcap 2>/dev/null | grep -oE '^[0-9:.]+ IP [0-9.]+' | awk '{print \$3}' | sort -u | head -4")
-printf '%s\n' "$outer" | sed 's/^/    outer source seen: /'
-if printf '%s' "$outer" | grep -q "^$LOCAL\.\|^$LOCAL$"; then
-	ok "the encapsulated packets leave with $LOCAL"
-elif printf '%s' "$outer" | grep -q "$PRIMARY"; then
-	bad "the encapsulated packets leave with $LOCAL" \
-	    "they carry $PRIMARY -- the route's choice, so local-ip is still ignored"
-else
-	bad "the encapsulated packets leave with $LOCAL" "saw: $outer"
-fi
+sleep 5
+seen=$(S $R2 "sudo /opt/vyatta/bin/vplsh -l -c 'vxlan macs show' 2>/dev/null" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('unreadable'); sys.exit()
+out = set()
+for t in d.get('mac_table', []):
+    for e in t.get('entries', []):
+        if e.get('origin') == 'data-path' and e.get('remote_ip'):
+            out.add(e['remote_ip'])
+print(' '.join(sorted(out)) or 'none')
+" 2>/dev/null | tail -1)
+echo "    VTEPs R2 learned from the wire: $seen"
+case "$seen" in
+  *"$LOCAL"*)   ok "R2 recorded $LOCAL as the source, so that is what R1 sent" ;;
+  *"$PRIMARY"*) bad "R2 recorded $LOCAL as the source" \
+                    "it recorded $PRIMARY -- the route's choice, so local-ip is still ignored" ;;
+  none)         bad "R2 recorded $LOCAL as the source" \
+                    "R2 learned nothing, so no frame crossed and this measured nothing" ;;
+  *)            bad "R2 recorded $LOCAL as the source" "saw: $seen" ;;
+esac
 
 echo
 echo "===== 4. And it still forwards ====="
@@ -153,13 +173,16 @@ echo
 echo "===== 5. Result ====="
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 if [ "$fail" -eq 0 ]; then
-	echo "  A CONFIGURED local-ip IS USED. It reaches the dataplane, it is"
-	echo "  what the dump reports, and it is the outer source address on the"
-	echo "  wire -- which is the only one of the three the far end sees."
+	echo "  A CONFIGURED local-ip IS USED. It reaches the dataplane, the dump"
+	echo "  reports it, and the far end recorded it as the source of the"
+	echo "  frames it received -- which is the only one of the three that"
+	echo "  depends on what actually went out."
 else
 	echo "  Something above did not hold. If step 3 shows $PRIMARY, the"
 	echo "  address is being chosen by ip_select_source() because s_addr is"
 	echo "  still zero, whatever the dump says."
+	echo "  If it shows none, no frame reached R2 and step 3 measured nothing;"
+	echo "  check step 4 -- if that also fails the tunnel is simply down."
 fi
 
 cleanup
