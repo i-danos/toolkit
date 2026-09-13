@@ -364,11 +364,31 @@ source-selection path; nothing had ever set it.
 A single verdict would have said "IPv6 does not work" and sent the search back
 into the netlink path, which was correct by then.
 
-Still open and not a defect: the dump reports `src=None` for a tunnel whose
-local-ip is set. Forwarding is unaffected, since source selection falls back to
-the route when the address is unspecified, but it reads like a tunnel that
-failed to come up -- the same symptom that was just removed for the
-destination.
+`src=None` was raised next, as a display complaint. It was not one.
+`set_vxlan_params()` assigned `s_addr = 0` unconditionally and never read
+`IFLA_VXLAN_LOCAL`, which the kernel sends whenever a local-ip is configured;
+zero means "choose the source from the route", and the branch that uses a
+configured address had been sitting there the whole time:
+
+```c
+if (vnode->s_addr == 0) { ... ip_select_source(...) }
+else                    { sip->address.ip_v4.s_addr = vnode->s_addr; }
+```
+
+So an operator who named a source address got whatever the route picked. The
+tunnel works, every table is right, and it stays that way until the far end
+filters on the source or a second address on the egress interface changes what
+selection returns. `verify-vxlan-local-ip.sh`, 3 of 3: the configured
+10.60.60.11 rather than the 10.60.60.1 routing would have chosen, confirmed by
+what R2 recorded as the VTEP.
+
+That last point took two attempts. The first captured on R2's underlay port
+with tcpdump and saw eight packets, all sourced from R2 itself -- `dp0s3`
+belongs to the dataplane, so a kernel capture sees only what the slow path
+punts. `vxlan_rtupdate()` stores the outer source of a received frame as the
+VTEP for the MAC inside it, so the far end's own table is the observation, and
+unlike the capture it names the wrong address rather than going blank when the
+fix is absent.
 
 Both of the behaviours fixed here and untested at the time now have tests, on
 `i-danos_2608_20260912T0211`:
