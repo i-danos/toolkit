@@ -154,10 +154,27 @@ push_pkg() {
     fi
   done < <(awk '/^Files:/{f=1; next} /^[^ ]/{f=0} f && NF>=3 {print $3}' "$dsc")
 
-  ( cd "$CO" && $OSC co "$PRJ" "$p" -o "$p.co" < /dev/null > /dev/null 2>&1
-    cp "$p/"* "$p.co/" 2>/dev/null
-    cd "$p.co" && $OSC addremove < /dev/null > /dev/null 2>&1 \
-      && $OSC ci -m "DANOS on Debian 13 (branch i-danos/2608)" < /dev/null > /dev/null 2>&1 )
+  # Keep what osc says. This used to discard every stream, so a failure was
+  # reported as "FAIL upload" and nothing else -- the package, the reason and
+  # the step were all unavailable, and the only way to find out was to run the
+  # three commands again by hand. Each step is also checked on its own, so the
+  # message names which one went wrong rather than leaving a chain of three to
+  # guess between.
+  local log="$CO/$p.log"
+  rm -rf "$CO/$p.co"
+  (
+    set -e
+    cd "$CO"
+    $OSC co "$PRJ" "$p" -o "$p.co" < /dev/null 2>&1 \
+      || { echo "STEP: checkout"; exit 1; }
+    cp "$p/"* "$p.co/" 2>/dev/null \
+      || { echo "STEP: staging files into the checkout"; exit 1; }
+    cd "$p.co"
+    $OSC addremove < /dev/null 2>&1 \
+      || { echo "STEP: addremove"; exit 1; }
+    $OSC ci -m "DANOS on Debian 13 (branch i-danos/2608)" < /dev/null 2>&1 \
+      || { echo "STEP: commit"; exit 1; }
+  ) > "$log" 2>&1
   local rc=$?
   rm -rf "$CO/$p" "$CO/$p.co"
   if [ $rc -eq 0 ]; then
@@ -171,8 +188,13 @@ push_pkg() {
     # against OBS differed by a single debian/.gitignore.
     [ -f "$DSC/${p}_${ver}.commit" ] && cp "$DSC/${p}_${ver}.commit" "$DSC/${p}_${ver}.uploaded"
     printf '  %-42s OK\n' "$p"
+    rm -f "$log"
   else
     printf '  %-42s FAIL  upload\n' "$p"
+    # The step that failed, then what osc said about it. Kept on disk as well,
+    # because a batch of a hundred packages scrolls this away.
+    sed 's/^/        /' "$log" | tail -12 >&2
+    printf '        (full output: %s)\n' "$log" >&2
   fi
   return $rc
 }
