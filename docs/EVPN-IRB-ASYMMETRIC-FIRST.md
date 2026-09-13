@@ -177,6 +177,70 @@ nothing to answer from. That is why the `flooded` counter is not decoration:
 a count that keeps rising is the visible form of that configuration mistake,
 and it is otherwise invisible -- ARP still resolves, just noisily.
 
+### What the flooded counter actually counts
+
+An operator is being asked to read that counter as a diagnosis, so it had
+better mean one thing. The table above asserts it loosely -- `flooded 0 → 3`,
+from one ping -- and that is not enough to tell a counter that counts once per
+request from one that counts three times, because one ping is not one request:
+the kernel's neighbour state machine sends up to three solicitations, backs
+off, and caches the failure.
+
+`verify-arp-suppression-flooded.sh` drives exact numbers of exact frames with
+`send-arp.py` and asserts exact deltas. 17 of 17 on
+`i-danos_2608_20260913T1546`:
+
+| Frames sent | `suppressed` | `flooded` | `OutPkts` |
+|---|---|---|---|
+| 4 unanswerable, feature off | +0 | +0 | +4 |
+| 12 idle seconds | +0 | +0 | -- |
+| 5 unanswerable | +0 | **+5** | +5 |
+| 5 answerable | **+5** | +0 | +0 |
+| 3 answerable + 2 not | **+3** | **+2** | -- |
+| 4 ARP replies | +0 | +0 | +4 |
+| 4 non-ARP broadcasts | +0 | +0 | +4 |
+| 4 for the same address, now learned | **+4** | +0 | +0 |
+
+The first row is the design showing through: with the feature off the fast path
+returns before the counters, so a feature nobody enabled costs nothing -- and
+`OutPkts +4` is there so that "the counters did not move" cannot be confused
+with "nothing was sent". The second row is what makes every exact delta below
+it a statement about the frames rather than about background traffic.
+
+The last row is the counter's whole point. Nothing changed but whether the
+neighbour table could answer: the same address that flooded four frames
+earlier stops flooding entirely. A rising `flooded` is therefore a condition
+with a cause, not a statistic -- which is what lets it diagnose the missing-SVI
+mistake above.
+
+### One thing it counts that it should not
+
+A request for the bridge's **own** SVI address raises `flooded`, and is also
+encapsulated into the fabric:
+
+```
+sent 3 request (10.20.20.2, which is R2's own br20 address)
+    suppressed +0    flooded +3    OutPkts +3
+```
+
+It is answered -- the local copy is delivered to R2's L3 path before the
+suppression check, which is deliberate and is why that ordering exists. But
+the suppression check then looks `10.20.20.2` up in the neighbour table, which
+does not hold an interface's own address (that is a route, not a neighbour),
+reads a miss, counts it, and lets it flood.
+
+So the one address a leaf is most certain about is the one address it does not
+suppress, and the counter reports it as the same kind of event as a host the
+fabric never advertised. On a quiet bridge this is a `flooded` that climbs for
+no reason an operator can find, sending them to look for an EVPN advertisement
+problem that is not there.
+
+`is_local_ipv4(vrfid_t, in_addr_t)` already exists -- `route.h:92`, implemented
+at `route.c:706`, four callers on the forwarding path -- so the guard is two
+lines in `bridge_arp_suppress()`. Recorded rather than fixed in the same
+breath, because the measurement that found it was a verification run and the
+fix wants its own before-and-after.
+
 ### Four measurements that measured nothing
 
 Worth recording, because the shape was identical every time: a reading that
