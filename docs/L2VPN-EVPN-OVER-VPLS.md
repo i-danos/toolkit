@@ -341,10 +341,35 @@ passed.
 
 What is outstanding:
 
-- **IPv6 VTEPs do not arrive over netlink at all.** `vxlan_neigh_change()`
-  rejects any `NDA_DST` that is not four bytes, so `IFBAF_ADDR_V6` can only
-  ever be set by data-path learning. EVPN over an IPv6 underlay is therefore
-  not supported, and nothing currently says so to the operator.
+**An IPv6 underlay works**, `verify-vxlan-ipv6-underlay.sh`, 7 of 7 on
+`i-danos_2608_20260913T0910` with 74 of 74 beside it. It took two fixes in two
+places, and the test is what separated them.
+
+`vxlan_neigh_change()` rejected any `NDA_DST` that was not four bytes, so no
+MAC a control plane programmed over an IPv6 fabric was ever installed. Both
+lengths decide the family now, and the guard against a VTEP that is one of our
+own addresses uses `is_local_ipv6()` -- which had been in `netinet6/route_v6.c`
+all along, with four callers, while an earlier note here said it did not exist
+and would have to be written. That claim came from a grep that covered
+`src/route.h` and `src/*.c` and never looked in `src/netinet6/`.
+
+That was half of it. The first run of the test reported 4 of 7 in a pattern
+that named the other half exactly: the programmed MAC was installed, stored as
+IPv6 and marked forwardable, while every forwarding check failed. The tunnel
+had reached the dataplane with `src=None dest=None`, because the link
+attribute parser read `IFLA_VXLAN_GROUP` and `IFLA_VXLAN_LOCAL` and not their
+v6 forms. `s_addr_v6` was already in the structure and read by the
+source-selection path; nothing had ever set it.
+
+A single verdict would have said "IPv6 does not work" and sent the search back
+into the netlink path, which was correct by then.
+
+Still open and not a defect: the dump reports `src=None` for a tunnel whose
+local-ip is set. Forwarding is unaffected, since source selection falls back to
+the route when the address is unspecified, but it reads like a tunnel that
+failed to come up -- the same symptom that was just removed for the
+destination.
+
 Both of the behaviours fixed here and untested at the time now have tests, on
 `i-danos_2608_20260912T0211`:
 
