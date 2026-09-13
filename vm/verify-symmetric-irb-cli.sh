@@ -161,6 +161,12 @@ frr=$(S $R1 'sudo vtysh -c "show running-config" 2>/dev/null')
 printf '%s' "$frr" | sed -n '/^vrf vrfRED/,/exit-vrf/p' | sed 's/^/    /'
 printf '%s' "$frr" | sed -n '/^router bgp 65000 vrf vrfRED/,/^exit$/p' | sed 's/^/    /'
 has "$frr" '^vrf vrfRED'                    "the vrf block is in frr.conf"
+# An empty vrf block -- the opener and exit-vrf with nothing between -- is the
+# signature of the YANG module not being listed in the FRR component's
+# manifest. configd accepts the leaf, it is in the configuration tree, and the
+# component never receives it, so the translator has nothing to emit. The
+# block that remains comes from protocols/next-hop, which shares the same
+# opener.
 has "$frr" '^ vni 5000'                     "the L3VNI reached zebra"
 has "$frr" 'router bgp 65000 vrf vrfRED'    "the instance has its own BGP"
 has "$frr" 'redistribute connected'         "the tenant prefixes are redistributed"
@@ -229,7 +235,12 @@ if [ "$fail" -eq 0 ]; then
 	echo "  routed hops it should -- with the ingress leaf holding none of the"
 	echo "  destination's bridge domain."
 else
-	echo "  Something above did not hold. An empty step 4 with step 2 clean is"
+	echo "  Something above did not hold. A vrf block with nothing in it at"
+	echo "  step 2 means vyatta-protocols-frr-evpn-l3vni-v1 is missing from"
+	echo "  Modules= in debian/vyatta-frr-vci.component: the leaf commits, and"
+	echo "  the component it belongs to never hears about it."
+	echo
+	echo "  An empty step 4 with step 2 clean is"
 	echo "  almost always redistribute connected missing on the far leaf:"
 	echo "  advertise-ipv4-unicast advertises the instance's BGP IPv4 table,"
 	echo "  not its routing table, and originates nothing without it."
