@@ -34,7 +34,7 @@ REPO = os.environ.get("OBS_REPO", "/home/aikon/danos/build-iso/danos-build/obs-r
 LISTS = os.environ.get("PKG_LISTS", "/home/aikon/danos/build-iso/danos-sources/build-iso/config/package-lists")
 # The mirror the chroot installs from. Must match build-iso/auto/config, or
 # this checks a different archive from the one the build will use.
-MIRROR = os.environ.get("DEBIAN_MIRROR", "https://mirrors.tuna.tsinghua.edu.cn")
+MIRROR = os.environ.get("DEBIAN_MIRROR", "http://repo.huaweicloud.com")
 
 # The chroot's apt sources; see build-iso/config/apt/sources.list. Packages.xz
 # rather than .gz: several mirrors publish only the xz form, and asking for a
@@ -152,6 +152,26 @@ def fetch_debian():
     return stanzas
 
 
+def mirror_serves_packages():
+    """Can a package actually be downloaded, not just an index read?
+
+    Returns None on success, or a string saying what went wrong. These are
+    separate questions and the difference cost a build: Tsinghua serves dists/
+    and returns 403 for everything under pool/, so every index check passed and
+    every package failed. A byte range is enough and costs nothing.
+    """
+    url = (MIRROR + "/debian/pool/main/p/perl/"
+           "perl-base_5.40.1-6%2bdeb13u1_amd64.deb")
+    req = urllib.request.Request(url, headers={"Range": "bytes=0-2047"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            if len(r.read()) == 0:
+                return "the mirror returned an empty body for a package"
+    except Exception as e:                          # noqa: BLE001
+        return f"{e} for {url}"
+    return None
+
+
 def mirror_lag_days():
     """How far the chroot mirror's trixie trails deb.debian.org's, in days.
 
@@ -186,6 +206,13 @@ def main():
     local = local_packages(args.repo)
     print(f"  {len(local)} binary packages")
     print(f"chroot mirror: {MIRROR}")
+    why = mirror_serves_packages()
+    if why:
+        print(f"  it does not serve packages: {why}")
+        print("  Reading an index and downloading a package are different")
+        print("  permissions on some mirrors. The build would fetch every")
+        print("  index and then fail on every .deb.")
+        sys.exit(1)
     lag = mirror_lag_days()
     if lag is None:
         print("  WARN  could not compare its trixie against deb.debian.org")
