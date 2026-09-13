@@ -61,8 +61,19 @@ passes 21 of 21 over both features. What differs is the route the
 configuration takes to the dataplane, and which of the two the project intends
 to maintain.
 
-This is recorded rather than resolved. Converting them is a real piece of
-work -- a resident component for a stateless switch, plus its packaging -- and
-whether the local precedent or the documented direction should win is an
-architectural decision, not one to settle by imitating whichever file was
-opened first.
+**Decided: they stay as action scripts.** Converting them is a resident
+component for a stateless switch, plus its packaging, for a difference that
+does not reach the operator -- and the local precedent, `vyatta-mac-limit` and
+Private VLAN, is what the next person reading this code will find first.
+
+The decision is worth having in writing because the reasoning originally
+written into those scripts was not the reasoning that matters. They argue
+about process lifetime: neither feature has a daemon, so neither looked like
+802.1X, which exists to run hostapd. That is true and it is not the question
+the architecture asks. VCI is about how configuration reaches the northbound
+interfaces, and an action script is legacy there whether or not a process is
+involved. The scripts were right by a coincidence, and a coincidence is not a
+precedent -- a future feature that does need a component should not cite them.
+
+If the project later converts the legacy scripts as a body of work, these two
+belong in it.
