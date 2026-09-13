@@ -7,7 +7,14 @@
 #
 #   1. does zebra accept a VNI as a VRF's L3VNI          "vrf vrfRED / vni 5000"
 #   2. does bgpd originate a type-5 route for the VRF's  "advertise ipv4 unicast"
-#      local prefixes
+#      local prefixes, over a VRF ipv4 table that has them
+#
+# Part 2 needs both halves. "advertise ipv4 unicast" advertises what is in the
+# VRF's BGP IPv4 unicast RIB, and a connected subnet is not there until
+# "redistribute connected" puts it there. Without that the command is
+# accepted, the running config shows it, and no type-5 is ever originated --
+# which reads as bgpd being unable to do this rather than as bgpd having
+# nothing to advertise.
 #   3. does zebra install a received type-5 with a next  the only one that
 #      hop across the L3VNI, and does it forward         needs the dataplane
 #
@@ -27,7 +34,9 @@
 #   R3  host 10.20.20.3/24 on dp0s8
 #
 # No static route between the tenants this time. If 10.20.20.0/24 appears in
-# R1's table it came from BGP, which is the whole point.
+# R1's table it came from BGP, which is the whole point. R3 does get one back
+# towards 10.10.10.0/24 -- it is a host, not a leaf, and without it the return
+# path fails and reads as the fabric being broken.
 #
 # TOPO=ipsec wiring: R1.dp0s9 <-> R2.dp0s3, R2.dp0s8 <-> R3.dp0s8.
 set -u
@@ -123,10 +132,8 @@ for h in $R1 $R2; do
 	[ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] && printf '%s\n' "$out" | sed "s/^/    ${h##*.}: /"
 done
 sleep 8
-echo "  R1's VNI table -- an L3 line here is zebra accepting it:"
-S $R1 'sudo vtysh -c "show evpn vni" 2>&1 | head -6' | sed 's/^/    /'
-echo "  R1's L3VNI detail:"
-S $R1 'sudo vtysh -c "show evpn vni 5000" 2>&1 | head -12' | sed 's/^/    /'
+echo "  (read after BGP, below: zebra populates the VNI table only once EVPN"
+echo "   is active, so looking here shows nothing either way)"
 
 echo
 echo "===== 3. Does bgpd originate a type-5 for the tenant prefix ====="
@@ -143,12 +150,19 @@ for h in $R1 $R2; do
 	     "exit-address-family" \
 	     "exit" \
 	     "router bgp 65000 vrf vrfRED" \
+	     "address-family ipv4 unicast" \
+	     "redistribute connected" \
+	     "exit-address-family" \
 	     "address-family l2vpn evpn" \
 	     "advertise ipv4 unicast" \
 	     "end")
 	[ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ] && printf '%s\n' "$out" | sed "s/^/    ${h##*.}: /"
 done
-sleep 50
+sleep 55
+echo "  R1's VNI table -- an L3 line is zebra accepting the L3VNI:"
+S $R1 'sudo vtysh -c "show evpn vni" 2>&1 | head -5' | sed 's/^/    /'
+echo "  the EVPN session:"
+S $R1 'sudo vtysh -c "show bgp l2vpn evpn summary" 2>&1 | grep -E "^10\." | head -2' | sed 's/^/    /'
 echo "  R2's EVPN table, type-5 routes it originated:"
 S $R2 'sudo vtysh -c "show bgp l2vpn evpn route type prefix" 2>&1 | head -14' | sed 's/^/    /'
 
