@@ -53,10 +53,68 @@ MEM=${MEM:-3072}
 
 CMDLINE="boot=live components noeject nopersistence console=ttyS0,115200n8"
 
+# Take down whatever is still running before booting anything.
+#
+# This script used to just start new VMs. It never stopped the old ones, and
+# the consequences were invisible in exactly the wrong way: the previous
+# topology's qemu still holds its pidfile lock, so the new one exits at once
+# with
+#
+#   qemu-system-x86_64: cannot create PID file: Cannot lock pid file
+#
+# while the old VM keeps running, keeps answering on the same management port,
+# and keeps the wiring of the topology *before* this one. The suite then
+# configures dp0s10 on a router wired for a topology that has no dp0s10 and
+# fails in the middle of a protocol test. That is what produced fw 6 of 16 and
+# bgp 4 of 16 in a run whose every boot line said the topology was ready --
+# three routers still on the ipsec wiring, one freshly booted for BGP, and 22
+# failures that read as product defects.
+#
+# Kill by pidfile, never by pattern. "pkill -f qemu-system" has killed the
+# shell driving the tests here, because that shell's own command line contains
+# the pattern.
+stop_all() {
+  local d pid exe waited
+  for d in "$RUNBASE"/*; do
+    [ -f "$d/qemu.pid" ] || continue
+    pid=$(cat "$d/qemu.pid" 2>/dev/null)
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+    case "$exe" in *qemu-system-*) kill "$pid" 2>/dev/null ;; *) continue ;; esac
+  done
+  # Wait for the locks to be released. Starting before they are gives exactly
+  # the failure above, just with a smaller window.
+  for waited in $(seq 1 30); do
+    local alive=0
+    for d in "$RUNBASE"/*; do
+      [ -f "$d/qemu.pid" ] || continue
+      pid=$(cat "$d/qemu.pid" 2>/dev/null)
+      case "$pid" in ''|*[!0-9]*) continue ;; esac
+      exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+      case "$exe" in *qemu-system-*) alive=$((alive + 1)) ;; esac
+    done
+    [ "$alive" -eq 0 ] && break
+    sleep 1
+  done
+  # Anything still up after thirty seconds is not going to shut down politely.
+  for d in "$RUNBASE"/*; do
+    [ -f "$d/qemu.pid" ] || continue
+    pid=$(cat "$d/qemu.pid" 2>/dev/null)
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+    case "$exe" in *qemu-system-*) kill -9 "$pid" 2>/dev/null; sleep 2 ;; esac
+  done
+  # Stale sockets outlive their VM and are what made a dead start look alive.
+  for d in "$RUNBASE"/*; do
+    rm -f "$d/console.sock" "$d/monitor.sock" "$d/qemu.pid" 2>/dev/null
+  done
+}
+
 # link ports: R1<->R2 on 4165, R2<->R3 on 4166
 start() {                      # name sshport mgmt-slot extra-args...
   local name=$1 sshport=$2; shift 2
   local run=$RUNBASE/$name
+  local pid
   mkdir -p "$run"
   qemu-system-x86_64 -name "$name" \
     -enable-kvm -cpu host -smp 2 -m "$MEM" \
@@ -70,13 +128,22 @@ start() {                      # name sshport mgmt-slot extra-args...
     -monitor unix:"$run/monitor.sock",server,nowait \
     -pidfile "$run/qemu.pid" \
     > "$run/qemu.log" 2>&1 &
+  pid=$!
   sleep 2
-  if [ -S "$run/console.sock" ]; then
-    printf '  %-4s ssh=%s https=%s console=%s\n' "$name" "$sshport" "$((sshport + 200))" "$run/console.sock"
-  else
+  # The check is on the process this call started, not on a socket file. A
+  # socket left behind by the previous topology's VM satisfied "-S" perfectly
+  # well, which is how a qemu that had already exited reported itself started.
+  if ! kill -0 "$pid" 2>/dev/null; then
     echo "  $name failed to start:"; sed 's/^/      /' "$run/qemu.log"; return 1
   fi
+  if [ ! -S "$run/console.sock" ]; then
+    echo "  $name started but has no console socket:"
+    sed 's/^/      /' "$run/qemu.log"; return 1
+  fi
+  printf '  %-4s ssh=%s https=%s console=%s\n' "$name" "$sshport" "$((sshport + 200))" "$run/console.sock"
 }
+
+stop_all
 
 # Each suite wires the routers differently, and the slot numbers come from its
 # own test data. TOPO selects the layout:
