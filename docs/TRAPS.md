@@ -251,44 +251,84 @@ the wrong state also satisfies.** A socket file is a proxy for a running
 process; a port count is a proxy for a wiring; a suite result is a proxy for a
 defect. None of them was wrong, and none of them was the thing.
 
-## whole_dp fails in a long session, and it is 693 directories
+## whole_dp fails after enough tests, and the count is between 36 and 72
 
 Every `dataplane_test` process creates `/tmp/dpdk/dp_test-<pid>/` for DPDK's
-runtime. Nothing removes them. They accumulate across every run, and at some
-point EAL initialisation starts failing.
+runtime -- 13 MB of it, mostly `fbarray_nohugemem` -- and nothing removes them.
+Past some number of them, EAL initialisation stops working.
 
-What that looks like is not one symptom but several, which is why it resisted
-diagnosis for most of a session:
+### Reproducer
 
-| | |
-|---|---|
-| `dp_test_npf_zone.c` | TIMEOUT at 120s -- and 6.9s when run alone |
-| `dp_test_npf_vti.c` | TIMEOUT in one run, **SIGSEGV** in another |
-| which test | different on every run |
-
-A timeout and a segfault have nothing in common as symptoms, so reading either
-one on its own leads straight into the wrong code. The segfault in particular
-was read as a memory defect introduced by one of the twenty commits since the
-last clean run, and it is not: with `/tmp/dpdk` cleared, that same tree is 97
-of 97.
-
-Three explanations were tried and each was killed by an experiment rather than
-by reasoning, which is the only reason the fourth was reached:
-
-| tried | killed by |
-|---|---|
-| parallel contention from the running VMs | VMs stopped, same failures |
-| the timeout is too short | `-t 6` made it *worse*, the slots are held longer |
-| the added test changed the parallel profile | serial run failed too |
-
-The discriminator that settled it was a `git worktree` at the commit before the
-change, built and run the same way on the same host. It answers both questions
-at once: whether the change caused it, and whether the tree was ever clean.
-
-**Clear `/tmp/dpdk` before a whole_dp run.** Any whole_dp result from a long
-session without that step should be re-run before it is believed -- the
-failures are environmental, and so are the passes that happen to survive.
+Serial, on an idle host, with `/tmp/dpdk` emptied first:
 
 ```bash
 docker exec danos-2110b-build rm -rf /tmp/dpdk
+docker exec -u dpuser -w <build> danos-2110b-build meson test --num-processes 1
 ```
+
+`dp_test_npf_zone.c` times out at 120s in position **73 of 98**, twice, at the
+same position. It takes 6.5s when run on its own.
+
+### What was measured
+
+| predecessors in the same run | result |
+|---|---|
+| 1 (`npf_vti` then `npf_zone`) | pass, 4.5s and 7.0s |
+| 36 (tests 37-73) | pass, 37 of 37 |
+| 72 (tests 1-73) | **`npf_zone` TIMEOUT at 120s** |
+| 36, then `rm -rf /tmp/dpdk`, then 37 | pass, 36 of 36 and 37 of 37 |
+
+The last row is the one that identifies the accumulator: the same 73 tests in
+the same order pass when the directories are removed halfway through. The
+threshold is somewhere between 36 and 72 and was not narrowed further.
+
+### Workaround
+
+Run the suite in two halves with a clear between. A full run creates 98
+directories on its own, so clearing only *before* it is not enough -- which is
+the mistake recorded below.
+
+```bash
+docker exec danos-2110b-build rm -rf /tmp/dpdk
+meson test $(meson test --list | sed -n '1,49p')
+docker exec danos-2110b-build rm -rf /tmp/dpdk
+meson test $(meson test --list | sed -n '50,98p')
+```
+
+The real fix is for `dataplane_test` to remove its own runtime directory at
+exit; `cleanup_temp_files()` in `tests/whole_dp/src/dp_test.c` already runs on
+the normal exit path and is where it belongs.
+
+### Two wrong causes, and how each was reached
+
+Both were a single experiment plus a plausible mechanism. Neither survived a
+second experiment, and recording them is the point of this section.
+
+**"693 stale directories."** Clearing them gave 98 of 98, so the count looked
+like the cause and 693 like the threshold. That run was **parallel**, and
+parallel scheduling put `npf_zone` somewhere other than position 73. It had not
+been fixed, it had been stepped around. The threshold is in the forties or
+fifties, not the hundreds.
+
+**"Host contention."** Load average was 4.4 on four cores with three QEMU VMs
+running. Stopping them took it to 1.9 and the same test failed in the same
+position. Raising the timeout with `-t 6` made it *worse*, because failing
+slots are then held six times as long.
+
+What settled it was not a better story but three numbers -- 1, 36, 72 -- that
+move monotonically and reproduce. A cause proposed from one observation is a
+guess with a mechanism attached; the mechanism is what makes it convincing and
+is exactly the part that is not evidence.
+
+### Why it is worth this much text
+
+The failure does not look the same twice. It has appeared as a TIMEOUT in one
+test, a **SIGSEGV** in another, and a different test on each run, so reading any
+single occurrence leads into the wrong code. The segfault was read as a memory
+defect introduced by one of the twenty commits since the last clean run, and
+with the directories cleared that same tree is 97 of 97.
+
+The discriminator that ruled the code out was a `git worktree` at the commit
+before the change, built and run the same way on the same host. It answers both
+questions at once: whether the change caused it, and whether the tree was ever
+clean.
