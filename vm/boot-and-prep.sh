@@ -22,16 +22,32 @@
 #   TOPO selects the topology, as for boot-topo.sh.
 set -u
 
-ISO=${1:?usage: boot-and-prep.sh <iso> [ports-per-router]}
-WANT=${2:-2}
+ISO=${1:?usage: boot-and-prep.sh <iso>}
 TOPO=${TOPO:-ipsec}
 HERE=$(dirname "$0")
 
+# The ports each router must end up with, by name, exactly as boot-topo.sh
+# wires them and exactly as the suites configure them. WANTED is one
+# "<host>:<port> <port> ..." entry per router.
+#
+# Names, not a count, and not a floor. The floor is what let a BGP run through
+# with r2 holding two ports where the topology gives it three -- ".232 2
+# dataplane ports" printed as if it were fine, because two is at least two. A
+# count alone is barely better: a router that came up with dp0s3 and dp0s9
+# where the suite configures dp0s9 and dp0s10 has the right number of the wrong
+# ports, and the suite then fails on "Cannot find device dp0s10" in the middle
+# of a test that reads as a protocol failure.
 case "$TOPO" in
-  bgp) ROUTERS="r1 r2 r3 r4"; HOSTS="231 232 233 234"
+  fw)  ROUTERS="r1 r2 r3"
+       WANTED="155:dp0s8 dp0s9|156:dp0s9 dp0s10|157:dp0s9 dp0s10"
+       RELAYS="r1:192.168.203.155:2231 r2:192.168.203.156:2232
+               r3:192.168.203.157:2233" ;;
+  bgp) ROUTERS="r1 r2 r3 r4"
+       WANTED="231:dp0s3 dp0s9|232:dp0s3 dp0s9 dp0s10|233:dp0s3 dp0s9|234:dp0s3 dp0s9 dp0s10"
        RELAYS="r1:192.168.203.231:2231 r2:192.168.203.232:2232
                r3:192.168.203.233:2233 r4:192.168.203.234:2234" ;;
-  *)   ROUTERS="r1 r2 r3";    HOSTS="155 156 157"
+  *)   ROUTERS="r1 r2 r3"
+       WANTED="155:dp0s3 dp0s9|156:dp0s3 dp0s8|157:dp0s3 dp0s8"
        RELAYS="r1:192.168.203.155:2231 r2:192.168.203.156:2232
                r3:192.168.203.157:2233" ;;
 esac
@@ -71,21 +87,53 @@ done
 # Prepared is not the same as wired. A router can take the console
 # configuration and still be missing a port the topology depends on -- seen as
 # "Cannot find device dp0s8" from a commit that then reported success.
-for h in $HOSTS; do
-	n=$(docker exec danos-robot timeout 10 sshpass -p vyatta ssh \
-	      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-	      -o ConnectTimeout=5 "vyatta@192.168.203.$h" \
-	      'ip -br link show | grep -c "^dp0s"' 2>/dev/null | tr -dc '0-9')
-	if [ -z "$n" ]; then
+ports_of() {
+	docker exec danos-robot timeout 15 sshpass -p vyatta ssh \
+	  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	  -o ConnectTimeout=5 "vyatta@192.168.203.$1" \
+	  'ip -br link show | awk "/^dp0s/ {print \$1}" | sort' 2>/dev/null \
+	  | tr -d '\r' | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//'
+}
+
+# A port can still be arriving: the dataplane claims NICs as it starts, and the
+# prep loop above returns as soon as the console is usable. Poll rather than
+# judge on the first read, so a slow claim is a wait and not a failure -- while
+# a port that is genuinely absent still fails, just sixty seconds later.
+#
+# A port can still be arriving: the dataplane claims NICs as it starts, and the
+# prep loop above returns as soon as the console is usable. So poll rather than
+# judge on the first read -- a slow claim becomes a wait, while a port that is
+# genuinely absent still fails, just a minute later.
+#
+# The loop runs in this shell, not a pipeline, so that "bad" survives it. A
+# "while read" on the right of a pipe runs in a subshell and its counter goes
+# out of scope with it, leaving a gate that counts every failure and then
+# reports none.
+OLDIFS=$IFS
+IFS='|'
+for entry in $WANTED; do
+	IFS=$OLDIFS
+	[ -n "$entry" ] || continue
+	h=${entry%%:*}
+	want=$(printf '%s' "${entry#*:}" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')
+	got=""
+	for _ in $(seq 1 12); do
+		got=$(ports_of "$h")
+		[ "$got" = "$want" ] && break
+		sleep 5
+	done
+	if [ -z "$got" ]; then
 		echo "  FAILED: .$h is not reachable" >&2
 		bad=$((bad + 1))
-	elif [ "$n" -lt "$WANT" ]; then
-		echo "  FAILED: .$h has $n dataplane ports, expected at least $WANT" >&2
+	elif [ "$got" != "$want" ]; then
+		echo "  FAILED: .$h has [$got], the topology wires [$want]" >&2
 		bad=$((bad + 1))
 	else
-		echo "  .$h  $n dataplane ports"
+		echo "  .$h  $got"
 	fi
+	IFS='|'
 done
+IFS=$OLDIFS
 
 [ "$bad" -eq 0 ] || {
 	echo "  $bad router(s) are not usable; refusing to run tests against this" >&2
