@@ -250,3 +250,45 @@ passed on a system in the wrong state, because each was measuring a proxy that
 the wrong state also satisfies.** A socket file is a proxy for a running
 process; a port count is a proxy for a wiring; a suite result is a proxy for a
 defect. None of them was wrong, and none of them was the thing.
+
+## whole_dp fails in a long session, and it is 693 directories
+
+Every `dataplane_test` process creates `/tmp/dpdk/dp_test-<pid>/` for DPDK's
+runtime. Nothing removes them. They accumulate across every run, and at some
+point EAL initialisation starts failing.
+
+What that looks like is not one symptom but several, which is why it resisted
+diagnosis for most of a session:
+
+| | |
+|---|---|
+| `dp_test_npf_zone.c` | TIMEOUT at 120s -- and 6.9s when run alone |
+| `dp_test_npf_vti.c` | TIMEOUT in one run, **SIGSEGV** in another |
+| which test | different on every run |
+
+A timeout and a segfault have nothing in common as symptoms, so reading either
+one on its own leads straight into the wrong code. The segfault in particular
+was read as a memory defect introduced by one of the twenty commits since the
+last clean run, and it is not: with `/tmp/dpdk` cleared, that same tree is 97
+of 97.
+
+Three explanations were tried and each was killed by an experiment rather than
+by reasoning, which is the only reason the fourth was reached:
+
+| tried | killed by |
+|---|---|
+| parallel contention from the running VMs | VMs stopped, same failures |
+| the timeout is too short | `-t 6` made it *worse*, the slots are held longer |
+| the added test changed the parallel profile | serial run failed too |
+
+The discriminator that settled it was a `git worktree` at the commit before the
+change, built and run the same way on the same host. It answers both questions
+at once: whether the change caused it, and whether the tree was ever clean.
+
+**Clear `/tmp/dpdk` before a whole_dp run.** Any whole_dp result from a long
+session without that step should be re-run before it is believed -- the
+failures are environmental, and so are the passes that happen to survive.
+
+```bash
+docker exec danos-2110b-build rm -rf /tmp/dpdk
+```
