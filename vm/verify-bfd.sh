@@ -21,7 +21,11 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Connect
 R2=192.168.203.156; R3=192.168.203.157
 OP=/opt/vyatta/bin/vyatta-op-cmd-wrapper
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 exec > "$OUT" 2>&1
+# Which image is this a statement about? Read from the running VMs, never
+# from the variable the caller passed.
+"$HERE/image-fingerprint.sh"
 S() { docker exec danos-robot timeout 180 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$1" "$2" 2>&1; }
 
 cli() {

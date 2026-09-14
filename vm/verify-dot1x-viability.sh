@@ -33,7 +33,11 @@ H=${H:-192.168.203.232}
 HOSTAPD=/usr/sbin/hostapd
 SUPP=/usr/sbin/wpa_supplicant
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 exec > "$OUT" 2>&1
+# Which image is this a statement about? Read from the running VMs, never
+# from the variable the caller passed.
+"$HERE/image-fingerprint.sh"
 S() { docker exec danos-robot timeout 180 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$H" "$1" 2>&1; }
 
 echo "===== 1. Set up the veth pair and the configuration ====="

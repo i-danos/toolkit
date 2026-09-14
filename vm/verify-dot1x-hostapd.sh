@@ -30,7 +30,11 @@ AUTH=192.168.203.232      # R2, authenticator
 SUPP=192.168.203.231      # R1, supplicant
 IF=dp0s3
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 exec > "$OUT" 2>&1
+# Which image is this a statement about? Read from the running VMs, never
+# from the variable the caller passed.
+"$HERE/image-fingerprint.sh"
 S() { docker exec danos-robot timeout 180 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$1" "$2" 2>&1; }
 
 echo "===== 1. Prerequisites on both ends ====="

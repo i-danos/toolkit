@@ -135,6 +135,18 @@ for entry in $WANTED; do
 done
 IFS=$OLDIFS
 
+# Finally: are these VMs even running the image this call was given?
+#
+# Everything above can pass on the previous topology's VMs. The port-name check
+# separates fw from ipsec, but not this image from the last one, and a booted
+# router answers ssh identically either way. So the last gate reads the ISO out
+# of each qemu's own command line and compares it with the one asked for.
+#
+# This is the check that would have caught the run where a dataplane fix was
+# measured as ineffective: the VMs answering were still booted from the image
+# from before the fix.
+"$HERE/image-fingerprint.sh" --assert "$ISO" || bad=$((bad + 1))
+
 [ "$bad" -eq 0 ] || {
 	echo "  $bad router(s) are not usable; refusing to run tests against this" >&2
 	exit 1; }

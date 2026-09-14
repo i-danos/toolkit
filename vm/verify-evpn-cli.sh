@@ -37,7 +37,11 @@ R3=192.168.203.157
 pass=0
 fail=0
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 exec > "$OUT" 2>&1
+# Which image is this a statement about? Read from the running VMs, never
+# from the variable the caller passed.
+"$HERE/image-fingerprint.sh"
 S() { docker exec danos-robot timeout 200 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$1" "$2" 2>&1; }
 
 # Returns the commit output so a rejected set is visible rather than assumed.
