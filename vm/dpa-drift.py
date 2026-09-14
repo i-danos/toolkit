@@ -77,42 +77,50 @@ def desired():
 
 
 def programmed():
-    """(vrf_name, table, prefix) -> (state, backend, owned), and any duplicates.
+    """(vrf_name, table, prefix) -> list of programmed entries.
 
-    Duplicates are returned rather than silently collapsed. The data plane's
-    LPM keys on (prefix, depth, scope) while this key has no scope in it,
-    because zebra has no comparable notion -- so two LPM entries for one prefix
-    at different scopes land on one key here. That has not been observed, and
-    the reason to detect it rather than assume it cannot happen is that the
-    symptom would be a route quietly disappearing from one side of a
-    comparison whose whole job is to notice routes disappearing.
+    A *list*, because the data plane can legitimately hold more than one entry
+    for one compared key. Its LPM keys on (prefix, depth, scope) and the
+    Desired side has no comparable notion of scope, so the key carries the
+    scope and this splits it off before comparing.
+
+    The first version used a dict and lost whichever entry came second. Eight
+    objects arrived as six, `matched 4` looked entirely normal, and the two
+    that vanished were the reserved reject default and zebra's real default
+    sharing a prefix. A comparison that silently drops objects cannot be the
+    basis for repairing them, which is why the duplicate-key guard was written
+    before it had ever fired -- and it fired on its first run against a real
+    box.
     """
     doc = run(VPLSH)
     if doc is None:
-        return None, None
+        return None
     out = {}
-    dupes = []
     for o in doc.get("dpa_objects", {}).get("objects", []):
-        # "vrf:default/table:254/10.73.0.0/24"
+        # "vrf:default/table:254/10.73.0.0/24/scope:0"
         parts = o["key"].split("/")
         if len(parts) < 3 or not parts[0].startswith("vrf:"):
             continue
         vrf = parts[0][4:]
         table = int(parts[1][6:])
-        prefix = "/".join(parts[2:])
-        k = (vrf, table, prefix)
-        if k in out:
-            dupes.append(k)
-        out[k] = (o.get("state"), o.get("backend"),
-                  o.get("dataplane_owned", False))
-    return out, dupes
+        scope = None
+        body = parts[2:]
+        if body and body[-1].startswith("scope:"):
+            scope = int(body[-1][6:])
+            body = body[:-1]
+        prefix = "/".join(body)
+        out.setdefault((vrf, table, prefix), []).append(
+            {"scope": scope, "state": o.get("state"),
+             "backend": o.get("backend"),
+             "owned": o.get("dataplane_owned", False)})
+    return out
 
 
 def main():
     as_json = "--json" in sys.argv
 
     d = desired()
-    p, dupes = programmed()
+    p = programmed()
 
     if d is None:
         print("UNREADABLE desired (vtysh)", file=sys.stderr)
@@ -130,8 +138,15 @@ def main():
     # them as drift would try to repair them by asking zebra for routes zebra
     # was never going to have. The data plane says which they are; this does
     # not carry its own list of prefixes it believes are special.
-    extra = sorted(k for k in set(p) - set(d) if not p[k][2])
-    owned = sorted(k for k in set(p) - set(d) if p[k][2])
+    #
+    # A key is "owned" only if *every* entry under it is. One prefix can carry
+    # a reserved entry and a real one at different scopes -- 0.0.0.0/0 does --
+    # and calling the whole key owned would hide a real route behind a
+    # reserved one.
+    extra = sorted(k for k in set(p) - set(d)
+                   if not all(e["owned"] for e in p[k]))
+    owned = sorted(k for k in set(p) - set(d)
+                   if all(e["owned"] for e in p[k]))
 
     # The guard. Nothing in common while both sides hold routes means the two
     # identity schemes disagree, not that the data plane lost everything.
@@ -140,6 +155,7 @@ def main():
     result = {
         "desired": len(d),
         "programmed": len(p),
+        "programmed_entries": sum(len(v) for v in p.values()),
         "matched": len(matched),
         "desired_not_programmed": [
             {"vrf": k[0], "table": k[1], "prefix": k[2], "protocol": d[k]}
@@ -147,14 +163,19 @@ def main():
         ],
         "programmed_not_desired": [
             {"vrf": k[0], "table": k[1], "prefix": k[2],
-             "state": p[k][0], "backend": p[k][1]}
+             "state": p[k][0]["state"], "backend": p[k][0]["backend"]}
             for k in extra
         ],
         "dataplane_owned": [
             {"vrf": k[0], "table": k[1], "prefix": k[2]} for k in owned
         ],
-        "duplicate_keys": [
-            {"vrf": k[0], "table": k[1], "prefix": k[2]} for k in dupes
+        # No longer a fault: more than one entry under a compared key is a
+        # legitimate state the data plane can be in. Reported so that the
+        # count on each side is explainable rather than merely consistent.
+        "multi_entry": [
+            {"vrf": k[0], "table": k[1], "prefix": k[2],
+             "scopes": sorted(e["scope"] for e in p[k] if e["scope"] is not None)}
+            for k in sorted(p) if len(p[k]) > 1
         ],
         "keyspace_mismatch": keyspace_broken,
     }
@@ -162,8 +183,9 @@ def main():
     if as_json:
         print(json.dumps(result))
     else:
-        print("desired %d  programmed %d  matched %d" %
-              (result["desired"], result["programmed"], result["matched"]))
+        print("desired %d  programmed %d keys / %d entries  matched %d" %
+              (result["desired"], result["programmed"],
+               result["programmed_entries"], result["matched"]))
         if keyspace_broken:
             print("KEY SPACE MISMATCH: the two sides share no identity, which "
                   "is a formatting disagreement rather than drift")
@@ -181,15 +203,13 @@ def main():
             for e in result["dataplane_owned"]:
                 print("  dataplane-owned, not drift  vrf:%(vrf)s/"
                       "table:%(table)s/%(prefix)s" % e)
-        for e in result["duplicate_keys"]:
-            print("  DUPLICATE KEY  vrf:%(vrf)s/table:%(table)s/%(prefix)s  "
-                  "-- one side of a comparison lost an object to collapsing"
-                  % e)
+        for e in result["multi_entry"]:
+            print("  %d entries under one key  vrf:%s/table:%s/%s  scopes %s"
+                  % (len(e["scopes"]), e["vrf"], e["table"], e["prefix"],
+                     e["scopes"]))
 
     if keyspace_broken:
         return 3
-    if dupes:
-        return 4
     return 1 if (missing or extra) else 0
 
 
