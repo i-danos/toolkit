@@ -22,14 +22,21 @@ against the rest would report drift for routes that were never meant to be
 programmed. That distinction is not cosmetic: it is most of the RIB on a box
 running several protocols.
 
-**A key-space mismatch must not read as total drift.** The two sides format
-identity independently -- zebra says vrfId 0 / table 254 / prefix, the DPA says
-"vrf:N/table:254/prefix" with N from dp_vrf_get_external_id(). If those
-numbering schemes disagree, every route is "desired but not programmed", which
-is indistinguishable from the data plane having lost everything. So when
-nothing matches while both sides hold routes, that is reported as a key-space
-mismatch and not as drift. It is the failure this tool is most likely to have,
-and the one that would be most convincing if it were reported wrong.
+**A key-space mismatch must not read as total drift.** Both sides key on the
+VRF *name*, and the first version did not -- it compared numeric ids, and the
+numbers are separate namespaces that merely happen to both be integers. DANOS's
+default VRF is VRF_DEFAULT_ID (1), zebra's is 0, and for non-default VRFs one
+is the operator's id while the other is zebra's own numbering.
+
+The guard caught it on a healthy box: four desired routes, six programmed, the
+same prefixes, the same table, and zero matches. Reported as drift that would
+have read as the data plane having lost its entire route table and grown six
+stale entries. Reported as a key-space mismatch it says what it is, and the fix
+was to key on the name at both ends.
+
+The guard stays, because the failure it catches is the one this tool is most
+likely to have and the one that would be most convincing if it were reported
+wrong.
 """
 
 import json
@@ -51,7 +58,7 @@ def run(cmd):
 
 
 def desired():
-    """(vrf_id, table, prefix) for every route zebra actually pushed down."""
+    """(vrf_name, table, prefix) for every route zebra actually pushed down."""
     rib = run(VTYSH)
     if rib is None:
         return None
@@ -61,23 +68,26 @@ def desired():
             # The whole point: only what was selected *and* installed.
             if not (e.get("selected") and e.get("installed")):
                 continue
-            out[(e.get("vrfId", 0), e.get("table", 254), prefix)] = \
+            # vrfName, not vrfId. The numbers are separate namespaces --
+            # DANOS's default VRF is 1 and zebra's is 0 -- and comparing them
+            # made every route on a healthy box look like drift.
+            out[(e.get("vrfName", "default"), e.get("table", 254), prefix)] = \
                 e.get("protocol", "?")
     return out
 
 
 def programmed():
-    """(vrf_id, table, prefix) -> (state, backend) from the DPA object view."""
+    """(vrf_name, table, prefix) -> (state, backend) from the DPA object view."""
     doc = run(VPLSH)
     if doc is None:
         return None
     out = {}
     for o in doc.get("dpa_objects", {}).get("objects", []):
-        # "vrf:1/table:254/10.73.0.0/24"
+        # "vrf:default/table:254/10.73.0.0/24"
         parts = o["key"].split("/")
         if len(parts) < 3 or not parts[0].startswith("vrf:"):
             continue
-        vrf = int(parts[0][4:])
+        vrf = parts[0][4:]
         table = int(parts[1][6:])
         prefix = "/".join(parts[2:])
         out[(vrf, table, prefix)] = (o.get("state"), o.get("backend"))
