@@ -77,11 +77,21 @@ def desired():
 
 
 def programmed():
-    """(vrf_name, table, prefix) -> (state, backend) from the DPA object view."""
+    """(vrf_name, table, prefix) -> (state, backend, owned), and any duplicates.
+
+    Duplicates are returned rather than silently collapsed. The data plane's
+    LPM keys on (prefix, depth, scope) while this key has no scope in it,
+    because zebra has no comparable notion -- so two LPM entries for one prefix
+    at different scopes land on one key here. That has not been observed, and
+    the reason to detect it rather than assume it cannot happen is that the
+    symptom would be a route quietly disappearing from one side of a
+    comparison whose whole job is to notice routes disappearing.
+    """
     doc = run(VPLSH)
     if doc is None:
-        return None
+        return None, None
     out = {}
+    dupes = []
     for o in doc.get("dpa_objects", {}).get("objects", []):
         # "vrf:default/table:254/10.73.0.0/24"
         parts = o["key"].split("/")
@@ -90,15 +100,19 @@ def programmed():
         vrf = parts[0][4:]
         table = int(parts[1][6:])
         prefix = "/".join(parts[2:])
-        out[(vrf, table, prefix)] = (o.get("state"), o.get("backend"))
-    return out
+        k = (vrf, table, prefix)
+        if k in out:
+            dupes.append(k)
+        out[k] = (o.get("state"), o.get("backend"),
+                  o.get("dataplane_owned", False))
+    return out, dupes
 
 
 def main():
     as_json = "--json" in sys.argv
 
     d = desired()
-    p = programmed()
+    p, dupes = programmed()
 
     if d is None:
         print("UNREADABLE desired (vtysh)", file=sys.stderr)
@@ -109,7 +123,15 @@ def main():
 
     matched = sorted(set(d) & set(p))
     missing = sorted(set(d) - set(p))
-    extra = sorted(set(p) - set(d))
+
+    # Objects the data plane made for itself -- the reserved routes, 127/8 and
+    # 255.255.255.255/32 and the reject default. They are correctly absent
+    # upstream, so they are not drift, and a reconciliation loop that treated
+    # them as drift would try to repair them by asking zebra for routes zebra
+    # was never going to have. The data plane says which they are; this does
+    # not carry its own list of prefixes it believes are special.
+    extra = sorted(k for k in set(p) - set(d) if not p[k][2])
+    owned = sorted(k for k in set(p) - set(d) if p[k][2])
 
     # The guard. Nothing in common while both sides hold routes means the two
     # identity schemes disagree, not that the data plane lost everything.
@@ -127,6 +149,12 @@ def main():
             {"vrf": k[0], "table": k[1], "prefix": k[2],
              "state": p[k][0], "backend": p[k][1]}
             for k in extra
+        ],
+        "dataplane_owned": [
+            {"vrf": k[0], "table": k[1], "prefix": k[2]} for k in owned
+        ],
+        "duplicate_keys": [
+            {"vrf": k[0], "table": k[1], "prefix": k[2]} for k in dupes
         ],
         "keyspace_mismatch": keyspace_broken,
     }
@@ -150,9 +178,18 @@ def main():
             for e in result["programmed_not_desired"]:
                 print("  PROGRAMMED NOT DESIRED  vrf:%(vrf)s/table:%(table)s/"
                       "%(prefix)s  %(state)s on %(backend)s" % e)
+            for e in result["dataplane_owned"]:
+                print("  dataplane-owned, not drift  vrf:%(vrf)s/"
+                      "table:%(table)s/%(prefix)s" % e)
+        for e in result["duplicate_keys"]:
+            print("  DUPLICATE KEY  vrf:%(vrf)s/table:%(table)s/%(prefix)s  "
+                  "-- one side of a comparison lost an object to collapsing"
+                  % e)
 
     if keyspace_broken:
         return 3
+    if dupes:
+        return 4
     return 1 if (missing or extra) else 0
 
 
