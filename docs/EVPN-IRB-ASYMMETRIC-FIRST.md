@@ -235,10 +235,27 @@ reason an operator can find, sending them to look for an EVPN advertisement
 problem that is not there.
 
 `bridge_arp_suppress()` now returns before the lookup for an address the
-bridge holds. The frame still floods -- a bridge floods broadcasts, duplicate
-address detection on the segment depends on seeing them, and suppressing here
-would also put a second reply on the wire behind the one the L3 path already
-sent.
+bridge holds, and the step that measured the defect is an assertion:
+`suppressed +0, flooded +0, OutPkts +3`. 19 of 19 on
+`i-danos_2608_20260913T2310`. The frame still floods -- a bridge floods
+broadcasts, duplicate address detection on the segment depends on seeing them,
+and suppressing here would also put a second reply on the wire behind the one
+the L3 path already sent.
+
+**The fix appeared not to work, and the appearance was the harness.** The first
+run after it still gave `flooded +3`, on an image whose `/usr/sbin/dataplane`
+was byte-identical to the OBS build -- checked by build-id and md5, not by
+timestamp -- and whose `bridge_arp_suppress` demonstrably calls `ifa_is_local`
+with the right arguments and the right branch polarity, read out of the
+disassembly. Every explanation that fits those two facts is about the running
+system rather than the code, and the one that was true is that
+`boot-topo.sh` had never stopped the previous topology's VMs: the new qemu
+could not lock the pidfile, exited, and the *old* VMs -- booted from the image
+before the fix -- kept answering. See `TRAPS.md`. The reasoning that was about
+to be written down instead, that a bridge ifnet might not hold its addresses in
+the dataplane, was wrong and was killed by one probe:
+`ifconfig br20` reports `10.20.20.2/24` from exactly the list `ifa_is_local()`
+walks.
 
 **Which "local" is the right one.** The obvious helper is `is_local_ipv4()`
 (`route.h:92`), and it is the wrong one: it is VRF-scoped, so with `br10` and

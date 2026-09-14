@@ -202,3 +202,51 @@ back" as "the package is not on OBS" reports **every** package as missing —
 including the 150 that are up there and building. A check that answers
 confidently when it cannot see anything is worse than one that refuses to run.
 Probe authentication first and exit.
+
+## A topology that booted successfully and was the previous one
+
+`boot-topo.sh` started VMs and never stopped them. The previous topology's qemu
+still holds its pidfile lock, so the new one exits at once:
+
+```
+qemu-system-x86_64: cannot create PID file: Cannot lock pid file
+```
+
+while the old VM keeps running, keeps answering on the same management port,
+and keeps the **wiring of the topology before this one**. `start()` then
+reported success, because its check was
+
+```bash
+if [ -S "$run/console.sock" ]
+```
+
+and that socket belongs to the VM that is still running. A qemu that had
+already exited reported itself started, and every line of the boot said the
+topology was ready.
+
+What it cost, in one run: FIREWALL scored 6 of 16 and BGP 4 of 16, because both
+ran against routers wired for `ipsec`; the REST suite scored 21 of 21 on the
+one router that had actually booted, because REST only uses `.234`. Twenty-two
+failures that read as product defects. Separately, a dataplane fix was measured
+as not working, on VMs still running the image from before it.
+
+Three checks were too weak to see it, each in a different way:
+
+| Check | Why it passed |
+|---|---|
+| `[ -S console.sock ]` | the socket was the old VM's |
+| "at least 2 dataplane ports" | `fw` and `ipsec` both have 2 on every router |
+| the suites themselves | they fail loudly, but as protocol failures |
+
+`stop_all()` now kills by pidfile, waits for the locks, escalates after thirty
+seconds and removes the stale sockets. By pidfile and never by pattern:
+`pkill -f qemu-system` has killed the shell driving the tests here, because
+that shell's own command line contains the pattern. `start()` checks the
+process it started with `kill -0`. `boot-and-prep.sh` asserts port **names**
+per router, which is what separates `fw` from `ipsec`.
+
+The general shape is worth more than the fix: **three independent checks all
+passed on a system in the wrong state, because each was measuring a proxy that
+the wrong state also satisfies.** A socket file is a proxy for a running
+process; a port count is a proxy for a wiring; a suite result is a proxy for a
+defect. None of them was wrong, and none of them was the thing.
