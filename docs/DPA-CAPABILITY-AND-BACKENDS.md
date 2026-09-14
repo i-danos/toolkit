@@ -73,6 +73,30 @@ Live, from `vplsh -c 'pd show dataplane'`:
 Eight object classes are tracked (`pd_show.c:52`), QoS among them, and each can
 be listed by state: `pd show dataplane route no_support`.
 
+### A backend that covers a shipping hardware backend, minus one function
+
+`tests/whole_dp/src/fal_plugin_*.c` -- eight files, not one -- implement **104**
+of the 188 entry points, build as a `shared_module`, load through the same
+`dlopen` path as any other backend, and are driven by the test suite.
+
+| | entry points |
+|---|---|
+| `fal_plugin.h`, the whole surface | 188 |
+| `libfal-opennsl`, a *shipping* Broadcom backend | 40, of which 8 are vendor-private debug commands -> **32 generic** |
+| the in-tree test plugin | **104** |
+| what the shipping backend has and it lacks | **1** (`fal_plugin_inited`) |
+
+An earlier draft of this document said 51 and "2 missing", from grepping
+`fal_plugin_test.c` alone and missing the other seven files. The error surfaced
+as a link failure -- `multiple definition of fal_plugin_get_switch_attribute`
+-- when a handler was added that already existed in
+`fal_plugin_cpp_limiter.c`.
+
+So a backend is not written from nothing here. The scaffold exists, it is
+exercised, and its assertion-style bodies document the one thing a backend
+author cannot easily work out alone: what the data plane actually hands each
+entry point.
+
 ### Software fallback is structural, not a feature
 
 ```c
@@ -223,7 +247,48 @@ because that is what an operator has.
 
 ---
 
-## What to build first
+---
+
+## Built: gaps 1 and 2, first half
+
+`fal_plugin.h` grows from 18 switch attributes to 36: eleven feature-presence
+booleans (`FAL_SWITCH_ATTR_CAP_IPV4` .. `CAP_MULTICAST`), `CAP_HW_OFFLOAD`,
+four scale limits, `BACKEND_NAME` and `OFFLOAD_FEATURES`. The field set is the
+one the doctrine asked for.
+
+`src/fal_capability.c` asks once at plugin load and caches. `pd show dataplane`
+now prints the backend's own name where it printed the literal `hw`.
+`fal capability show` exposes all of it.
+
+Two decisions in there are worth keeping:
+
+**The accessor is `fal_backend_can()`, not `fal_capability()`.** The second
+reads as a question about the box, and the answer would then be wrong:
+`fal_backend_can(FAL_CAP_VXLAN) == false` means nothing will *offload* VXLAN,
+while the software path keeps doing it. With no backend loaded every capability
+is false and every feature still works.
+
+**One attribute per query, not twelve in one call.** `fal_get_switch_attrs()`
+returns one status for the whole list, and the existing backend handler returns
+`-EINVAL` for any id it does not know. Asking for twelve at once means a
+backend that knows eleven reports as knowing none -- and "none" is
+indistinguishable from "no backend". This was not a hypothetical: the handler
+that behaves that way is the one already in the tree.
+
+Verified without hardware, `tests/whole_dp/src/dp_test_fal_capability.c`, five
+cases. The test plugin declares a deliberately *mixed* set -- IPv4 yes and IPv6
+no, VXLAN yes and MPLS no, scale limits of 65537 / 4099 / 1031 / 257 rather
+than round numbers. All-true and all-false are both indistinguishable from a
+stub that ignores the attribute id, and all-false is exactly what a broken id
+mapping produces; 65536 and 4096 are exactly what a truncation produces.
+
+Still open from gap 2: more than one backend may not yet be *loaded*.
+`fal_register_message_handler()` asserts a single handler, so plurality is a
+separate change from identity. Identity first was deliberate -- the per-object
+`backend` field and any policy layer need a name to record before they need a
+second thing to choose between.
+
+## What to build next
 
 Gaps 1 and 2, together, as one additive change. They are prerequisites for
 everything else in the doctrine and for every backend, whichever forwarder ends
