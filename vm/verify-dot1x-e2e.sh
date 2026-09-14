@@ -27,7 +27,11 @@ RAD=192.168.203.233
 IF=dp0s3
 SECRET=testing123
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 exec > "$OUT" 2>&1
+# Which image is this a statement about? Read from the running VMs, never
+# from the variable the caller passed.
+"$HERE/image-fingerprint.sh"
 S() { docker exec danos-robot timeout 200 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$1" "$2" 2>&1; }
 
 cli() {

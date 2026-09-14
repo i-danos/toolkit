@@ -25,7 +25,11 @@ LIST=$(mktemp)
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
 OP=/opt/vyatta/bin/vyatta-op-cmd-wrapper
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 exec > "$OUT" 2>&1
+# Which image is this a statement about? Read from the running VMs, never
+# from the variable the caller passed.
+"$HERE/image-fingerprint.sh"
 
 # The command list is derived from the op YANG rather than kept alongside it.
 # A checked-in list goes stale the moment a command is added, and the failure
