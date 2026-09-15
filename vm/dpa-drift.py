@@ -45,8 +45,30 @@ import subprocess
 import sys
 import time
 
-VTYSH = ["sudo", "vtysh", "-c", "show ip route json"]
+# "vrf all", not the default VRF alone.
+#
+# The Programmed side sees every VRF the data plane holds. Asking zebra about
+# one of them does not make the others invisible -- it makes their routes
+# appear as "programmed but not desired", which is a false drift report for
+# every route in every non-default VRF. Measured on a box with one routing
+# instance: three ordinary routes reported as programmed-and-unwanted.
+VTYSH = ["sudo", "vtysh", "-c", "show ip route vrf all json"]
 VPLSH = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route"]
+VPLSH_CLASSES = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show"]
+
+# The only class compared. The object view enumerates six.
+#
+# Stated because "clean" would otherwise be read as "everything programmed was
+# checked", and it is one class of six. That is the same shape as the VRF gap
+# this tool had until it was measured: a scope smaller than the report implies,
+# invisible in the numbers.
+#
+# route6 has a Desired source and is not yet wired. mpls-route, mroute and
+# mroute6 have one -- "show mpls table json", "show ip mroute json", "show ipv6
+# mroute json" all answer -- but each needs a topology that exercises it before
+# a comparison can be verified rather than merely written. "show vrf" has no
+# JSON form at all.
+COMPARED = {"route"}
 
 
 def run(cmd):
@@ -60,12 +82,27 @@ def run(cmd):
 
 
 def desired():
-    """(vrf_name, table, prefix) for every route zebra actually pushed down."""
+    """(vrf_name, table, prefix) for every route zebra actually pushed down.
+
+    "show ip route vrf all json" nests by VRF name, where the single-VRF form
+    is a flat map of prefixes. Both shapes are accepted so the tool works
+    against either, and so that an image or FRR that answers the old shape does
+    not silently produce an empty Desired side -- which would read as every
+    route having drifted.
+    """
     rib = run(VTYSH)
     if rib is None:
         return None
+    # Flatten {vrf: {prefix: [...]}} and {prefix: [...]} to one prefix map.
+    flat = {}
+    for k, v in rib.items():
+        if isinstance(v, dict):
+            for prefix, entries in v.items():
+                flat.setdefault(prefix, []).extend(entries)
+        elif isinstance(v, list):
+            flat.setdefault(k, []).extend(v)
     out = {}
-    for prefix, entries in rib.items():
+    for prefix, entries in flat.items():
         for e in entries:
             # The whole point: only what was selected *and* installed.
             if not (e.get("selected") and e.get("installed")):
@@ -73,8 +110,19 @@ def desired():
             # vrfName, not vrfId. The numbers are separate namespaces --
             # DANOS's default VRF is 1 and zebra's is 0 -- and comparing them
             # made every route on a healthy box look like drift.
-            out[(e.get("vrfName", "default"), e.get("table", 254), prefix)] = \
-                e.get("protocol", "?")
+            # (vrf, prefix). The table is deliberately not in the compared
+            # key.
+            #
+            # "table 254 in VRF RED" and "table 256 in vrfRED" are the same
+            # table: DANOS numbers a table per VRF and each VRF's main table is
+            # 254, while the kernel numbers them globally and gives vrfRED 256.
+            # Comparing the numbers reports every route in every non-default
+            # VRF as drift, which is what was measured before this changed.
+            # The number is kept as an attribute so it can still be read.
+            out[(e.get("vrfName", "default"), prefix)] = {
+                "protocol": e.get("protocol", "?"),
+                "table": e.get("table"),
+            }
     return out
 
 
@@ -119,8 +167,8 @@ def programmed():
         # as drift. That is the same confusion the producing side avoids by
         # emitting the field on every object, reintroduced here by a default
         # argument. None means unknown and is handled as its own case.
-        out.setdefault((vrf, table, prefix), []).append(
-            {"scope": scope, "state": o.get("state"),
+        out.setdefault((vrf, prefix), []).append(
+            {"table": table, "scope": scope, "state": o.get("state"),
              "backend": o.get("backend"),
              "owned": o.get("dataplane_owned")})
     return out
@@ -140,6 +188,18 @@ def unowned(p, k):
     by whatever reads it.
     """
     return all(e["owned"] is False for e in p[k])
+
+
+def coverage():
+    """Which object classes exist, and which of them this compares."""
+    doc = run(VPLSH_CLASSES)
+    if doc is None:
+        return None
+    have = [c["class"] for c in doc.get("dpa_objects", {}).get("classes", [])
+            if c.get("enumerable")]
+    return {"enumerable": have,
+            "compared": sorted(COMPARED & set(have)),
+            "not_compared": sorted(set(have) - COMPARED)}
 
 
 def main():
@@ -176,28 +236,32 @@ def main():
     # identity schemes disagree, not that the data plane lost everything.
     keyspace_broken = bool(d) and bool(p) and not matched
 
+    cov = coverage()
     result = {
+        "coverage": cov,
         "desired": len(d),
         "programmed": len(p),
         "programmed_entries": sum(len(v) for v in p.values()),
         "matched": len(matched),
         "desired_not_programmed": [
-            {"vrf": k[0], "table": k[1], "prefix": k[2], "protocol": d[k]}
+            {"vrf": k[0], "prefix": k[1], "protocol": d[k]["protocol"],
+             "table": d[k]["table"]}
             for k in missing
         ],
         "programmed_not_desired": [
-            {"vrf": k[0], "table": k[1], "prefix": k[2],
-             "state": p[k][0]["state"], "backend": p[k][0]["backend"]}
+            {"vrf": k[0], "prefix": k[1],
+             "state": p[k][0]["state"], "backend": p[k][0]["backend"],
+             "table": p[k][0]["table"]}
             for k in extra
         ],
         "dataplane_owned": [
-            {"vrf": k[0], "table": k[1], "prefix": k[2]} for k in owned
+            {"vrf": k[0], "prefix": k[1]} for k in owned
         ],
         # No longer a fault: more than one entry under a compared key is a
         # legitimate state the data plane can be in. Reported so that the
         # count on each side is explainable rather than merely consistent.
         "multi_entry": [
-            {"vrf": k[0], "table": k[1], "prefix": k[2],
+            {"vrf": k[0], "prefix": k[1],
              "scopes": sorted(e["scope"] for e in p[k] if e["scope"] is not None)}
             for k in sorted(p) if len(p[k]) > 1
         ],
@@ -210,6 +274,10 @@ def main():
         print("desired %d  programmed %d keys / %d entries  matched %d" %
               (result["desired"], result["programmed"],
                result["programmed_entries"], result["matched"]))
+        if cov and cov["not_compared"]:
+            print("  scope: comparing %s; NOT compared: %s"
+                  % (", ".join(cov["compared"]),
+                     ", ".join(cov["not_compared"])))
         if keyspace_broken:
             print("KEY SPACE MISMATCH: the two sides share no identity, which "
                   "is a formatting disagreement rather than drift")
@@ -219,18 +287,17 @@ def main():
                 print("  programmed %s" % (k,))
         else:
             for e in result["desired_not_programmed"]:
-                print("  DESIRED NOT PROGRAMMED  vrf:%(vrf)s/table:%(table)s/"
-                      "%(prefix)s  from %(protocol)s" % e)
+                print("  DESIRED NOT PROGRAMMED  vrf:%(vrf)s/%(prefix)s  "
+                      "from %(protocol)s, zebra table %(table)s" % e)
             for e in result["programmed_not_desired"]:
-                print("  PROGRAMMED NOT DESIRED  vrf:%(vrf)s/table:%(table)s/"
-                      "%(prefix)s  %(state)s on %(backend)s" % e)
+                print("  PROGRAMMED NOT DESIRED  vrf:%(vrf)s/%(prefix)s  "
+                      "%(state)s on %(backend)s, dp table %(table)s" % e)
             for e in result["dataplane_owned"]:
-                print("  dataplane-owned, not drift  vrf:%(vrf)s/"
-                      "table:%(table)s/%(prefix)s" % e)
+                print("  dataplane-owned, not drift  vrf:%(vrf)s/%(prefix)s"
+                      % e)
         for e in result["multi_entry"]:
-            print("  %d entries under one key  vrf:%s/table:%s/%s  scopes %s"
-                  % (len(e["scopes"]), e["vrf"], e["table"], e["prefix"],
-                     e["scopes"]))
+            print("  %d entries under one key  vrf:%s/%s  scopes %s"
+                  % (len(e["scopes"]), e["vrf"], e["prefix"], e["scopes"]))
 
     if keyspace_broken:
         return 3
@@ -293,7 +360,7 @@ def watch(interval, cycles, as_json):
                 "desired": len(d),
                 "programmed_keys": len(p),
                 "disagreements": [
-                    {"kind": k[0], "vrf": k[1], "table": k[2], "prefix": k[3],
+                    {"kind": k[0], "vrf": k[1], "prefix": k[2],
                      "cycles": n} for n, k in persistent
                 ],
             }))
@@ -301,8 +368,8 @@ def watch(interval, cycles, as_json):
             print("cycle %d  desired %d  programmed %d  disagreements %d"
                   % (cycle, len(d), len(p), len(persistent)))
             for n, k in persistent:
-                print("    %-8s vrf:%s/table:%s/%s  %d cycle%s"
-                      % (k[0], k[1], k[2], k[3], n, "" if n == 1 else "s"))
+                print("    %-8s vrf:%s/%s  %d cycle%s"
+                      % (k[0], k[1], k[2], n, "" if n == 1 else "s"))
             if persistent:
                 print("    repair, if this persists: vtysh -c 'configure "
                       "terminal' -c 'no fpm address 127.0.0.1' then set it "
