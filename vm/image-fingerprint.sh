@@ -57,7 +57,66 @@ collect() {
 	done
 }
 
+# What is actually installed, asked of a booted router.
+#
+# The ISO name answers "which file did qemu open" and stops there. It cannot
+# answer "does that file contain the change this run is for", and the two came
+# apart in this project: OBS silently refused to build two bumped packages, the
+# repository kept serving the previous binaries, and the ISO was rebuilt from
+# them under a fresh timestamped name. A name-only fingerprint calls that
+# image new, because it is -- new file, old contents.
+#
+# So this asks the box. Package versions, because that is what the repository
+# actually delivered, and a probe for each field the run depends on, because a
+# version can be installed without the behaviour being reachable.
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+CONTENT_HOST=${CONTENT_HOST:-192.168.203.155}
+
+on_router() {
+	docker exec danos-robot timeout 60 sshpass -p vyatta ssh $SSH_OPTS \
+	       "vyatta@$CONTENT_HOST" "$1" 2>/dev/null
+}
+
+contents() {
+	on_router 'for p in vyatta-dataplane vyatta-route-broker-frr; do
+	              printf "  %-26s %s\n" "$p" "$(dpkg-query -W -f=\${Version} $p 2>/dev/null || echo ABSENT)"
+	           done
+	           printf "  %-26s %s\n" "dpa dataplane_owned" \
+	             "$(sudo /opt/vyatta/bin/vplsh -l -c "dpa object show route" 2>/dev/null \
+	                | grep -c dataplane_owned)"
+	           # grep -c exits 1 on a count of zero, which is the answer we
+	           # want here, not an error -- "|| echo ?" appended a second line
+	           # to the one that was already correct.
+	           printf "  %-26s %s\n" "brokerd pthread_cancel" \
+	             "$(grep -c pthread_cancel /usr/sbin/brokerd 2>/dev/null; true)"'
+}
+
 case "${1:-}" in
+--contents)
+	contents
+	;;
+--assert-contents)
+	# Two-way, deliberately. "The new version is present" passes just as well
+	# when the old one is also still there, and a wait condition written that
+	# way matched a stale truth three times in one hour on this project.
+	want_dp=${2:?usage: --assert-contents <dataplane-ver> <broker-ver>}
+	want_rb=${3:?usage: --assert-contents <dataplane-ver> <broker-ver>}
+	got=$(contents)
+	[ -n "$got" ] || { echo "  CONTENTS: router did not answer" >&2; exit 1; }
+	printf '%s\n' "$got"
+	bad=0
+	got_dp=$(printf '%s\n' "$got" | awk '$1=="vyatta-dataplane"{print $2}')
+	got_rb=$(printf '%s\n' "$got" | awk '$1=="vyatta-route-broker-frr"{print $2}')
+	[ "$got_dp" = "$want_dp" ] || { echo "  CONTENT MISMATCH: dataplane is $got_dp, expected $want_dp" >&2; bad=1; }
+	[ "$got_rb" = "$want_rb" ] || { echo "  CONTENT MISMATCH: route-broker is $got_rb, expected $want_rb" >&2; bad=1; }
+	if [ "$bad" -ne 0 ]; then
+		echo "  The ISO may still be the right file. Its contents are not the" >&2
+		echo "  ones this run is for, which is the failure a name-only" >&2
+		echo "  fingerprint was built to miss." >&2
+		exit 1
+	fi
+	echo "  contents: dataplane $got_dp, route-broker $got_rb -- both as expected"
+	;;
 --list)
 	collect | sed 's/^/  /'
 	;;
