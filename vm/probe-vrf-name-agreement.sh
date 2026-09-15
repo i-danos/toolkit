@@ -78,13 +78,41 @@ echo
 echo "===== 5. Do they agree? ====="
 b64=$(base64 -w0 "$HERE/dpa-drift.py")
 S $R1 "echo '$b64' | base64 -d | sudo tee /tmp/dpa-drift.py >/dev/null; sudo chmod 755 /tmp/dpa-drift.py"
-echo "    default VRF only (the tool reads 'show ip route', not 'vrf all'):"
-S $R1 "sudo python3 /tmp/dpa-drift.py 2>&1 | head -6" | sed 's/^/      /'
+S $R1 "sudo python3 /tmp/dpa-drift.py 2>&1 | head -8" | sed 's/^/      /'
 echo
-echo "    the non-default VRF is not in the comparison at all, because the"
-echo "    Desired side asks zebra for the default VRF only. That is a second"
-echo "    gap and it is invisible in the numbers above: a VRF that is never"
-echo "    compared never drifts."
+# This used to print, under the output above, that the non-default VRF was not
+# in the comparison at all because the Desired side read the default VRF alone.
+# That was true when it was written and stopped being true when dpa-drift.py
+# moved to "show ip route vrf all json", and the paragraph stayed. It was a
+# statement about the tool printed next to output from the tool that contradicted
+# it -- desired 8, matched 8, nothing missing on either side, with vrfRED named
+# on both.
+#
+# So assert it rather than narrate it. A sentence cannot go stale if the run
+# fails when it stops being true.
+echo "    Assertions:"
+rc=0
+json=$(S $R1 "sudo python3 /tmp/dpa-drift.py --json 2>/dev/null" | tail -1)
+check() { # check <label> <python-expression-on-d>
+	if printf '%s' "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if ($2) else 1)" 2>/dev/null; then
+		printf '      PASS  %s\n' "$1"
+	else
+		printf '      FAIL  %s\n' "$1"; rc=1
+	fi
+}
+# The name the data plane uses for the non-default VRF has to be the one the
+# kernel and zebra use, or every route in it compares as missing.
+check "the data plane names the VRF vrfRED, not RED" \
+      "any(e.get('vrf') == 'vrfRED' for e in d['dataplane_owned'])"
+check "nothing still calls it RED" \
+      "not any(e.get('vrf') == 'RED' for e in d['dataplane_owned'] + d['programmed_not_desired'])"
+check "nothing desired is unprogrammed" "len(d['desired_not_programmed']) == 0"
+check "nothing programmed is undesired" "len(d['programmed_not_desired']) == 0"
+check "the key spaces line up" "d['keyspace_mismatch'] is False"
+check "every desired route matched" "d['matched'] == d['desired'] and d['desired'] > 0"
+[ "$rc" -eq 0 ] \
+	&& echo "    NAMES AGREE across kernel, zebra and the data plane." \
+	|| echo "    NAMES DO NOT AGREE -- see the failures above."
 
 echo
 echo "===== 6. Clean up ====="
