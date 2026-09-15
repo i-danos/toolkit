@@ -2,6 +2,7 @@
 """Compare what was asked for against what is programmed.
 
 Usage: dpa-drift.py [--json]
+       dpa-drift.py --watch <seconds> [--cycles N] [--json]
 
 Desired is zebra's RIB, read with "vtysh -c 'show ip route json'".
 Programmed is the data plane's object view, "vplsh -c 'dpa object show route'".
@@ -42,6 +43,7 @@ wrong.
 import json
 import subprocess
 import sys
+import time
 
 VTYSH = ["sudo", "vtysh", "-c", "show ip route json"]
 VPLSH = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route"]
@@ -109,11 +111,35 @@ def programmed():
             scope = int(body[-1][6:])
             body = body[:-1]
         prefix = "/".join(body)
+        # Absent is not False.
+        #
+        # An image built before the data plane reported ownership has no such
+        # field, and defaulting it to False turns "this image cannot say" into
+        # "this object is not owned" -- which then reports every reserved route
+        # as drift. That is the same confusion the producing side avoids by
+        # emitting the field on every object, reintroduced here by a default
+        # argument. None means unknown and is handled as its own case.
         out.setdefault((vrf, table, prefix), []).append(
             {"scope": scope, "state": o.get("state"),
              "backend": o.get("backend"),
-             "owned": o.get("dataplane_owned", False)})
+             "owned": o.get("dataplane_owned")})
     return out
+
+
+def ownership_known(p):
+    """Does this image's object view report ownership at all?"""
+    return any(e["owned"] is not None for v in p.values() for e in v)
+
+
+def unowned(p, k):
+    """True when every entry under k is known *not* to be dataplane-owned.
+
+    Unknown counts as not-drift rather than as drift. On an image that cannot
+    say, the honest answer is to report nothing rather than to report the
+    reserved routes as missing objects -- an over-report here would be acted on
+    by whatever reads it.
+    """
+    return all(e["owned"] is False for e in p[k])
 
 
 def main():
@@ -143,10 +169,8 @@ def main():
     # a reserved entry and a real one at different scopes -- 0.0.0.0/0 does --
     # and calling the whole key owned would hide a real route behind a
     # reserved one.
-    extra = sorted(k for k in set(p) - set(d)
-                   if not all(e["owned"] for e in p[k]))
-    owned = sorted(k for k in set(p) - set(d)
-                   if all(e["owned"] for e in p[k]))
+    extra = sorted(k for k in set(p) - set(d) if unowned(p, k))
+    owned = sorted(k for k in set(p) - set(d) if not unowned(p, k))
 
     # The guard. Nothing in common while both sides hold routes means the two
     # identity schemes disagree, not that the data plane lost everything.
@@ -212,5 +236,90 @@ def main():
         return 3
     return 1 if (missing or extra) else 0
 
+
+def watch(interval, cycles, as_json):
+    """Compare repeatedly and count how long each disagreement persists.
+
+    A single comparison cannot tell drift from a route in flight. The path is
+    asynchronous -- zebra pushes, brokerd queues, the data plane programs --
+    so a route added a moment ago is legitimately "desired not programmed" for
+    as long as that takes. Every probe written against this pipeline has slept
+    for several seconds before reading, for exactly that reason.
+
+    So what is reported is not whether a disagreement exists but how many
+    consecutive cycles it has survived. That is the number a trigger condition
+    would eventually be written against, and collecting it is the reason this
+    runs without repairing anything: the threshold is not known yet, and a loop
+    that acts on an unknown threshold with a whole-session repair would reset
+    the routing plane on a schedule.
+    """
+    seen = {}
+    cycle = 0
+
+    while cycles is None or cycle < cycles:
+        cycle += 1
+        d = desired()
+        p = programmed()
+        if d is None or p is None:
+            # Refuse rather than record a cycle of total drift. An unreadable
+            # side looks exactly like an empty one.
+            print(json.dumps({"cycle": cycle, "error": "unreadable"})
+                  if as_json else
+                  "cycle %d: a side is unreadable, not counted" % cycle)
+            time.sleep(interval)
+            continue
+
+        if cycle == 1 and not ownership_known(p):
+            msg = ("this image's object view does not report ownership; "
+                   "reserved routes cannot be told from drift and are "
+                   "excluded rather than reported")
+            print(json.dumps({"cycle": 0, "note": msg}) if as_json
+                  else "note: " + msg)
+
+        missing = set(d) - set(p)
+        extra = set(k for k in set(p) - set(d) if unowned(p, k))
+        now = {("missing",) + k for k in missing} | {("extra",) + k for k in extra}
+
+        for k in now:
+            seen[k] = seen.get(k, 0) + 1
+        for k in list(seen):
+            if k not in now:
+                del seen[k]
+
+        persistent = sorted(((v, k) for k, v in seen.items()), reverse=True)
+        if as_json:
+            print(json.dumps({
+                "cycle": cycle,
+                "desired": len(d),
+                "programmed_keys": len(p),
+                "disagreements": [
+                    {"kind": k[0], "vrf": k[1], "table": k[2], "prefix": k[3],
+                     "cycles": n} for n, k in persistent
+                ],
+            }))
+        else:
+            print("cycle %d  desired %d  programmed %d  disagreements %d"
+                  % (cycle, len(d), len(p), len(persistent)))
+            for n, k in persistent:
+                print("    %-8s vrf:%s/table:%s/%s  %d cycle%s"
+                      % (k[0], k[1], k[2], k[3], n, "" if n == 1 else "s"))
+            if persistent:
+                print("    repair, if this persists: vtysh -c 'configure "
+                      "terminal' -c 'no fpm address 127.0.0.1' then set it "
+                      "again -- whole-session, not per route")
+
+        if cycles is None or cycle < cycles:
+            time.sleep(interval)
+
+    return 0
+
+
+if "--watch" in sys.argv:
+    i = sys.argv.index("--watch")
+    interval = float(sys.argv[i + 1])
+    cycles = None
+    if "--cycles" in sys.argv:
+        cycles = int(sys.argv[sys.argv.index("--cycles") + 1])
+    sys.exit(watch(interval, cycles, "--json" in sys.argv))
 
 sys.exit(main())
