@@ -167,6 +167,19 @@ push_pkg() {
     cd "$CO"
     $OSC co "$PRJ" "$p" -o "$p.co" < /dev/null 2>&1 \
       || { echo "STEP: checkout"; exit 1; }
+    # Drop the versioned files already there before staging the new ones.
+    #
+    # addremove only removes what is missing from the working copy, and the
+    # checkout arrives holding the previous version, so without this the old
+    # .dsc survives every upload and the package ends up with two of them.
+    # OBS cannot choose between two source packages and does not treat it as an
+    # error: it marks the package "excluded", which "osc results <pkg>" renders
+    # as a blank line rather than a message. A bumped version then looks
+    # uploaded, looks committed, and never builds.
+    #
+    # Only <pkg>_* is touched, so anything else the package carries -- _service,
+    # _meta, a README -- is left alone.
+    rm -f "$p.co/${p}_"* 2>/dev/null
     cp "$p/"* "$p.co/" 2>/dev/null \
       || { echo "STEP: staging files into the checkout"; exit 1; }
     cd "$p.co"
@@ -187,6 +200,18 @@ push_pkg() {
     # packages as needing upload on exactly that basis, and the one sampled
     # against OBS differed by a single debian/.gitignore.
     [ -f "$DSC/${p}_${ver}.commit" ] && cp "$DSC/${p}_${ver}.commit" "$DSC/${p}_${ver}.uploaded"
+    # One source package, or OBS will not build any of them. Asked of the
+    # server rather than of the checkout, because what was pushed is the thing
+    # in question. A stale .dsc left behind costs a whole chain: the build
+    # never runs, the repository keeps serving the old binary, and the image
+    # comes out without the change it was built for.
+    local ndsc
+    ndsc=$($OSC ls "$PRJ" "$p" < /dev/null 2>/dev/null | grep -c '\.dsc$')
+    if [ "$ndsc" != 1 ]; then
+      printf '  %-42s FAIL  %s .dsc files on OBS, expected 1 -- it will be excluded\n' "$p" "$ndsc"
+      $OSC ls "$PRJ" "$p" < /dev/null 2>/dev/null | grep '\.dsc$' | sed 's/^/        /' >&2
+      return 1
+    fi
     printf '  %-42s OK\n' "$p"
     rm -f "$log"
   else

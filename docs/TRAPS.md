@@ -332,3 +332,44 @@ The discriminator that ruled the code out was a `git worktree` at the commit
 before the change, built and run the same way on the same host. It answers both
 questions at once: whether the change caused it, and whether the tree was ever
 clean.
+
+## A bumped package that uploads, commits, and never builds
+
+`upload.sh` checks the package out of OBS, copies the new `.dsc` and tarball
+into the checkout, and runs `osc addremove`. `addremove` removes what is
+*missing* from the working copy, and the checkout arrives holding the previous
+version, so the old files were never missing and never removed. Every upload
+left the superseded source package in place.
+
+OBS cannot choose between two `.dsc` files in one package, and does not call it
+an error. It marks the package `excluded`:
+
+```
+$ osc results home:i-danos vyatta-route-broker
+$
+```
+
+A blank line. Not a message, not a non-zero exit -- the package simply has no
+rows to show. The project-wide summary is no better, because `excluded` is
+rendered as a space in the status grid, which reads as "nothing wrong here"
+among the dots.
+
+So the upload reports OK, the commit is real, the new version is on the server,
+and nothing builds. The repository keeps serving the old binary, the ISO is
+built from it, and the image comes out without the change the whole chain was
+run for -- with every step reporting success.
+
+What exposed it was asking for a status the summary had no room to hide:
+
+```
+$ osc api /build/home:i-danos/2608/x86_64/vyatta-route-broker/_status
+<status package="vyatta-route-broker" code="excluded">
+```
+
+and comparing against a package that was building, which had two files in it
+where this one had four.
+
+Fixed in `upload.sh` by clearing `<pkg>_*` from the checkout before staging,
+and by asking the server afterwards for the number of `.dsc` files it now
+holds. One, or the upload fails loudly. The check queries OBS rather than the
+local checkout, because the question is about what was pushed.
