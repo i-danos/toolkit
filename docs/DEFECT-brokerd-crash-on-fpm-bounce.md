@@ -107,14 +107,18 @@ Both are withdrawn. See below for what replaced them.
 
 ## What is true after the fix
 
-The table still empties on an FPM bounce. Measured with the fixed binary, 500
-routes, sampled every two seconds, zero cores produced:
+The table still empties on an FPM bounce. Measured on the built image --
+vyatta-dataplane 3.14.39 and vyatta-route-broker 1.0.5, both out of OBS and into
+the ISO -- at 500 routes, three bounces, zero cores produced:
 
 ```
-sample 3: routes 508
-sample 4: routes 0
-sample 5: routes 508
+bounce 1  lowest 3    dataplane pid 20213 -> 22778  (restarted) (blanked)
+bounce 2  lowest 270  dataplane pid 22778 -> 24993  (restarted) (blanked)
+bounce 3  lowest 3    dataplane pid 24993 -> 27470  (restarted) (blanked)
 ```
+
+`systemctl show vyatta-dataplane` then reports `ExecMainPID=27470`, the pid the
+last bounce produced, with systemd's restart counter at 17.
 
 This is not the crash and not a resync gap. brokerd `accept()`s one FPM
 connection and immediately `close()`s its listening socket: **one FPM session
@@ -136,7 +140,11 @@ way.
 ## Reproducer
 
 `toolkit/vm/probe-brokerd-crash.sh` -- separates load from bounce, counts cores
-per phase. Pre-fix it produces a core per bounce in phase B.
+per phase. Pre-fix it produces a core per bounce in phase B; against the built
+image it reports no core in any phase.
+
+`toolkit/vm/probe-bounce-blanks-table.sh` -- the blanking, asserted on the pid
+and reported as k of N.
 
 Cores from the original session preserved at `build-iso/crash-tmp/` on the build
 host, with the matching binary and dbgsym, since the VM is ephemeral.
@@ -159,10 +167,44 @@ asking whether forwarding survived.
 Both are kept as written. A probe that measured the wrong thing twice in two
 different ways is worth more on the page than in memory.
 
+## The window is short, and that nearly produced a fourth wrong answer
+
+The first run of `probe-bounce-blanks-table.sh` on the built image reported that
+the table never dipped, across twelve samples covering some twenty-four seconds.
+Read alone that says the blanking is gone and an FPM bounce is usable as a
+repair primitive -- the same claim, for the fourth time, and wrong again.
+
+The reading that refused to fit was the data plane's process age: 86s before the
+bounce, 5s after. It had plainly restarted. Moving the sampler inside the guest
+found the dip immediately, at 3 routes of 508.
+
+Each sample had been costing an ssh round trip plus the gap, so the sampler ran
+at roughly one reading every three seconds against a window shorter than that.
+Even in-guest at around twenty-three readings a second, the dip was missed in
+one bounce out of three.
+
+The probe is built around that now. The restart is asserted on the pid, which is
+observable on every bounce; the blanking is reported as "seen in k of N" rather
+than passed or failed on a single look. A probe that had to catch a short window
+on its first try would fail about a third of the time on a box behaving exactly
+as documented here, and a probe that reports a miss as a finding is worse than
+no probe.
+
+## One more wrong turn, recorded because the answer looked like data
+
+`systemctl show dataplane` returns `ActiveState=inactive` and `ExecMainPID=0`,
+and `journalctl -u dataplane` returns nothing. That was briefly read here as
+"the data plane is not managed by systemd", which would have undercut the
+restart evidence above.
+
+The unit is `vyatta-dataplane.service`. There is no `dataplane.service`, and
+systemd answers a query about a unit that does not exist with the same shape it
+uses for one that is merely stopped. Under the right name the unit reports
+`ActiveState=active`, a matching `ExecMainPID`, and the restart counter.
+
 ## Still not measured
 
-How long the blanked window lasts, and what traffic sees inside it. The
-sampling above brackets it between two and four seconds at 500 routes, which is
-a bound, not a measurement, and says nothing about the shape of it at a real
-table size. The probe that was supposed to answer this is the one described
-directly above.
+What traffic sees inside the window. Every number here is a route count, and a
+count cannot answer whether forwarding stopped. The probe that was supposed to
+answer that is `probe-resync-outage.sh`, described above, which established
+neither of the two things it set out to.
