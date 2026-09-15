@@ -267,6 +267,30 @@ ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do [ -S /var/run/charon.vici ] &&
 
 ---
 
+## 11. brokerd cancelled a thread holding a mutex
+
+**`vyatta-route-broker`**
+
+`route_broker_kernel_shutdown()` ran `pthread_cancel()` on the kernel consumer
+thread, and is called on every FPM session teardown rather than at process
+exit. The consumer waits on a condition variable — a cancellation point that
+reacquires `route_broker_mutex` before returning — and the library has no
+`pthread_cleanup_push` anywhere, so the cancel could destroy the thread holding
+that mutex or mid-ZMQ-send. The next publish faulted inside the allocator.
+
+Every FPM bounce produced a core, which took the data plane down with it,
+because the data plane is restarted when its feed dies.
+
+Replaced with a stop flag the consumer's one-second wait timeout notices. Ten
+bounces before: ten cores. Ten after: none.
+
+This one cost two wrong conclusions before it was found, both drawn from the
+empty forwarding table it produced. `DEFECT-brokerd-crash-on-fpm-bounce.md` has
+the full account, including the first diagnosis, which explained every piece of
+available evidence and was wrong.
+
+---
+
 ## Two of these were hiding each other
 
 The Perl warnings buried the SA table, so the empty table underneath — caused by
