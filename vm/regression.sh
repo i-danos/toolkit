@@ -1,5 +1,6 @@
 #!/bin/bash
-# The five DANOS Robot suites, 74 cases, against one image.
+# The DANOS Robot suites against one image. The suite list and the expected
+# case counts are the SUITES table below, and nothing else.
 #
 # This has been run after every change here and reconstructed by hand every
 # time, which is how two of this project's worst readings happened: a full run
@@ -35,6 +36,7 @@ RESULTS=/tests/Test_Automation
 SUITES="
 ipsec ipsec IPSEC_VPN_DANOS  10
 mpls  ipsec MPLS_LDP_DANOS   11
+dpa   ipsec DPA_DANOS         7
 fw    fw    FIREWALL_DANOS   16
 bgp   bgp   BGP_DANOS        16
 rest  bgp   danos_restapi    21
@@ -106,13 +108,25 @@ echo "=== totals ==="
 # a run that was 52 of 74. The VERDICT line below is the guard against it
 # happening again in some new form: if python did not run, there is no verdict,
 # and no verdict is a failure rather than a pass.
-verdict=$(docker exec -i danos-robot python3 - "$TAG" <<'PY'
+# The expected counts come from SUITES, passed in as arguments. They used to be
+# a second copy of the table inside this program, and two tables that must agree
+# do not: a suite added to SUITES alone still ran, still reported, and was
+# absent from the verdict -- its failures counted nowhere, and the total it was
+# missing from still read as complete.
+want_args=$(printf '%s\n' "$SUITES" | awk 'NF==4 {printf "%s=%s ", $1, $4}')
+# shellcheck disable=SC2086  # deliberate word splitting: one key=count per arg
+verdict=$(docker exec -i danos-robot python3 - "$TAG" $want_args <<'PY'
 import glob
 import sys
 import xml.etree.ElementTree as ET
 
 tag = sys.argv[1]
-want = {"ipsec": 10, "mpls": 11, "fw": 16, "bgp": 16, "rest": 21}
+want = dict((k, int(v)) for k, v in (a.split("=", 1) for a in sys.argv[2:]))
+if not want:
+    print("  NO SUITES -- the expected counts did not reach this program")
+    print("VERDICT DIRTY 0 0 0")
+    raise SystemExit(0)
+total_want = sum(want.values())
 tp = tf = 0
 bad = 0
 for key, n in want.items():
@@ -133,8 +147,9 @@ for key, n in want.items():
         flag = "  <-- ran %d of %d cases" % (p + f, n)
         bad += 1
     print("  %-6s pass=%-3d fail=%-3d%s" % (key, p, f, flag))
-print("  %-6s pass=%-3d fail=%-3d  of 74 expected" % ("TOTAL", tp, tf))
-print("VERDICT %s %d %d" % ("CLEAN" if not (bad or tp != 74 or tf) else "DIRTY", tp, tf))
+print("  %-6s pass=%-3d fail=%-3d  of %d expected" % ("TOTAL", tp, tf, total_want))
+print("VERDICT %s %d %d %d" % (
+    "CLEAN" if not (bad or tp != total_want or tf) else "DIRTY", tp, tf, total_want))
 PY
 )
 printf '%s\n' "$verdict" | grep -v '^VERDICT '
@@ -147,7 +162,7 @@ if [ -z "$line" ]; then
 fi
 set -- $line
 if [ "$2" != "CLEAN" ] || [ "$bad" -ne 0 ]; then
-	printf '  REGRESSION NOT CLEAN: %s passed, %s failed of 74\n' "$3" "$4"
+	printf '  REGRESSION NOT CLEAN: %s passed, %s failed of %s\n' "$3" "$4" "$5"
 	exit 1
 fi
-echo "  74 of 74"
+printf '  %s of %s\n' "$3" "$5"
