@@ -211,6 +211,62 @@ delivery. The second line corrected three documents, which had recorded that a
 brokerd restart re-seeds the whole table from the kernel FIB. It does not. What
 restored twenty protocol routes in that incident was zebra's reconnect walk.
 
+## 4a. Drift is not rare
+
+Measured under the 81-case regression, all suites passing, with nothing
+injected. `measure-drift-rate.sh` compares once every 20 seconds from outside
+the routers, using the on-box comparison tool unchanged; only the bookkeeping
+is external.
+
+```
+75 minutes, 134 readable cycles, 40 not readable
+  (26 no router at any candidate address, 14 tool not yet ready after a reboot)
+
+58 readable cycles carried a disagreement    43.3%
+16 distinct keys
+
+persistence, longest consecutive readable cycles per key:
+   1 cycle    6 keys      route in flight; the path is asynchronous
+   2 cycles   1 key
+   3 cycles   2 keys
+   4 cycles   1 key
+   5 cycles   1 key
+   6 cycles   1 key
+   7 cycles   1 key
+   8 cycles   2 keys
+  26 cycles   1 key       roughly nine minutes
+```
+
+The persistence column is the result; the 43.3% is not, and should not be
+quoted on its own. At a 20-second interval a run of three is a disagreement
+that outlived a minute, which on a healthy asynchronous path is not a route in
+flight. **Nine of sixteen keys ran to three cycles or more.**
+
+What this rules out: the possibility that drift is rare enough that a manual
+primitive is sufficient and any reconciler is over-building. On a completely
+clean run -- 81 of 81 -- disagreement was not an unusual event.
+
+What it does not settle: whether the persistent cases cluster around particular
+events, such as topology changes and bulk configuration, or occur continuously.
+Those point at different designs -- event-driven repair against a standing
+reconciler -- and this data does not separate them.
+
+Three limits travel with the number and none of them makes it larger:
+
+1. **One router is observed.** Drift on the others is invisible. The
+   regression runs three- and four-router topologies.
+2. **A regression workload is not a production workload.** It clears and
+   reconfigures repeatedly, which may produce more transient disagreement than
+   production, and carries small tables, which may produce fewer
+   resource-driven failures.
+3. **The 14 unreadable cycles are the seconds after a reboot**, when the box is
+   up but not yet answering. Excluding them from the denominator is correct and
+   also means the window most likely to contain drift is the one least
+   observed.
+
+So: a lower bound, from one workload, on one router, blind to its most
+interesting moments.
+
 ## 5. Option A — downstream FRR route replay
 
 Exists, measured, in this repository as
@@ -274,6 +330,7 @@ not answer.
 | NH/NHG dependency | not handled; see D3 caveat | **reconciler must understand it** (D3) |
 | Source separation | inherited from the existing path | **must be decided** (D4) |
 | Route repair demonstrated | P2, 7/7 | none |
+| Drift rate it answers | lower bound measured, section 4a | same measurement applies |
 | Code and build cost | measured | **UNKNOWN** |
 | Runtime cost | not measured for either | **UNKNOWN** |
 | Version maintenance | FRR rebase, described below | DANOS's own surface |
@@ -343,8 +400,9 @@ estimates:
 - **That option B is "complex".** Five semantic requirements were identified.
   Whether that makes an implementation large is not something section 6 can
   tell you.
-- **How often repair is actually needed.** No measurement of drift frequency in
-  normal operation exists. Both options answer a problem whose rate is unknown.
+- **A representative drift rate.** One lower bound now exists (section 4a) and
+  it is a lower bound from one workload on one router. It is not a production
+  rate and does not become one by being the only number available.
 - **Whether route-level repair is sufficient.** Only IPv4 unicast routes were
   exercised. Nothing here covers IPv6, multicast, MPLS, next-hop groups as
   repair targets, or the other five object classes the DPA model enumerates.
