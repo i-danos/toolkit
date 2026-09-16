@@ -1,0 +1,208 @@
+--- a/zebra/dplane_fpm_nl.c
++++ b/zebra/dplane_fpm_nl.c
+@@ -184,6 +184,8 @@
+ static void fpm_nhg_send(struct event *t);
+ static void fpm_nhg_reset(struct event *t);
+ static void fpm_rib_send(struct event *t);
++static int fpm_rib_replay_one(struct fpm_nl_ctx *fnc, vrf_id_t vrf_id,
++			      const struct prefix *p);
+ static void fpm_rib_reset(struct event *t);
+ static void fpm_rmac_send(struct event *t);
+ static void fpm_rmac_reset(struct event *t);
+@@ -312,6 +314,66 @@
+ 	return CMD_SUCCESS;
+ }
+ 
++/*
++ * Experimental. This exists to answer one question -- can a single route be
++ * repaired without restarting anything -- and its name and syntax are not a
++ * commitment. The command runs on the same thread as the RIB, so the lookup,
++ * the encode and the enqueue all happen before it answers.
++ */
++DEFPY(fpm_route_replay, fpm_route_replay_cmd,
++      "fpm route-replay <A.B.C.D/M|X:X::X:X/M>$prefix [vrf NAME$vrfname]",
++      FPM_STR
++      "Re-send one installed route to the FPM (experimental)\n"
++      "IPv4 prefix\n"
++      "IPv6 prefix\n"
++      VRF_CMD_HELP_STR
++      VRF_CMD_HELP_STR)
++{
++	vrf_id_t vrf_id = VRF_DEFAULT;
++	struct vrf *vrf;
++	int rv;
++
++	if (vrfname) {
++		vrf = vrf_lookup_by_name(vrfname);
++		if (vrf == NULL) {
++			vty_out(vty, "%% No such routing instance: %s\n",
++				vrfname);
++			return CMD_WARNING;
++		}
++		vrf_id = vrf->vrf_id;
++	}
++
++	rv = fpm_rib_replay_one(gfnc, vrf_id, (const struct prefix *)prefix);
++	switch (rv) {
++	case 0:
++		vty_out(vty, "%% Re-sent %pFX to the FPM\n", prefix);
++		return CMD_SUCCESS;
++	case -ENOTCONN:
++		vty_out(vty, "%% No FPM connection\n");
++		break;
++	case -EAFNOSUPPORT:
++		vty_out(vty, "%% Unsupported address family\n");
++		break;
++	case -ENOENT:
++		vty_out(vty, "%% No routing table for that instance\n");
++		break;
++	case -ESRCH:
++		vty_out(vty, "%% %pFX is not in the RIB\n", prefix);
++		break;
++	case -ENODATA:
++		vty_out(vty, "%% %pFX is in the RIB but nothing is installed\n",
++			prefix);
++		break;
++	case -ENOBUFS:
++		vty_out(vty, "%% FPM output buffer is full\n");
++		break;
++	default:
++		vty_out(vty, "%% Failed (%d)\n", rv);
++		break;
++	}
++	return CMD_WARNING;
++}
++
+ DEFUN(fpm_reset_counters, fpm_reset_counters_cmd,
+       "clear fpm counters",
+       CLEAR_STR
+@@ -1263,6 +1325,33 @@
+ }
+ 
+ /**
++ * Encode one installed route and hand it to the FPM output buffer.
++ *
++ * This is the body of the RIB walk below, lifted out unchanged so that a
++ * single destination can be sent without walking anything. Extracted rather
++ * than copied on purpose: a repair that encoded routes its own way would
++ * program a route into a state the next reconnect walk disagrees with.
++ *
++ * Runs on zrouter.master, which owns the RIB. fpm_nl_enqueue() takes
++ * fnc->obuf_mutex, so the output buffer is safe against the FPM thread.
++ *
++ * Returns 0 when the route was enqueued, -1 when the output buffer is full.
++ */
++static int fpm_rib_send_one(struct fpm_nl_ctx *fnc,
++			    struct zebra_dplane_ctx *ctx,
++			    struct route_node *rn, rib_dest_t *dest)
++{
++	dplane_ctx_reset(ctx);
++	dplane_ctx_route_init(ctx, DPLANE_OP_ROUTE_INSTALL, rn,
++			      dest->selected_fib);
++	if (fpm_nl_enqueue(fnc, ctx) == -1)
++		return -1;
++
++	SET_FLAG(dest->flags, RIB_DEST_UPDATE_FPM);
++	return 0;
++}
++
++/**
+  * Send all RIB installed routes to the connected data plane.
+  */
+ static void fpm_rib_send(struct event *t)
+@@ -1290,10 +1379,7 @@
+ 				continue;
+ 
+ 			/* Enqueue route install. */
+-			dplane_ctx_reset(ctx);
+-			dplane_ctx_route_init(ctx, DPLANE_OP_ROUTE_INSTALL, rn,
+-					      dest->selected_fib);
+-			if (fpm_nl_enqueue(fnc, ctx) == -1) {
++			if (fpm_rib_send_one(fnc, ctx, rn, dest) == -1) {
+ 				/* Free the temporary allocated context. */
+ 				dplane_ctx_fini(&ctx);
+ 
+@@ -1301,9 +1387,6 @@
+ 						fnc, 1, &fnc->t_ribwalk);
+ 				return;
+ 			}
+-
+-			/* Mark as sent. */
+-			SET_FLAG(dest->flags, RIB_DEST_UPDATE_FPM);
+ 		}
+ 	}
+ 
+@@ -1318,6 +1401,65 @@
+ 			&fnc->t_rmacreset);
+ }
+ 
++/**
++ * Re-send one installed route to the data plane.
++ *
++ * The reconnect walk above already regenerates a route's FPM message from
++ * dest->selected_fib; what it cannot do is name one destination. This does
++ * only that, and calls the same encoder.
++ *
++ * Everything happens on zrouter.master, synchronously, with the route node's
++ * reference held from lookup to enqueue. No rib_dest is handed to another
++ * thread -- the failure that would otherwise define this function is to look
++ * up a destination, release it, let a protocol replace the route, and then
++ * encode from freed memory.
++ *
++ * srcdest_rnode_lookup(), not _get(): _get creates the node when it is absent,
++ * and repairing a prefix the RIB does not have must fail rather than conjure
++ * an empty destination.
++ *
++ * Returns 0 on success, or a negative errno-style code naming the reason. A
++ * caller cannot act on "it did not work".
++ */
++static int fpm_rib_replay_one(struct fpm_nl_ctx *fnc, vrf_id_t vrf_id,
++			      const struct prefix *p)
++{
++	struct zebra_dplane_ctx *ctx;
++	struct route_table *table;
++	struct route_node *rn;
++	rib_dest_t *dest;
++	afi_t afi;
++	int rv;
++
++	if (fnc->socket == -1 || fnc->connecting)
++		return -ENOTCONN;
++
++	afi = family2afi(p->family);
++	if (afi != AFI_IP && afi != AFI_IP6)
++		return -EAFNOSUPPORT;
++
++	table = zebra_vrf_table(afi, SAFI_UNICAST, vrf_id);
++	if (table == NULL)
++		return -ENOENT;
++
++	rn = srcdest_rnode_lookup(table, p, NULL);
++	if (rn == NULL)
++		return -ESRCH;
++
++	dest = rib_dest_from_rnode(rn);
++	if (dest == NULL || dest->selected_fib == NULL) {
++		route_unlock_node(rn);
++		return -ENODATA;
++	}
++
++	ctx = dplane_ctx_alloc();
++	rv = fpm_rib_send_one(fnc, ctx, rn, dest);
++	dplane_ctx_fini(&ctx);
++	route_unlock_node(rn);
++
++	return rv == 0 ? 0 : -ENOBUFS;
++}
++
+ /*
+  * The next three functions will handle RMAC enqueue.
+  */
+@@ -1820,6 +1962,7 @@
+ 	install_element(ENABLE_NODE, &fpm_show_counters_cmd);
+ 	install_element(ENABLE_NODE, &fpm_show_counters_json_cmd);
+ 	install_element(ENABLE_NODE, &fpm_reset_counters_cmd);
++	install_element(ENABLE_NODE, &fpm_route_replay_cmd);
+ 	install_element(CONFIG_NODE, &fpm_set_address_cmd);
+ 	install_element(CONFIG_NODE, &no_fpm_set_address_cmd);
+ 	install_element(CONFIG_NODE, &fpm_use_nhg_cmd);
