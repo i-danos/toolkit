@@ -114,9 +114,10 @@ fpm route-replay 10.91.9.0/24
 ### The pid is the assertion that matters
 
 This project already had a recovery path that ends with the route present:
-brokerd crashes, systemd restarts it, `broker_dump_routes()` re-seeds the whole
-table from the kernel FIB. It was written up once as a repair primitive, "20 of
-20 routes restored", on exactly the evidence of the routes being back.
+brokerd crashes, systemd restarts it, the FPM session drops with the process,
+and zebra reconnects and walks its whole RIB. It was written up once as a repair
+primitive, "20 of 20 routes restored", on exactly the evidence of the routes
+being back.
 
 That path changes the data plane's pid. This one does not.
 

@@ -99,9 +99,16 @@ of the dataplane process, 126 seconds on a box that had been up for hours.
 **"An FPM reconnect is a repair primitive, 20/20."** Twenty routes were missing
 from the data plane, the session was bounced, and all twenty arrived. What
 actually happened is that brokerd crashed on the bounce, systemd restarted it,
-and `broker_dump_routes()` re-seeded the whole table from the kernel FIB at
-startup. The routes did arrive. The mechanism was not the one named, and the
-name is what would have been built on.
+and the FPM session it had been serving dropped with it -- so zebra reconnected
+and walked its whole RIB. The routes did arrive. The mechanism was not the one
+named, and the name is what would have been built on.
+
+That correction has its own correction. This section first said the re-seed came
+from `broker_dump_routes()` reading the kernel FIB. It does not: both that dump
+and brokerd's steady-state netlink socket filter to `RTPROT_KERNEL`, so they
+carry connected routes only -- "others come from FPM" is the comment in
+`dump_route()`. Protocol routes reach brokerd through FPM and nowhere else, so
+what restored twenty static routes was zebra's reconnect walk.
 
 Both are withdrawn. See below for what replaced them.
 

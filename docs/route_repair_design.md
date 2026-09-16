@@ -220,7 +220,8 @@ The suite has to distinguish repair from restart, because this project has
 already confused the two once: an FPM reconnect was recorded as a repair
 primitive, "20 of 20 routes restored", when what happened was brokerd crashing,
 systemd restarting it, and `broker_dump_routes()` re-seeding the whole table
-from the kernel FIB. The routes did arrive. The mechanism was not the one named.
+and zebra walking its whole RIB on the reconnect that followed. The routes did
+arrive. The mechanism was not the one named.
 
 So the test asserts the negative as carefully as the positive:
 
