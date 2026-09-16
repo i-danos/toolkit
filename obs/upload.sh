@@ -185,7 +185,7 @@ push_pkg() {
     cd "$p.co"
     $OSC addremove < /dev/null 2>&1 \
       || { echo "STEP: addremove"; exit 1; }
-    $OSC ci -m "DANOS on Debian 13 (branch i-danos/2608)" < /dev/null 2>&1 \
+    $OSC ci -m "DANOS on Debian 13 (branch master)" < /dev/null 2>&1 \
       || { echo "STEP: commit"; exit 1; }
   ) > "$log" 2>&1
   local rc=$?

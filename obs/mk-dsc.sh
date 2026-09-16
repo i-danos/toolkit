@@ -35,12 +35,16 @@ for p in "${pkgs[@]}"; do
   if [ ! -d "$repo/.git" ]; then
     printf '  %-42s SKIP  not a git repository\n' "$p"; fail=$((fail+1)); continue
   fi
-  # Which ref to export. Normally HEAD, but golang-github-mdlayher-netlink's
-  # i-danos/2608 was branched from origin/upstream (the wrong baseline was
-  # picked when the branches were created) and points at a pure upstream import
-  # commit with no debian/ at all; the packaging is on main. Fall back to a
-  # local branch that has debian/changelog and warn loudly — this is a defect in
-  # the repository and should not be swallowed silently.
+  # Which ref to export. Normally HEAD, but a working branch can be pointed at
+  # a pure upstream import with no debian/ at all, with the packaging sitting on
+  # another branch -- golang-github-mdlayher-netlink was in exactly that state
+  # when its working branch had been cut from origin/upstream rather than from
+  # the packaging line. That particular repository is no longer in that state,
+  # its master and main now being the same commit, but the guard stays: the
+  # failure it catches is silent otherwise, producing a source package with no
+  # debian/ and a build that fails much later for no visible reason.
+  #
+  # Fall back to a local branch that has debian/changelog and warn loudly.
   ref=HEAD
   if ! git -C "$repo" cat-file -e "HEAD:debian/changelog" 2>/dev/null; then
     for cand in $(git -C "$repo" branch --format='%(refname:short)' 2>/dev/null); do
