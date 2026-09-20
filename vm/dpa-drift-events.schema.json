@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DANOS DPA drift events",
+  "type": "object",
+  "required": ["schema_version", "events", "read_only"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "read_only": {"const": true},
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {"enum": ["active", "resolved", "unreadable"]},
+          "kind": {"type": "string"},
+          "vrf": {"type": ["string", "null"]},
+          "prefix": {"type": ["string", "null"]},
+          "cycles": {"type": "integer", "minimum": 1},
+          "first_cycle": {"type": "integer", "minimum": 1},
+          "last_cycle": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}
