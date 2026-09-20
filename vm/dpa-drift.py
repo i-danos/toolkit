@@ -44,6 +44,7 @@ import json
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 
 # "vrf all", not the default VRF alone.
 #
@@ -122,6 +123,9 @@ def desired():
             out[(e.get("vrfName", "default"), prefix)] = {
                 "protocol": e.get("protocol", "?"),
                 "table": e.get("table"),
+                "scope": e.get("scope"),
+                "next_hop_group": e.get("nexthopGroup", e.get("nextHopGroup")),
+                "source": e.get("source", e.get("protocol", "?")),
             }
     return out
 
@@ -170,7 +174,11 @@ def programmed():
         out.setdefault((vrf, prefix), []).append(
             {"table": table, "scope": scope, "state": o.get("state"),
              "backend": o.get("backend"),
-             "owned": o.get("dataplane_owned")})
+             "owned": o.get("dataplane_owned"),
+             "protocol": o.get("protocol"),
+             "source": o.get("source"),
+             "next_hop_group": o.get("nexthop_group", o.get("next_hop_group")),
+             "dependencies": o.get("dependencies", [])})
     return out
 
 
@@ -195,9 +203,10 @@ def coverage():
     doc = run(VPLSH_CLASSES)
     if doc is None:
         return None
-    have = [c["class"] for c in doc.get("dpa_objects", {}).get("classes", [])
-            if c.get("enumerable")]
-    return {"enumerable": have,
+    classes = doc.get("dpa_objects", {}).get("classes", [])
+    have = [c["class"] for c in classes if c.get("enumerable")]
+    unavailable = [c["class"] for c in classes if not c.get("enumerable")]
+    return {"enumerable": have, "not_enumerable": unavailable,
             "compared": sorted(COMPARED & set(have)),
             "not_compared": sorted(set(have) - COMPARED)}
 
@@ -209,10 +218,18 @@ def main():
     p = programmed()
 
     if d is None:
-        print("UNREADABLE desired (vtysh)", file=sys.stderr)
+        if as_json:
+            print(json.dumps({"status": "unreadable", "unreadable": ["desired"],
+                              "reason": "vtysh returned no valid JSON"}))
+        else:
+            print("UNREADABLE desired (vtysh)", file=sys.stderr)
         return 2
     if p is None:
-        print("UNREADABLE programmed (vplsh dpa object show)", file=sys.stderr)
+        if as_json:
+            print(json.dumps({"status": "unreadable", "unreadable": ["programmed"],
+                              "reason": "vplsh dpa object show returned no valid JSON"}))
+        else:
+            print("UNREADABLE programmed (vplsh dpa object show)", file=sys.stderr)
         return 2
 
     matched = sorted(set(d) & set(p))
@@ -238,6 +255,8 @@ def main():
 
     cov = coverage()
     result = {
+        "status": "diagnostic",
+        "schema_version": 2,
         "coverage": cov,
         "desired": len(d),
         "programmed": len(p),
@@ -245,17 +264,30 @@ def main():
         "matched": len(matched),
         "desired_not_programmed": [
             {"vrf": k[0], "prefix": k[1], "protocol": d[k]["protocol"],
-             "table": d[k]["table"]}
+             "table": d[k]["table"], "scope": d[k]["scope"],
+             "next_hop_group": d[k]["next_hop_group"], "source": d[k]["source"]}
             for k in missing
         ],
         "programmed_not_desired": [
             {"vrf": k[0], "prefix": k[1],
              "state": p[k][0]["state"], "backend": p[k][0]["backend"],
-             "table": p[k][0]["table"]}
+             "table": p[k][0]["table"],
+             "scope": p[k][0]["scope"],
+             "next_hop_group": p[k][0]["next_hop_group"],
+             "protocol": p[k][0]["protocol"],
+             "source": p[k][0]["source"],
+             "dependencies": p[k][0]["dependencies"],
+             "classification": (
+                 "reserved_owned" if unowned(p, k) else
+                 "transient_in_flight" if p[k][0]["state"] in ("PARTIAL", "NOT_NEEDED") else
+                 "resource_or_support" if p[k][0]["state"] in ("NO_RESOURCE", "NO_SUPPORT") else
+                 "next_hop_dependency" if p[k][0]["dependencies"] else
+                 "source_mismatch")}
             for k in extra
         ],
         "dataplane_owned": [
-            {"vrf": k[0], "prefix": k[1]} for k in owned
+            {"vrf": k[0], "prefix": k[1], "classification": "source_mismatch"}
+            for k in owned
         ],
         # No longer a fault: more than one entry under a compared key is a
         # legitimate state the data plane can be in. Reported so that the
@@ -330,7 +362,7 @@ def watch(interval, cycles, as_json):
         if d is None or p is None:
             # Refuse rather than record a cycle of total drift. An unreadable
             # side looks exactly like an empty one.
-            print(json.dumps({"cycle": cycle, "error": "unreadable"})
+            print(json.dumps({"cycle": cycle, "timestamp": datetime.now(timezone.utc).isoformat(), "status": "unreadable", "error": "unreadable"})
                   if as_json else
                   "cycle %d: a side is unreadable, not counted" % cycle)
             time.sleep(interval)
@@ -357,6 +389,8 @@ def watch(interval, cycles, as_json):
         if as_json:
             print(json.dumps({
                 "cycle": cycle,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "diagnostic",
                 "desired": len(d),
                 "programmed_keys": len(p),
                 "disagreements": [

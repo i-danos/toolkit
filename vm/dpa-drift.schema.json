@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DANOS DPA drift diagnostic",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {"enum": ["diagnostic", "unreadable"]},
+    "schema_version": {"const": 2},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "unreadable": {"type": "array", "items": {"type": "string"}},
+    "coverage": {"type": "object"},
+    "desired": {"type": "integer", "minimum": 0},
+    "programmed": {"type": "integer", "minimum": 0},
+    "matched": {"type": "integer", "minimum": 0},
+    "desired_not_programmed": {"type": "array"},
+    "programmed_not_desired": {"type": "array"},
+    "dataplane_owned": {"type": "array"}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "unreadable"}}},
+     "then": {"required": ["unreadable"]}},
+    {"if": {"properties": {"status": {"const": "diagnostic"}}},
+     "then": {"required": ["schema_version", "coverage"]}}
+  ]
+}
