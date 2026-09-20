@@ -314,3 +314,53 @@ easier to specify once objects can say which backend holds them.
 - **The capability schema itself.** The list of features and limits is a
   separate exercise; this document only establishes that presence and scale are
   different questions and that presence is the one currently unanswerable.
+
+## P1 drift diagnostic contract
+
+The first reconciliation phase is diagnostic only. A drift record must carry a
+stable object identity (`class`, `vrf`, `prefix` or class-specific key,
+`scope`, and `next-hop-group` where applicable), provenance (`protocol` and
+`source`), programmed state, backend, dependencies, and readability. A missing
+enumeration result is `unreadable` or `not_enumerable`; it is never an empty
+object set.
+
+Coverage is reported independently for `route`, `route6`, `mpls-route`,
+`mroute`, `mroute6`, and each QoS class. A class may be `enumerable`,
+`not_enumerable`, or `unreadable`, and the comparison result must include the
+coverage state. This prevents a route-only comparison from being presented as
+a complete dataplane audit.
+
+Classification is deliberately conservative: `transient_in_flight`,
+`reserved_owned`, `source_mismatch`, `next_hop_dependency`,
+`resource_or_support`, and `stale_extra` are diagnostic labels. No label by
+itself authorizes deletion or replay. Automatic repair requires a later phase
+to prove stable observation across samples and to resolve object dependencies.
+
+### P1 evidence workflow
+
+For a prepared topology, run the read-only coverage probe once per topology:
+
+```sh
+OUT="$OBS_DIR/run/dpa-coverage-ipsec.json" \
+  toolkit/vm/probe-dpa-coverage.sh 192.168.203.155
+```
+
+Collect watch samples as JSONL, preserving the raw stream:
+
+```sh
+toolkit/vm/dpa-drift.py --watch 5 --cycles 60 --json \
+  > "$OBS_DIR/run/dpa-drift-ipsec.jsonl"
+toolkit/vm/dpa-drift-history.py \
+  "$OBS_DIR/run/dpa-drift-ipsec.jsonl" \
+  > "$OBS_DIR/run/dpa-drift-ipsec-events.json"
+```
+
+The raw JSONL is retained as evidence. The events file is a derived diagnostic
+view and must never replace the raw samples. A missing or unreadable sample is
+an event in its own right and is not removed from the history.
+
+`boot-and-prep.sh` invokes the coverage probe and
+`validate-dpa-evidence.py` after the topology is ready. Evidence validation is
+reported separately from topology readiness: malformed diagnostic evidence is
+flagged, while the functional suite gate remains governed by SSH, interface,
+sudo and ISO fingerprint checks.
