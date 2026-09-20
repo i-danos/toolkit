@@ -25,6 +25,8 @@ set -u
 ISO=${1:?usage: boot-and-prep.sh <iso>}
 TOPO=${TOPO:-ipsec}
 HERE=$(dirname "$0")
+RUNBASE=${OBS_DIR:-/home/aikon/danos/.obs}/run
+MGMT_IF=${MGMT_IF:-}
 
 # The ports each router must end up with, by name, exactly as boot-topo.sh
 # wires them and exactly as the suites configure them. WANTED is one
@@ -39,18 +41,28 @@ HERE=$(dirname "$0")
 # of a test that reads as a protocol failure.
 case "$TOPO" in
   fw)  ROUTERS="r1 r2 r3"
+       HOSTS="155 156 157"
        WANTED="155:dp0s8 dp0s9|156:dp0s9 dp0s10|157:dp0s9 dp0s10"
        RELAYS="r1:192.168.203.155:2231 r2:192.168.203.156:2232
                r3:192.168.203.157:2233" ;;
   bgp) ROUTERS="r1 r2 r3 r4"
+       HOSTS="231 232 233 234"
        WANTED="231:dp0s3 dp0s9|232:dp0s3 dp0s9 dp0s10|233:dp0s3 dp0s9|234:dp0s3 dp0s9 dp0s10"
        RELAYS="r1:192.168.203.231:2231 r2:192.168.203.232:2232
                r3:192.168.203.233:2233 r4:192.168.203.234:2234" ;;
   *)   ROUTERS="r1 r2 r3"
+       HOSTS="155 156 157"
        WANTED="155:dp0s3 dp0s9|156:dp0s3 dp0s8|157:dp0s3 dp0s8"
        RELAYS="r1:192.168.203.155:2231 r2:192.168.203.156:2232
                r3:192.168.203.157:2233" ;;
 esac
+
+# Product-image runs add the DHCP management interface to every router.  It is
+# deliberately absent from the topology wiring table above because it is not a
+# dataplane link; include it in the readiness expectation when requested.
+if [ -n "$MGMT_IF" ]; then
+	WANTED=$(printf '%s' "$WANTED" | awk -F'|' -v m="$MGMT_IF" 'BEGIN{OFS="|"} {for(i=1;i<=NF;i++){split($i,a,":"); $i=a[1] ":" a[2] " " m} print}')
+fi
 
 # The relays are per-topology too, and they do not come down with the VMs.
 #
@@ -76,10 +88,22 @@ TOPO="$TOPO" "$HERE/boot-topo.sh" "$ISO" >/dev/null 2>&1 || {
 
 bad=0
 for r in $ROUTERS; do
-	if "$HERE/prep-router.sh" "/home/aikon/danos/.obs/run/$r/console.sock" >/dev/null 2>&1; then
+	if "$HERE/prep-router.sh" "$RUNBASE/$r/console.sock" "$MGMT_IF" >"$RUNBASE/$r/prep.log" 2>&1; then
 		echo "  $r prepped"
 	else
 		echo "  FAILED: $r did not prepare" >&2
+		bad=$((bad + 1))
+	fi
+done
+
+# Robot uses non-interactive sudo for ping, nc and tcpdump.  Treat the exact
+# prerequisite as a hard gate instead of allowing a later timeout to look like
+# a product failure.
+for h in $HOSTS; do
+	if ! docker exec danos-robot timeout 30 sshpass -p vyatta ssh \
+		-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+		-o ConnectTimeout=5 "vyatta@192.168.203.$h" 'sudo -n true' >/dev/null 2>&1; then
+		echo "  FAILED: .$h does not have non-interactive sudo" >&2
 		bad=$((bad + 1))
 	fi
 done
@@ -146,6 +170,22 @@ IFS=$OLDIFS
 # measured as ineffective: the VMs answering were still booted from the image
 # from before the fix.
 "$HERE/image-fingerprint.sh" --assert "$ISO" || bad=$((bad + 1))
+
+# P1 coverage is evidence, not a readiness gate.  Probe the first management
+# relay once the topology is usable; an unavailable class is recorded as
+# unreadable/not_enumerable rather than converted into an empty object set.
+coverage_host=${COVERAGE_HOST:-}
+[ -n "$coverage_host" ] || coverage_host=$(printf '%s' "$HOSTS" | awk '{print $1}')
+if [ -x "$HERE/probe-dpa-coverage.sh" ]; then
+	OUT="$RUNBASE/dpa-coverage-$TOPO.json" "$HERE/probe-dpa-coverage.sh" \
+		"192.168.203.$coverage_host" >/dev/null 2>&1 ||
+		echo "  coverage probe incomplete; see $RUNBASE/dpa-coverage-$TOPO.json" >&2
+	if [ -s "$RUNBASE/dpa-coverage-$TOPO.json" ] && [ -x "$HERE/validate-dpa-evidence.py" ]; then
+		python3 "$HERE/validate-dpa-evidence.py" \
+			"$RUNBASE/dpa-coverage-$TOPO.json" >/dev/null 2>&1 ||
+			echo "  coverage evidence validation failed" >&2
+	fi
+fi
 
 [ "$bad" -eq 0 ] || {
 	echo "  $bad router(s) are not usable; refusing to run tests against this" >&2

@@ -79,8 +79,9 @@ stop_all() {
     [ -f "$d/qemu.pid" ] || continue
     pid=$(cat "$d/qemu.pid" 2>/dev/null)
     case "$pid" in ''|*[!0-9]*) continue ;; esac
-    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
-    case "$exe" in *qemu-system-*) kill "$pid" 2>/dev/null ;; *) continue ;; esac
+    if tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'qemu-system'; then
+      kill "$pid" 2>/dev/null
+    fi
   done
   # Wait for the locks to be released. Starting before they are gives exactly
   # the failure above, just with a smaller window.
@@ -90,8 +91,9 @@ stop_all() {
       [ -f "$d/qemu.pid" ] || continue
       pid=$(cat "$d/qemu.pid" 2>/dev/null)
       case "$pid" in ''|*[!0-9]*) continue ;; esac
-      exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
-      case "$exe" in *qemu-system-*) alive=$((alive + 1)) ;; esac
+      if tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'qemu-system'; then
+        alive=$((alive + 1))
+      fi
     done
     [ "$alive" -eq 0 ] && break
     sleep 1
@@ -101,8 +103,9 @@ stop_all() {
     [ -f "$d/qemu.pid" ] || continue
     pid=$(cat "$d/qemu.pid" 2>/dev/null)
     case "$pid" in ''|*[!0-9]*) continue ;; esac
-    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
-    case "$exe" in *qemu-system-*) kill -9 "$pid" 2>/dev/null; sleep 2 ;; esac
+    if tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'qemu-system'; then
+      kill -9 "$pid" 2>/dev/null; sleep 2
+    fi
   done
   # Stale sockets outlive their VM and are what made a dead start look alive.
   for d in "$RUNBASE"/*; do
@@ -116,7 +119,11 @@ start() {                      # name sshport mgmt-slot extra-args...
   local run=$RUNBASE/$name
   local pid
   mkdir -p "$run"
-  qemu-system-x86_64 -name "$name" \
+  # Detach the VM from the short-lived boot-topo shell.  Without an explicit
+  # session, a console/prep caller that closes its PTY can deliver SIGHUP to
+  # the background QEMU exactly while prep-router reconnects for the admin
+  # login, leaving a stale pid/socket pair and an empty qemu.log.
+  nohup setsid qemu-system-x86_64 -name "$name" \
     -enable-kvm -cpu host -smp 2 -m "$MEM" \
     -kernel "$BIN/vmlinuz" -initrd "$BIN/initrd.img" -append "$CMDLINE" \
     -drive file="$ISO",media=cdrom,readonly=on \
@@ -127,7 +134,7 @@ start() {                      # name sshport mgmt-slot extra-args...
     -serial unix:"$run/console.sock",server,nowait \
     -monitor unix:"$run/monitor.sock",server,nowait \
     -pidfile "$run/qemu.pid" \
-    > "$run/qemu.log" 2>&1 &
+    </dev/null > "$run/qemu.log" 2>&1 &
   pid=$!
   sleep 2
   # The check is on the process this call started, not on a socket file. A

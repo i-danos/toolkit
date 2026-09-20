@@ -139,7 +139,10 @@ if [ -z "$ready" ]; then
   exit 1
 fi
 # Leave a fresh login prompt for the phase below, as it expects.
-"$CONSOLE" "$SOCK" tmpuser tmppwd 'exit' >/dev/null 2>&1 || true
+# console.py closes the session after the command; asking the remote shell to
+# execute `exit` can wait forever for a prompt that will never reappear.
+# A harmless command leaves the prompt in a deterministic state.
+"$CONSOLE" "$SOCK" tmpuser tmppwd 'true' >/dev/null 2>&1 || true
 sleep 2
 
 echo "== console: configuration, through the CLI only =="
@@ -169,7 +172,7 @@ echo "== console as vyatta: the one step the CLI has no form for =="
 #
 # sudo -S takes the password on stdin the way a person types it. %vyattasu is
 # granted without NOPASSWD, which is the whole reason the drop-in has to exist.
-"$CONSOLE" "$SOCK" tmpuser tmppwd 'exit' >/dev/null 2>&1 || true
+"$CONSOLE" "$SOCK" tmpuser tmppwd 'true' >/dev/null 2>&1 || true
 sleep 2
 
 "$CONSOLE" "$SOCK" vyatta vyatta \
