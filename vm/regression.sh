@@ -29,6 +29,7 @@ TAG=${2:-reg}
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCRIPTS=/tests/Test_Automation/script
 RESULTS=/tests/Test_Automation
+MGMT_RESTORE=${MGMT_restore:-}
 
 [ -f "$ISO" ] || { echo "no such image: $ISO" >&2; exit 1; }
 
@@ -50,8 +51,11 @@ summary=""
 run_suite() {
 	local key=$1 file=$2 want=$3
 	local out line p f
-	out=$(docker exec danos-robot robot -d "$RESULTS/results-$TAG-$key" \
-	        "$SCRIPTS/$file.robot" 2>&1)
+	local -a robot_args
+	robot_args=(robot -d "$RESULTS/results-$TAG-$key")
+	[ -n "$MGMT_RESTORE" ] && robot_args+=(--variable "MGMT_restore:$MGMT_RESTORE")
+	robot_args+=("$SCRIPTS/$file.robot")
+	out=$(docker exec danos-robot "${robot_args[@]}" 2>&1)
 	# Robot's own summary line, e.g. "10 tests, 10 passed, 0 failed, 0 skipped."
 	line=$(printf '%s' "$out" | grep -E '^[0-9]+ tests?, [0-9]+ passed, [0-9]+ failed' | tail -1)
 	if [ -z "$line" ]; then
@@ -83,6 +87,16 @@ for topo in ipsec fw bgp; do
 		bad=$((bad + 1))
 		continue
 	fi
+	# REST drives the router through a dedicated SSH/curl client at .6.  Keep
+	# it in this same long-lived regression process as the BGP topology and
+	# suites; starting it in a prior shell leaves QEMU/relay lifetime implicit.
+	if [ "$topo" = bgp ]; then
+		"$HERE/restclient.sh" up || {
+			echo "  REST client did not come up; refusing BGP/REST" >&2
+			bad=$((bad + 1))
+			continue
+		}
+	fi
 	# Not "printf ... | while read": a while loop on the right of a pipe runs
 	# in a subshell, so every bad++ inside it is discarded when the subshell
 	# exits. The first version of this file did exactly that, counted 22
@@ -95,6 +109,8 @@ for topo in ipsec fw bgp; do
 	$SUITES
 	EOF
 done
+
+"$HERE/restclient.sh" down >/dev/null 2>&1 || true
 
 # The verdict comes from the results on disk, not from the counters above:
 # output.xml is what each suite recorded, while the lines above are what its
