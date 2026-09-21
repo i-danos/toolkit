@@ -94,8 +94,18 @@ class Console:
                 self.send("")
 
         if state == "shell":
+            # An open shell is reused only if it belongs to the requested
+            # user. A tmpuser session left behind would otherwise receive the
+            # commands meant for another account -- it did, and the suite
+            # then ran inside pam_sandbox with no sudo.
             self.buf = b""
-            return
+            current = self.run("id -un").strip().split("\n")[-1].strip()
+            if current == user:
+                return
+            self.buf = b""
+            self.send("exit")
+            self.read_until(LOGIN)
+            state = "login"
         if state == "login":
             self.buf = b""
             self.send(user)
