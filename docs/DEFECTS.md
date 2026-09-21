@@ -291,6 +291,68 @@ available evidence and was wrong.
 
 ---
 
+## 12. An installed system ran on memory, not on its disk
+
+**`live-boot-vyatta`**
+
+After `install image`, the account created during the install could not log in.
+`admin/admin` answered "Login incorrect", and `tmpuser/tmppwd` -- the *live*
+account -- worked. Official 2105 does the reverse.
+
+The installed system's overlay had `upperdir=/run/live/overlay/rw`, live-boot's
+in-memory default. 2105 has
+`upperdir=/run/live/persistence/sda2/boot/2105.06111158/persistence/rw`. The
+installer had written everything correctly -- `persistence/rw/etc/passwd`,
+`shadow`, `config/config.boot`, a password hash that `openssl` confirms matches
+"admin" -- into a directory the running system never used.
+
+DANOS keeps `/boot/<image>/<image>.squashfs` and `/boot/<image>/persistence` on
+one partition and names the latter with `vyatta-union=`. live-boot's
+`find_persistence_media()` builds a list of devices that host the live root
+filesystem and does not scan them, so a parent directory is never mounted over
+a child of the same filesystem. In live-boot 4.x that list was always empty: the
+loop passed the literal string `d` to `what_is_mounted_on` instead of `$d`. The
+guard never fired and this layout worked by luck. Current live-boot fixed the
+quoting and added `/run/live/medium`, the guard fires on the DANOS partition,
+the scan returns nothing, and the system falls back to memory.
+
+Fixed in `live-boot-vyatta` 0.11: for a `vyatta-union=` boot only, `storage_devices()`
+is replaced by a copy that ignores that list. Every other boot keeps the stock
+scan. The guard is right in general; what it protects against does not happen in
+the DANOS overlay.
+
+Confirmed on a controlled pair. The same ISO build, the same install, and
+identical installer output, differing only in `live-boot-vyatta` 0.10 against
+0.11: before, `admin` cannot log in; after, `upperdir` is the on-disk path,
+`admin/admin` logs into vbash, and `getent passwd tmpuser` is empty.
+
+What this defect is not, because three things were blamed for it first and none
+of them was:
+
+- **`sss_cache: Can't access '/var/lib/sss/db/config.ldb'`.** Printed during
+  "Creating admin account" and listed as defect #19 in an earlier list. It appears
+  identically on the install that could not log in and on the one that can. Noise.
+- **The password hash.** Verified against "admin" with `openssl`, no backslash,
+  correct length for a 16-character salt.
+- **`/bin/sh` -> bash, `vbash`, the PAM stack, `user-setup.conf`.** Compared with
+  official 2105 image for image: the same, apart from the SSSD lines and a
+  jump distance that had to change with them.
+
+Not explained: why `tmpuser` stops being created once persistence is mounted. It
+does, and the marker file guessed at as the reason is absent in 2105 as well.
+
+**What this does to earlier results.** The record says the suites were also run
+against a system installed to disk. If that system ran on memory, nothing in it
+exercised persistence, and the suites could not have noticed: prep-router.sh
+recreates its account through the CLI on every boot. The 2026-09-02 installed
+disk shows the failure -- `tmpuser` on login, `vyatta/vyatta` refused -- when
+booted from its own bootloader. That does not prove the run itself was affected,
+since the record does not say what the run logged in as, but it means "passed on
+an installed system" has to be read as "passed on a system installed to disk",
+not "passed on one running from it".
+
+---
+
 ## Two of these were hiding each other
 
 The Perl warnings buried the SA table, so the empty table underneath — caused by
