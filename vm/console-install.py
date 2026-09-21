@@ -80,12 +80,16 @@ def rules(admin_user, admin_password):
         (rb"[Ee]nable.*GRUB",                                     "No"),
 
         # Defaults are correct for a serial-console VM.
+        (rb"desired system console",                              "ttyS0"),
         (rb"console type",                                        ""),
         (rb"[Ss]peed",                                            ""),
         (rb"[Ii]mage name",                                       ""),
         (rb"[Ww]hich partition",                                  ""),
-        (rb"copy.*config",                                        "Yes"),
-        (rb"save.*config",                                        "Yes"),
+        # "Which one should I copy? [/config/config.boot]:" asks for a path,
+        # not yes/no; answering Yes there names a file called "Yes" and the
+        # installer exits silently after "Ready to write partitions".
+        (rb"[Ww]hich one should I copy",                          ""),
+        (rb"(copy|save).*config.*\(Yes/No\)",                     "Yes"),
 
         # A bare default prompt: "[Yes]:" or "[/dev/vda]:".
         (rb"\[[^\]]*\]:\s*$",                                     ""),
@@ -110,7 +114,7 @@ def main():
 
     table = rules(a.admin_user, a.admin_password)
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(2)
+    s.settimeout(1)
     s.connect(a.sock)
 
     buf = b""
@@ -179,17 +183,35 @@ def main():
                 send("")
             continue
 
-        if DONE.search(tail):
+        # "Settling...Done!" is printed mid-install, before grub. The real end
+        # is the shell prompt coming back after grub was set up.
+        if (b"Setting up grub" in clean and not chunk
+                and PROMPT.search(clean.split(b"\n")[-1].rstrip(b"\r"))):
+            print("\n*** installer returned to the shell after grub",
+                  file=sys.stderr)
+            return 0
+        if False and DONE.search(tail):
             print("\n*** installer reported completion", file=sys.stderr)
             return 0
         if FAIL.search(tail):
             print(f"\n*** installer failed: {tail[-200:]!r}", file=sys.stderr)
             return 2
 
+        # Answer only once the output has been quiet for a full recv timeout.
+        # Matching a prompt mid-line answered "Which one should I copy" before
+        # its "? [/config/config.boot]:" arrived, and the second, generic
+        # answer to the completed prompt shifted every reply after it.
+        if chunk:
+            continue
+
         for pat, answer in table:
             if re.search(pat, tail):
                 send(answer)
                 answered += 1
+                if answered > 200:
+                    print("\n*** more than 200 answers: a prompt is looping",
+                          file=sys.stderr)
+                    return 2
                 last_answer_at = time.time()
                 print(f"\n[answered {pat.decode(errors='replace')!r} "
                       f"-> {answer!r}]", file=sys.stderr)

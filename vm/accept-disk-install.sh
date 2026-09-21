@@ -122,42 +122,14 @@ done
 [ "$ready" = yes ] || { record "the live system never reached a usable login" FAIL ""; exit 1; }
 record "the live system accepts tmpuser" PASS ""
 
-# The install cannot run as tmpuser. pam_sandbox puts every login in a
-# per-user container whose /dev holds fifteen basic nodes and no block device
-# at all -- /dev/vda is absent, and a write to it is "Permission denied". The
-# installer reaches "Ready to write partitions", is answered Yes, and exits to
-# a shell without printing anything, because the failure happens somewhere the
-# sandbox has already hidden. Eight runs were spent looking for that message.
-#
-# pam_sandbox's exclude_groups is { "vyattasu", NULL }, and only the superuser
-# level maps to vyattasu (/opt/vyatta/etc/level). So a superuser account is
-# created first and the install is driven as that -- which is what
-# prep-router.sh has always done, for the same reason.
-echo "    creating a superuser account for the install"
-timeout 300 "$HERE/console.py" "$RUN/console.sock" tmpuser tmppwd \
-  'SID=$$; eval "$(cli-shell-api getSessionEnv $SID)"; cli-shell-api setupSession
-   for c in "set system login user '"$ADMIN_USER"' level superuser" \
-            "set system login user '"$ADMIN_USER"' authentication plaintext-password '"$ADMIN_PASS"'"; do
-     vcli -s $SID -c "$c" 2>&1 | grep -viE "node exists|is not valid" || true
-   done
-   vcli -s $SID -c commit 2>&1 | tail -2' > "$RUN/mkuser.log" 2>&1
-
-# The account exists but this console session is still inside the sandbox it
-# logged into. A fresh login is what picks up vyattasu, so the check below is
-# on the new session, not on the one that created the account.
-if timeout 120 "$HERE/console.py" "$RUN/console.sock" "$ADMIN_USER" "$ADMIN_PASS" \
-     'ls /dev/vda' >/dev/null 2>&1; then
-	record "the superuser account sees the disk" PASS "outside the sandbox"
-else
-	record "the superuser account still cannot see the disk" FAIL \
-	       "pam_sandbox exclude_groups did not take effect; see $RUN/mkuser.log"
-	exit 1
-fi
-
+# The install runs as tmpuser, the live account. An earlier revision of this
+# script created a superuser first, on the theory that pam_sandbox hides the
+# disk from tmpuser; a manual install as tmpuser onto a VMware disk disproved
+# that, so the step is gone.
 echo "    driving \"install image\" over the console"
 : > "$RUN/install-console.log"
 timeout "$INSTALL_TIMEOUT" "$HERE/console-install.py" "$RUN/console.sock" \
-    --user "$ADMIN_USER" --password "$ADMIN_PASS" \
+    --user tmpuser --password tmppwd \
     --admin-user "$ADMIN_USER" --admin-password "$ADMIN_PASS" \
     --timeout "$INSTALL_TIMEOUT" >> "$RUN/install-console.log" 2>&1
 inst_rc=$?
