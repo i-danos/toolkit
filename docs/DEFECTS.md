@@ -385,6 +385,15 @@ without `run_command`, whose command line would put the password hash in the
 install log. Checked with a stub: noise on success shows nothing, a real failure
 shows the error and stops, the hash appears zero times.
 
+The stub could not show the part that mattered. `sss_cache` is started by a
+child of `useradd`, and whether its stderr passes through `useradd`'s own was an
+inference. Confirmed on a real install of `vyatta-image-tools` 5.51: between
+"Creating admin account for user [admin]" and "Running post-install script..."
+nothing is printed, the install reaches "Done.", and the new exit-status check
+did not fire, so `useradd` returned 0. The same image, with `live-boot-vyatta`
+0.11, logs in as `admin/admin` with `upperdir` on the disk -- the fix for
+defect 12 was not undone by this build.
+
 That change also closes a gap this defect was standing in front of. Nothing
 checked `useradd`'s exit status, so a failure left the installer going on to
 "Done." with no account on the new system -- which is the symptom of defect 12,
