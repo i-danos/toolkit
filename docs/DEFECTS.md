@@ -353,6 +353,49 @@ not "passed on one running from it".
 
 ---
 
+## 13. sssd 2.x printed a complaint on every successful install
+
+**`vyatta-image-tools`**
+
+Creating the admin account printed, twice, in the middle of an install that then
+succeeded:
+
+    [sss_cache] [sss_tool_confdb_init] (0x0010): Can't access
+    '/var/lib/sss/db/config.ldb', probably SSSD isn't configured
+    Can't find configuration db, was SSSD configured and run?
+
+It looked like the cause of the login failure in defect 12 and was listed as
+defect #19 in an earlier list, "the only user-visible defect". It is neither the
+cause nor a failure: it appears identically on an install whose admin account
+logs in, and `useradd` exits 0.
+
+shadow 4.17's `sssd_flush_cache()` runs `/usr/sbin/sss_cache` after a change to
+passwd, group or shadow, and skips silently only if that file does not exist. It
+exists, so it runs, and on a system where SSSD has never been configured -- every
+system being installed -- `sss_cache` complains on stderr, which `useradd` does
+not control. Two call sites, `lib/commonio.c` when the lock count reaches zero
+and `src/useradd.c` at the end, account for the two occurrences.
+
+New with the port: 2105 ships sssd 1.16.3-3danos6, 2608 ships 2.10.1, and
+"probably SSSD isn't configured" is a 2.x message. A guess written down before
+this was checked said 2105 simply lacked `sss_cache`. Both images have it.
+
+`useradd`'s stderr is now shown only when it fails -- `run_command`'s rule,
+without `run_command`, whose command line would put the password hash in the
+install log. Checked with a stub: noise on success shows nothing, a real failure
+shows the error and stops, the hash appears zero times.
+
+That change also closes a gap this defect was standing in front of. Nothing
+checked `useradd`'s exit status, so a failure left the installer going on to
+"Done." with no account on the new system -- which is the symptom of defect 12,
+reached by a different route.
+
+Not done: configuring SSSD during install, which removes the cause and changes
+what an installed system starts with; and filtering the message by its text,
+which breaks the first time SSSD rewords it.
+
+---
+
 ## Two of these were hiding each other
 
 The Perl warnings buried the SA table, so the empty table underneath — caused by
