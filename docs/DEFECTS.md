@@ -613,6 +613,30 @@ was consumed by something before this session's `console.py` could read it,
 is not established. Worth its own pass before concluding the `$(...)` theory
 above is the whole story.
 
+### A specific candidate for the `$(...)` call -- not confirmed
+
+`_dialog_enter_password()` is the one function in this script that already
+works around exactly this class of bug: it reads and writes through
+`/dev/tty` explicitly (`read -p "..." <>/dev/tty`, `echo ... >/dev/tty`)
+rather than through inherited stdin/stdout, with a comment citing an old
+defect number for why. It is called two ways -- plainly at line 1229 for a
+grub password, and through `get_password()`'s `VII_ADMIN_PASSWORD=$(...)`
+wrapper at line 406, itself called from `_get_admin_settings()` for a new
+administrator account.
+
+The `<>/dev/tty` redirection with no fd number targets fd 0, which is
+consistent with 4051's fd 0 still showing `/dev/pts/0` -- so the workaround
+is not obviously broken by inspection. Whether `_get_admin_settings()` even
+runs on this path is the open question: the two direct-script runs that
+produced the checksum proof and the naming/collision behaviour earlier in
+this record both reached "Would you like to save the current configuration"
+without ever being asked for a new administrator account, which is what
+should happen on a **replace-existing-image** install (as this one is) --
+suggesting admin setup is skipped here, and this candidate may be the wrong
+one. Listed because it is the strongest lead static reading found, not
+because it is confirmed. Settling it needs `strace`/`gdb` attached to the
+live hung tree, which this pass did not have privilege on the host to do.
+
 ---
 
 ## Two of these were hiding each other
