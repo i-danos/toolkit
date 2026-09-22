@@ -556,7 +556,62 @@ never enabled on this system (test images bring up management by DHCP only),
 and reaching the qcow2 offline needed `nbd`, which needed root the host
 session did not have. So this is as far as it goes without a password prompt
 or a purpose-built harness step to watch `opd`'s own process state live.
-That is next, not done.
+
+### With a second channel: the process tree while it hangs
+
+`set service ssh` before triggering the hang gave a route in over the
+management interface while the CLI session stayed stuck, and `/proc` on the
+live, hung tree says exactly where each process is, no longer an inference:
+
+```
+opd (1767)
+ └─ vyatta-install-image (3876)         state S, wchan do_wait
+     fd0/1/2 -> /dev/pts/0              -- opd allocated a real pty for this
+     └─ vyatta-install-image (3979)     state S, wchan pipe_read
+         fd0/1/2 -> /dev/pts/0 (inherited)
+         fd3     -> pipe:[15891] (read end)
+         └─ vyatta-install-image (4051) state S, wchan wait_woken
+             fd0 -> /dev/pts/0 (inherited)
+             fd1 -> pipe:[15891] (write end)
+             kernel stack: tty_read -> n_tty_read -> wait_woken
+```
+
+Three facts, not guesses:
+
+1. **4051 is not a separate script invocation.** Its `/proc/4051/cmdline` is
+   byte-identical to 3979's, which is what a `fork()`-only bash `( ... )`
+   subshell looks like in `/proc` -- no `execve` happened, so the kernel never
+   updated `cmdline`. It is a subshell of 3979, not a recursion into the
+   downloaded image a third time.
+2. **4051 is blocked reading the real terminal** (`tty_read` on fd 0, which is
+   still `/dev/pts/0`, inherited unchanged from 3876). It is waiting for
+   keystrokes.
+3. **4051's own output has nowhere to go but back to 3979**, through the pipe
+   at fd 1 -- and 3979 is blocked on the other end of that exact pipe
+   (`pipe_read` on fd 3), which is what `answer=$(some_command)` looks like
+   from the outside.
+
+Put together: some command inside the recursed installer is being called
+through `$(...)` -- which captures its stdout into a pipe -- while that
+command still reads its input from the real terminal. If it ever prints a
+prompt before reading, the prompt goes into the pipe with everything else,
+where 3979 is waiting to read it only after the subshell exits. Nobody sees
+it, so nobody can answer it, so it waits forever. This is inference from the
+process tree, not a confirmed line number -- the next step is finding which
+call in `vyatta-install-image` or `.functions` is wrapped in `$(...)` while
+still expecting to read stdin, likely reached only on this path.
+
+**Also observed, still unexplained:** none of the earlier output that should
+exist on this pty -- the "Welcome to..." banner 3876 prints unconditionally
+near the top of the script, the checksum-check output, "Executing installer
+from downloaded image...", the image-name prompt -- ever reached the actual
+CLI session across any attempt in this investigation, hung or not. 3876's own
+fd 1 is the same `/dev/pts/0` the deeper processes inherit, so by file
+descriptor alone that output should have gone somewhere. Whether it reached a
+pty that was never bridged back to the console, or reached the console and
+was consumed by something before this session's `console.py` could read it,
+is not established. Worth its own pass before concluding the `$(...)` theory
+above is the whole story.
 
 ---
 
