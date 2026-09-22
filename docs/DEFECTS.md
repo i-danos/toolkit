@@ -442,6 +442,34 @@ loosening: `.disk/mkisofs` is build provenance about the ISO, not something the
 installed system trusts or executes, and every other file in the manifest is
 still checked.
 
+### The fix does not reach the systems that need it
+
+Testing this properly, 2105-as-base first hid a second, worse fact: the code
+that runs `check_install_source()` belongs to the *currently installed*
+system, not to the image being added. An already-installed 2608 system still
+running 5.51 rejects every future 2608 image with this same failure --
+including one built with 5.52 -- because 5.51's copy of the function has no
+exclusion. The fix in 5.52 only helps a system that got 5.52 some other way;
+it cannot repair itself, which is exactly the case `add system image` exists
+for.
+
+Confirmed by testing the representative path, not the convenient one: install
+the 2105 ISO, then `add system image` a 2608 ISO onto it -- fails, expected,
+cross-release. Then install a *2608* ISO built before 5.52
+(`...20260921T1632...`, carrying 5.51) and `add system image` a 2608 ISO built
+after (`...20260922T0539...`, carrying 5.52) onto it -- **also fails**, same
+error, because the *running* system's 5.51 is what performs the check. Only a
+system already installed from a 5.52-or-later image can successfully add
+another image.
+
+This makes 5.52 alone insufficient as a release fix: every 2608 system
+installed before it ships is permanently unable to move off the checksum
+failure through `add system image`, the product's own upgrade path. Not yet
+decided: whether the exclusion needs a second path (an out-of-band bypass, a
+signed override, or shipping 5.52 through a channel `add system image` does
+not gate on) so an already-installed system can cross this one boundary. No
+such path exists yet.
+
 ---
 
 ## Two of these were hiding each other
