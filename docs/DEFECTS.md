@@ -470,6 +470,44 @@ signed override, or shipping 5.52 through a channel `add system image` does
 not gate on) so an already-installed system can cross this one boundary. No
 such path exists yet.
 
+### The checksum fix itself is confirmed
+
+Proven with both sides on 5.52 (a fresh install from the 20260922T0539 build,
+run against another copy of the same ISO): `Checking MD5 checksums of files
+on the ISO image...OK.` -- clean, where every prior attempt failed on exactly
+`.disk/mkisofs`. That is the whole claim 5.52 makes and it holds.
+
+### What broke next looks like #33, not like defect 14
+
+Continuing the same run to exercise a second boot entry (the other half of
+upgrade/rollback acceptance) hit two more things, neither of them the
+checksum:
+
+1. `VII_IMAGE_NAME` answered interactively as `2608b` was not what ended up on
+   disk -- the image was written under `/boot/vyatta` instead, correct in
+   content (the squashfs and kernel timestamps matched the 0539 build) but
+   wrong in name. Not yet root-caused; it survived a clean re-run with the
+   stray directory removed first, so it is not simply leftover state.
+2. `run_post_install`'s grub step -- `vyatta_update_grub.pl --generate-grub`
+   and `--set-default-boot-index`, both run through `lu --user configd --`
+   -- failed once with `Image "vyatta" not found` (consistent with #1) and
+   then, run by hand against the correct name, produced no output and no
+   prompt back for several minutes with the QEMU process pinned near 40% CPU,
+   indistinguishable from the hang this project already has open as a pending
+   item: configd sessions failing to establish. The CLI's own `add system image`
+   dispatch (through configd/opd, not the direct script call used to get the
+   checksum proof above) hung the same way, with no output at all, not even
+   the installer's own banner -- before this was narrowed down to the direct
+   script call bypassing configd, which is what let the checksum result above
+   get measured at all.
+
+So: three things were found, not one. Only the checksum is confirmed fixed.
+The image-naming mismatch and the `lu --user configd` hang are open, and the
+second one is now suspected to be the same root cause already tracked as
+#33 -- found through a completely different entry point (an install command,
+not a Robot suite), which is itself evidence worth having: if it is the same
+bug, it is not specific to whatever #33's original trigger was.
+
 ---
 
 ## Two of these were hiding each other
