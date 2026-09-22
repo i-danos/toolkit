@@ -702,36 +702,74 @@ not already carry an image named `2608` -- which describes every 2608 build,
 so the second image in this project's own upgrade/rollback test will always
 need one of those, not a fix to the product.
 
-### Two more things surfaced finishing the actual rollback proof -- both open, neither chased to ground
+### Two more things surfaced finishing the actual rollback proof
 
 Getting a genuine second image on disk to prove rollback (select it, reboot,
-select the original back) ran into two more anomalies. Recorded as found,
-not investigated to root cause -- this record already carried two retracted
-theories today from moving too fast on this exact path, so these are left
-openly unresolved rather than guessed at a third time.
+select the original back) ran into two more anomalies. One is now root-caused
+-- and it is real, and it matters more than it looked at first. The other is
+still open.
 
-1. **The image lands under a name that was never typed.** Across several
-   attempts, on a disk deliberately cleaned of any prior `vyatta` directory
-   first, answering the name prompt with `2608b` still produced
-   `/boot/vyatta` -- correct content (matching build timestamps), wrong name,
-   consistently, regardless of which driver sent the answer. Checked and
-   ruled out: no stray `vii.config` on the system to supply a default: `VII_ADMIN_USERNAME` defaults to
-   `tmpuser`, not `vyatta`, so that is not leaking in either. Not explained.
-2. **`vyatta_update_grub.pl --generate-grub=<name>` exits 0 without adding a
-   menu entry**, tested directly, outside the install flow, for a name that
-   is not already known: `--list-images` and `grub.cfg` both still show only
-   the original `2608` afterward, and `--set-default-boot-index` on that same
-   name then correctly reports `Image "<name>" not found` -- consistent
-   between them, so it is not that one command lied while the other told the
-   truth. `generate_grub_cmd()` in the Perl source looks right by inspection
-   (`push(@images, $image)` before building the config), which means the gap
-   is somewhere between that push and what actually lands in `grub.cfg`, not
-   yet located.
+**1. `vyatta_update_grub.pl` writes the new grub config to the wrong file --
+confirmed, root-caused, not a red herring.**
 
-Net effect: a second image can be copied onto the disk, but this pass did not
-get it into a selectable grub entry, so the reboot-and-confirm half of the
-rollback proof is not done. The checksum fix and the #33 conclusion above
-stand on their own regardless of this.
+`--generate-grub=<name>` reports success and the `Template::Toolkit` render
+is correct (verified directly: `@images` correctly includes the pushed name,
+the rendered file grows and contains the new `menuentry` blocks). But
+`--list-images` and `--set-default-boot-index` keep reporting only the
+original image, and that is because they are reading a *different file* than
+the one just written -- proven with `stat`, not inferred:
+
+```
+/boot/grub/grub.cfg                                   device 0,26  inode 262924
+/run/live/persistence/vda2/boot/grub/grub.cfg          device 254,2 inode 263802
+```
+
+Different devices, different inodes. `vyatta_update_grub.pl`'s `$grub_cfg`
+constant is the hardcoded, relative `/boot/grub/grub.cfg`. On a running,
+installed system, `/boot` is not a separate mount -- it is part of the root
+overlay, whose `upperdir` is `/run/live/persistence/vda2/boot/2608/persistence/rw`
+(the *currently running image's own* persistence directory). So a write to
+`/boot/grub/grub.cfg` lands at
+`/run/live/persistence/vda2/boot/2608/persistence/rw/boot/grub/grub.cfg` --
+confirmed directly, byte-for-byte matching size and content. That path is
+inside one image's private, ephemeral overlay. It is not where GRUB itself
+reads from at boot (GRUB reads the raw partition, before any overlay exists),
+and it is not where this same tool's own read path looks either --
+`--list-images` calls `get_live_image_root()`, which correctly resolves to
+`/run/live/persistence/vda2` and appends `/boot/grub/grub.cfg` to *that* --
+the real, shared, on-disk location. The write path and the read path in the
+same tool disagree about what `/boot` means, and the write path is the one
+that is wrong: it goes through the running system's own filesystem view
+instead of the shared on-disk location every image's boot menu has to live
+in.
+
+**Consequence, stated plainly: on an already-installed system, `add system
+image` can copy a new image's files correctly and still never make that
+image selectable to boot, silently, regardless of the "Done." at the end.**
+This is not specific to the naming anomaly below or to any test artifact --
+it is a path computed from a constant that does not account for where `/boot`
+actually points on a running (non-live-CD) system, and it would reproduce
+identically for a correctly-named image added through the ordinary CLI path.
+
+**2. The image still lands under a name that was never typed -- open.**
+Across several attempts, on a disk deliberately cleaned of any prior `vyatta`
+directory first, and even with `VII_IMAGE_NAME` passed explicitly via `sudo
+env` (confirmed reaching the script: the prompt's own displayed default
+changed to match), the copied files still land under `/boot/vyatta` -- correct
+content, wrong name, consistently. Ruled out: `VII_ADMIN_USERNAME` defaults to
+`tmpuser` not `vyatta`, no stray `vii.config` exists to supply a default, and
+the value is demonstrably reaching `get_response_raw` (the bracketed default
+in the prompt changes correctly) -- yet the confirmation line right after
+still says `vyatta`. Not explained. Not blocking further work the way #1 was,
+since the image's actual location is knowable by listing `/boot` regardless
+of what it is named.
+
+With #1's real location and read/write mismatch understood, completing the
+reboot-and-confirm half of the rollback proof needs either a fix to
+`$grub_cfg`'s path (or writing through the same `get_live_image_root()`
+resolution the read side already uses) or, for acceptance purposes only,
+writing directly to the correct on-disk path by hand. The checksum fix and
+the #33 conclusion earlier in this record are unaffected by either finding.
 
 ---
 
