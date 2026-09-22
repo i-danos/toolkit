@@ -702,6 +702,37 @@ not already carry an image named `2608` -- which describes every 2608 build,
 so the second image in this project's own upgrade/rollback test will always
 need one of those, not a fix to the product.
 
+### Two more things surfaced finishing the actual rollback proof -- both open, neither chased to ground
+
+Getting a genuine second image on disk to prove rollback (select it, reboot,
+select the original back) ran into two more anomalies. Recorded as found,
+not investigated to root cause -- this record already carried two retracted
+theories today from moving too fast on this exact path, so these are left
+openly unresolved rather than guessed at a third time.
+
+1. **The image lands under a name that was never typed.** Across several
+   attempts, on a disk deliberately cleaned of any prior `vyatta` directory
+   first, answering the name prompt with `2608b` still produced
+   `/boot/vyatta` -- correct content (matching build timestamps), wrong name,
+   consistently, regardless of which driver sent the answer. Checked and
+   ruled out: no stray `vii.config` on the system to supply a default: `VII_ADMIN_USERNAME` defaults to
+   `tmpuser`, not `vyatta`, so that is not leaking in either. Not explained.
+2. **`vyatta_update_grub.pl --generate-grub=<name>` exits 0 without adding a
+   menu entry**, tested directly, outside the install flow, for a name that
+   is not already known: `--list-images` and `grub.cfg` both still show only
+   the original `2608` afterward, and `--set-default-boot-index` on that same
+   name then correctly reports `Image "<name>" not found` -- consistent
+   between them, so it is not that one command lied while the other told the
+   truth. `generate_grub_cmd()` in the Perl source looks right by inspection
+   (`push(@images, $image)` before building the config), which means the gap
+   is somewhere between that push and what actually lands in `grub.cfg`, not
+   yet located.
+
+Net effect: a second image can be copied onto the disk, but this pass did not
+get it into a selectable grub entry, so the reboot-and-confirm half of the
+rollback proof is not done. The checksum fix and the #33 conclusion above
+stand on their own regardless of this.
+
 ---
 
 ## Two of these were hiding each other
