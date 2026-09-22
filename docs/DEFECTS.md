@@ -477,36 +477,47 @@ run against another copy of the same ISO): `Checking MD5 checksums of files
 on the ISO image...OK.` -- clean, where every prior attempt failed on exactly
 `.disk/mkisofs`. That is the whole claim 5.52 makes and it holds.
 
-### What broke next looks like #33, not like defect 14
+### What broke next: one is harness noise, one looks like #33
 
 Continuing the same run to exercise a second boot entry (the other half of
-upgrade/rollback acceptance) hit two more things, neither of them the
-checksum:
+upgrade/rollback acceptance) hit two more things. Neither is the checksum, and
+they turned out not to be the same kind of finding.
 
-1. `VII_IMAGE_NAME` answered interactively as `2608b` was not what ended up on
-   disk -- the image was written under `/boot/vyatta` instead, correct in
-   content (the squashfs and kernel timestamps matched the 0539 build) but
-   wrong in name. Not yet root-caused; it survived a clean re-run with the
-   stray directory removed first, so it is not simply leftover state.
-2. `run_post_install`'s grub step -- `vyatta_update_grub.pl --generate-grub`
-   and `--set-default-boot-index`, both run through `lu --user configd --`
-   -- failed once with `Image "vyatta" not found` (consistent with #1) and
-   then, run by hand against the correct name, produced no output and no
-   prompt back for several minutes with the QEMU process pinned near 40% CPU,
-   indistinguishable from the hang this project already has open as a pending
-   item: configd sessions failing to establish. The CLI's own `add system image`
-   dispatch (through configd/opd, not the direct script call used to get the
-   checksum proof above) hung the same way, with no output at all, not even
-   the installer's own banner -- before this was narrowed down to the direct
-   script call bypassing configd, which is what let the checksum result above
-   get measured at all.
+**The `VII_IMAGE_NAME` mismatch is not a product defect -- ruled out, not
+just unconfirmed.** Answered interactively as `2608b`, the image that actually
+landed on disk was named `vyatta` instead (content correct -- squashfs and
+kernel timestamps matched the 0539 build -- name wrong). Tracing the
+unmodified script with `bash -x` and no custom driver, against the same disk,
+showed the opposite: the name prompt defaulted to `[2608]` correctly, was
+accepted correctly, and the existing-image collision was reported and refused
+correctly. The mismatch appeared only when a one-off Python script written
+for this session (`answer_add_image.py`, never committed, matched prompts by
+regex and wrote answers straight to the console socket) was driving the
+console. That script has no verified guarantee it writes an answer only after
+a prompt has finished printing, which is exactly the class of bug this
+project already hit once today in `console.py` itself. So: test-harness noise
+from an ad hoc, uncommitted script, not a defect in `vyatta-install-image`.
+Nothing to fix here; noted so it is not mistaken for one on a re-read.
 
-So: three things were found, not one. Only the checksum is confirmed fixed.
-The image-naming mismatch and the `lu --user configd` hang are open, and the
-second one is now suspected to be the same root cause already tracked as
-#33 -- found through a completely different entry point (an install command,
-not a Robot suite), which is itself evidence worth having: if it is the same
-bug, it is not specific to whatever #33's original trigger was.
+**The `lu --user configd` hang is a real, separate, open finding.**
+`run_post_install`'s grub step -- `vyatta_update_grub.pl --generate-grub` and
+`--set-default-boot-index`, both run through `lu --user configd --` -- ran by
+hand against a valid image name, and produced no output and no prompt back
+for several minutes with the QEMU process pinned near 40% CPU. That is
+indistinguishable from the hang this project already has open as a pending
+item: configd sessions failing to establish. The CLI's own `add system image`
+dispatch (through configd/opd, not the direct script call used to get the
+checksum proof above) hung the same way earlier in the same session, with no
+output at all, not even the installer's own banner -- before this was
+narrowed down to the direct script call bypassing configd, which is what let
+the checksum result above get measured at all. This is now suspected to be
+the same root cause already tracked as the open configd item, found through a
+completely different entry point -- an install command, not a Robot suite --
+which is itself evidence worth having: if it is the same bug, it is not
+specific to whatever originally triggered that item.
+
+So: two things were found beyond the checksum fix. Only one is real, and it is
+still open.
 
 ---
 
