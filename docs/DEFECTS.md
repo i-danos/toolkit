@@ -499,25 +499,33 @@ project already hit once today in `console.py` itself. So: test-harness noise
 from an ad hoc, uncommitted script, not a defect in `vyatta-install-image`.
 Nothing to fix here; noted so it is not mistaken for one on a re-read.
 
-**The `lu --user configd` hang is a real, separate, open finding.**
-`run_post_install`'s grub step -- `vyatta_update_grub.pl --generate-grub` and
-`--set-default-boot-index`, both run through `lu --user configd --` -- ran by
-hand against a valid image name, and produced no output and no prompt back
-for several minutes with the QEMU process pinned near 40% CPU. That is
-indistinguishable from the hang this project already has open as a pending
-item: configd sessions failing to establish. The CLI's own `add system image`
-dispatch (through configd/opd, not the direct script call used to get the
-checksum proof above) hung the same way earlier in the same session, with no
-output at all, not even the installer's own banner -- before this was
-narrowed down to the direct script call bypassing configd, which is what let
-the checksum result above get measured at all. This is now suspected to be
-the same root cause already tracked as the open configd item, found through a
-completely different entry point -- an install command, not a Robot suite --
-which is itself evidence worth having: if it is the same bug, it is not
-specific to whatever originally triggered that item.
+**The `lu --user configd -- vyatta_update_grub.pl` hang did not reproduce --
+also ruled out, not confirmed.** It happened once, in the middle of
+`run_post_install`'s grub step, with no output and no prompt back for several
+minutes and the QEMU process pinned near 40% CPU. Tested directly and
+repeatedly afterward -- the same polluted `VYATTA_CONFIG_SID` a real CLI
+session leaves in the shell (matching the mechanism the `CfgClient`
+constructor actually reads it by, `getenv("VYATTA_CONFIG_SID")`, `execvp`
+carrying it through `lu` unchanged), `--generate-grub` and
+`--set-default-boot-index` each on their own, and `--set-default-boot-index`
+against the exact invalid name (`vyatta`) that produced the error seen
+earlier -- every one of those returned in under two seconds, correctly. So
+this specific call, under every condition it plausibly ran under, is not
+reproducibly slow. Whatever caused the one observed hang was not caught.
 
-So: two things were found beyond the checksum fix. Only one is real, and it is
-still open.
+**The CLI's own `add system image` dispatch (through configd/opd) is the one
+that is still unresolved, because it was never retried in isolation.** Earlier
+in the same session, before the direct script call was used to get the
+checksum proof above, the CLI command hung with no output at all, not even
+the installer's own banner -- that is the observation that made bypassing
+configd/opd necessary to measure anything. It has not been reproduced or
+root-caused either, in either direction: not confirmed as the same bug as the
+grub hang just ruled out above, and not confirmed as the same bug as the
+already-open configd item. It is one unexplained observation, on record as
+that and no more, until it happens again with something watching.
+
+So: two things were found beyond the checksum fix, and neither is confirmed.
+One was actively tested and cleared. The other was only ever seen once.
 
 ---
 
