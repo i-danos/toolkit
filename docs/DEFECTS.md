@@ -405,6 +405,45 @@ which breaks the first time SSSD rewords it.
 
 ---
 
+## 14. "add system image" rejected every 2608 ISO's own checksums
+
+Found doing the upgrade/rollback acceptance this project had not yet run: boot
+an installed 2105 disk, attach the 2608 ISO, `add system image
+http://.../i-danos_2608....iso`. The installer downloaded it, then:
+
+```
+Checking MD5 checksums of files on the ISO image...md5sum: WARNING: 1 computed
+checksum did NOT match
+Failed!
+1 checksum failures found!
+ISO image is corrupted and can not be used.
+```
+
+The one file was `./.disk/mkisofs` -- not payload, a text record of the exact
+`xorriso -as mkisofs ...` command line used to assemble the ISO, written by
+live-build during that same assembly step. Its content necessarily includes
+the ISO's own output filename and build timestamp, so it cannot be known when
+live-build's earlier checksums stage writes `md5sum.txt`. Confirmed on two
+independent 2608 builds (the `-test` and product variants from the same tree):
+each has its own internal mismatch between its `.disk/mkisofs` and the entry
+for it in its own `md5sum.txt`, so this is not one bad build, it is every 2608
+build.
+
+The official 2105 ISO's `md5sum.txt` has no entry for `.disk/mkisofs` at all --
+its live-build (Debian 10-era) never wrote that file, so 2105 never hit this,
+and no earlier acceptance step in this project happened to check an upgrade
+path, which is why it went unnoticed until now.
+
+`check_install_source()` in `vyatta-image-tools` validates every line of
+`md5sum.txt` with no exceptions, so this one always-stale line failed every
+`add system image`. Fixed in 5.52 by excluding exactly that one path from the
+check, with the reasoning above left in the code next to it. Not a security
+loosening: `.disk/mkisofs` is build provenance about the ISO, not something the
+installed system trusts or executes, and every other file in the manifest is
+still checked.
+
+---
+
 ## Two of these were hiding each other
 
 The Perl warnings buried the SA table, so the empty table underneath — caused by
