@@ -773,6 +773,28 @@ the #33 conclusion earlier in this record are unaffected by either finding.
 
 ---
 
+## 15. `vyatta_update_grub.pl` registers new images in a file nothing reads
+
+Split out from the finding above with its own number because it is a
+distinct, standalone defect in its own right, not a side effect of defect 14
+or of the #33 investigation that led to it -- see the full root-cause writeup
+directly above this heading for the evidence (`stat` output, the overlay
+`upperdir` path, the confirmed read/write mismatch between `$grub_cfg` and
+`get_live_image_root()`).
+
+One line versions of both halves: `--generate-grub` writes a correct new
+`grub.cfg` to `/boot/grub/grub.cfg`, which on a running installed system
+resolves through the root overlay into the *current* image's own private,
+ephemeral persistence directory -- never the shared, on-disk `grub.cfg` that
+GRUB reads at boot and that `--list-images`/`--set-default-boot-index` also
+correctly read via `get_live_image_root()`. So a second image can be copied
+onto disk successfully and still never become bootable, with no error at any
+step -- `add system image` reports `Done.` regardless. Not yet fixed; not
+yet decided whether the fix is `$grub_cfg`'s path or routing the write
+through `get_live_image_root()` like the read side already does.
+
+---
+
 ## Two of these were hiding each other
 
 The Perl warnings buried the SA table, so the empty table underneath — caused by
