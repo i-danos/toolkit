@@ -637,6 +637,71 @@ one. Listed because it is the strongest lead static reading found, not
 because it is confirmed. Settling it needs `strace`/`gdb` attached to the
 live hung tree, which this pass did not have privilege on the host to do.
 
+### Settled: `strace -f` from the moment `opd` forks the command
+
+Granted host `sudo` for exactly this, `strace -f` was attached to `opd`
+itself before the CLI command was ever typed, so the trace covers the whole
+tree from its first `execve`. Two things fell out of it, and together they
+replace every theory above -- there was no configd/opd dispatch bug and no
+swallowed prompt.
+
+**The disk-space finding first, because it wasted two of the four attempts.**
+`/tmp` on this test system is a 1.5G tmpfs, and this same disk had been
+reused across dozens of installer runs this session without its temp
+directories ever being cleaned up -- every one of them killed with `-9`
+rather than allowed to exit, so `_clean_up`'s `EXIT` trap never ran. With 300M
+free against a ~570M ISO, two straces in a row show `curl`'s destination
+write failing partway through (`write(2, "2",) = 0`, both times around the
+same byte count) and the installer correctly reporting `Unable to fetch the
+ISO image`. Not a hang, not opd, not configd -- ordinary `ENOSPC` from a test
+harness that had never been asked to clean up after itself. `rm -rf
+/tmp/vyatta-install-image.*` (after `umount -l` on anything still loop-mounted
+from the killed runs) fixed it.
+
+**With clean space, the trace runs straight through the checksum, the
+recursion, and the image-name prompt -- and every one of those prompts really
+is written to fd 1:**
+
+```
+write(1, "ISO download succeeded.\n", 24)
+write(1, "Checking MD5 checksums of files on the ISO image...", 51)
+write(1, "Executing installer from downloaded image...\n", 45)
+write(1, "What would you like to name this image? [2608]: ", 48)
+```
+
+Every write returns success. The script keeps running past the name prompt --
+it does not block there -- and proceeds into the collision check, because
+`[2608]` is the default and an image named `2608` already exists: it is the
+one currently running. That is where the earlier `tr '[:lower:]'
+'[:upper:]'` / pipe / fork tree comes from -- it is `get_response()`'s own
+`toupper()` machinery, called correctly, preparing to validate a `Yes/No`
+answer. The final blocked call, `read(0, <unfinished ...>)`, is that
+function's own `read myresponse` -- waiting for a real answer to a real,
+correctly-displayed question: *"Do you want to replace it (Yes/No)? [No]:"*
+
+**So this was never a deadlock.** Every prompt in this path writes to fd 1
+successfully and every read is a legitimate wait for an answer to a question
+that was actually asked. What makes it look exactly like a hang, every time,
+on this specific harness: every build in this project answers `[2608]` to the
+name prompt by default, because every one of them is release 2608 --
+so re-adding *any* of them onto a system already running one always collides
+with itself, always reaches this same interactive confirmation, and nothing
+driving the console non-interactively (`console.py`, or the CLI dispatch as
+originally observed) ever supplied an answer or was watching for one. It
+reproduced with total consistency because the setup guaranteed the collision
+every time, not because opd, configd, or `vyatta-install-image` had a bug.
+
+This replaces the `lu`/configd theory (already cleared directly above) and
+the `$(...)`-swallows-the-prompt theory (superseded: the prompts are not
+swallowed, they are written and simply never answered because nothing was
+driving them past the name prompt with a non-colliding name). Nothing here
+needs a code fix. What it does mean for acceptance: to add a second image on
+a running system without an interactive confirmation, the test driver has to
+either answer `Yes` to the replace prompt or install onto a disk that does
+not already carry an image named `2608` -- which describes every 2608 build,
+so the second image in this project's own upgrade/rollback test will always
+need one of those, not a fix to the product.
+
 ---
 
 ## Two of these were hiding each other
