@@ -525,7 +525,38 @@ already-open configd item. It is one unexplained observation, on record as
 that and no more, until it happens again with something watching.
 
 So: two things were found beyond the checksum fix, and neither is confirmed.
-One was actively tested and cleared. The other was only ever seen once.
+One was actively tested and cleared. The other was only ever seen once --
+until it was deliberately retried, below.
+
+### The CLI dispatch hang is reproducible, and it is not the grub call
+
+Retried in isolation, on a fresh boot, with nothing else running: `add system
+image <url>` typed at the CLI hung again, identically -- no output at all,
+not even the installer's own "Welcome to the DANOS (Lancaster) image
+installer." banner that the direct script call always prints within a couple
+of seconds. Five minutes of watching the QEMU process showed CPU usage
+decaying asymptotically toward a flat baseline, the shape of `ps`'s
+elapsed-time-averaged `%cpu` under constant background load, not of a process
+doing increasing work -- the command is blocked, not slow.
+
+That rules out where it is not: not `lu` (tested standalone, 6ms), not NSS or
+sssd (`getent passwd configd` and `id configd` both 4ms, and `configd` is a
+plain `files`-resolved account, never reaching the `sss` source at all), not
+`vyatta_update_grub.pl` itself (every call tested directly above returned in
+under two seconds, correct output each time), and not `vyatta-install-image`
+running as root (that is the direct-script path, which is what produced the
+checksum proof). What is left is opd/configd's own dispatch of a
+`opd:privileged true` command -- the mechanism that turns a typed CLI line
+into a running root process is not the same mechanism as `sudo` or `lu`
+invoked by hand, and it is the one part of this path never yet exercised in
+isolation.
+
+No second channel existed to inspect the guest while it was stuck: ssh was
+never enabled on this system (test images bring up management by DHCP only),
+and reaching the qcow2 offline needed `nbd`, which needed root the host
+session did not have. So this is as far as it goes without a password prompt
+or a purpose-built harness step to watch `opd`'s own process state live.
+That is next, not done.
 
 ---
 
