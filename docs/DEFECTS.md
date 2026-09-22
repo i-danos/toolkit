@@ -789,9 +789,23 @@ ephemeral persistence directory -- never the shared, on-disk `grub.cfg` that
 GRUB reads at boot and that `--list-images`/`--set-default-boot-index` also
 correctly read via `get_live_image_root()`. So a second image can be copied
 onto disk successfully and still never become bootable, with no error at any
-step -- `add system image` reports `Done.` regardless. Not yet fixed; not
-yet decided whether the fix is `$grub_cfg`'s path or routing the write
-through `get_live_image_root()` like the read side already does.
+step -- `add system image` reports `Done.` regardless.
+
+**Fixed in vyatta-image-tools 5.53**, by computing `$grub_cfg` through
+`get_live_image_root()` -- the exact resolution the read side already used --
+instead of the hardcoded constant.
+
+**Verified end to end, not just at the file level.** With the fix installed:
+`--generate-grub=vyatta` made `--list-images` report `2608,vyatta`;
+`--set-default-boot-index=vyatta` and a reboot landed the system on
+`BOOT_IMAGE=/boot/vyatta/vmlinuz vyatta-union=/boot/vyatta`, with the admin
+account and `ssh` still active -- config carried across the switch.
+Setting the index back to `2608` and rebooting again returned
+`BOOT_IMAGE=/boot/2608/vmlinuz vyatta-union=/boot/2608`, same account and
+service state intact. Fetch a newer image, register it, select it, reboot
+into it, select the original back, reboot into that -- all four steps of the
+upgrade/rollback acceptance this investigation kept getting blocked on are
+now proven on a real disk, not asserted from source reading.
 
 ---
 
