@@ -817,3 +817,52 @@ defect 1 did not make any test pass; it made defect 2 visible.
 
 Worth expecting on a port of this size: the first fix in an area often reveals
 the next rather than resolving the symptom.
+
+---
+
+## P0.5 install/upgrade/rollback acceptance: closed
+
+Everything this thread was blocked on is now verified on a real disk, in
+order:
+
+1. **Disk install**, unattended, from a live boot -- proven earlier in this
+   record (the driver-bug corrections above defect 14).
+2. **Upgrade**: fetch a newer image over HTTP, checksum verifies (defect 14,
+   5.52), copy succeeds, `--generate-grub` registers it in the shared on-disk
+   grub.cfg (defect 15, 5.53) -- `--list-images` reports both.
+3. **Select and boot the new image**: reboot landed on
+   `BOOT_IMAGE=/boot/vyatta/vmlinuz vyatta-union=/boot/vyatta`, admin account
+   and `ssh` still active.
+4. **Rollback**: select the original index, reboot, landed back on
+   `BOOT_IMAGE=/boot/2608/vmlinuz vyatta-union=/boot/2608`, same account and
+   service state intact across both switches.
+5. **81/81 regression, clean**, on a test ISO rebuilt with 5.53 -- the first
+   run showed 27 failures, all in the three suites that lean hardest on SSH
+   timing (ipsec/mpls/fw), while dpa/bgp/rest passed; the host's own load
+   average was ~15 against 4 cores with 18 unrelated qemu processes running
+   at the time (`danos-open`, not this project's). Rerun once that eased
+   (load ~7.8) passed 81/81 identically. Recorded here rather than silently
+   discarded, because a flaky rerun that happens to pass is not the same
+   claim as a clean run under load that was never explained -- this one was.
+6. **cloud-init**: booted with the existing NoCloud seed
+   (`local-hostname: danos-ci-test`) -- prompt and `hostname` both read
+   `danos-ci-test`, no stall, confirming defect 4's fix (all four
+   configd-dependent modules moved to `cloud_config_modules`) still holds on
+   this build.
+7. **No-network boot**: the installed disk booted with zero `-netdev`
+   arguments at all (not merely an unplugged cable) and reached a usable,
+   authenticable login in under a minute.
+8. **Interface naming stability**: `dp0s3` -- name and MAC -- was identical
+   before and after a reboot of the same disk.
+
+Real hardware NICs remain out of scope for this pass, as recorded under "What
+'verified' covers, and what it does not" in `UPGRADE-RECORD.md` -- QEMU's
+virtio PMD is not a physical NIC's driver path, and that gap is named there
+rather than claimed closed here.
+
+One thing surfaced along the way stays open on its own: an installed image's
+directory sometimes lands under a name that was never typed (`vyatta`
+instead of an explicitly answered `2608b`, content correct, name not) --
+see the writeup under defect 14. It did not block this acceptance, because
+the real name is always knowable by listing `/boot`, but it is not
+explained.
