@@ -66,25 +66,29 @@ from datetime import datetime, timezone
 VTYSH_CMDS = {
     "route": ["sudo", "vtysh", "-c", "show ip route vrf all json"],
     "route6": ["sudo", "vtysh", "-c", "show ipv6 route vrf all json"],
+    "mpls-route": ["sudo", "vtysh", "-c", "show mpls table json"],
 }
 VPLSH_CMDS = {
     "route": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route"],
     "route6": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route6"],
+    "mpls-route": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show mpls-route"],
 }
 VPLSH_CLASSES = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show"]
 
 # The classes compared. The object view enumerates six.
 #
 # Stated because "clean" would otherwise be read as "everything programmed was
-# checked", and it is two classes of six. That is the same shape as the VRF
+# checked", and it is three classes of six. That is the same shape as the VRF
 # gap this tool had until it was measured: a scope smaller than the report
 # implies, invisible in the numbers.
 #
-# mpls-route, mroute and mroute6 have a Desired source too -- "show mpls table
-# json", "show ip mroute json", "show ipv6 mroute json" all answer -- but each
-# needs a topology that exercises it before a comparison can be verified
-# rather than merely written. "show vrf" has no JSON form at all.
-COMPARED = {"route", "route6"}
+# mpls-route is keyed by incoming label alone ("lblspc:0/label:N" on the data
+# plane side, "show mpls table json" on the zebra side) and reports no
+# ownership, so the reserved labels 0/1/2 arrive as owned=unknown and are
+# excluded from drift by the same rule as an image that cannot say. mroute and
+# mroute6 have a Desired source ("show ip mroute json", "show ipv6 mroute
+# json") but no verified comparison yet. "show vrf" has no JSON form at all.
+COMPARED = {"route", "route6", "mpls-route"}
 
 
 def run(cmd):
@@ -118,6 +122,21 @@ def desired():
         rib = run(VTYSH_CMDS[klass])
         if rib is None:
             return None
+        if klass == "mpls-route":
+            # {label: {"installed": bool, "nexthops": [...]}}. No VRF and no
+            # prefix: the incoming label *is* the identity, in label space 0
+            # (the only one zebra and the data plane both report). Keyed as
+            # ("default", "label:N") so it sorts and prints like the others.
+            for label, e in rib.items():
+                if not e.get("installed"):
+                    continue
+                nh = (e.get("nexthops") or [{}])[0]
+                out[(klass, "default", "label:%s" % label)] = {
+                    "protocol": nh.get("type", "?"), "table": None,
+                    "scope": None, "next_hop_group": None,
+                    "source": nh.get("type", "?"),
+                }
+            continue
         # Flatten {vrf: {prefix: [...]}} and {prefix: [...]} to one prefix map.
         flat = {}
         for k, v in rib.items():
@@ -180,8 +199,23 @@ def programmed():
         if doc is None:
             return None
         for o in doc.get("dpa_objects", {}).get("objects", []):
-            # "vrf:default/table:254/10.73.0.0/24/scope:0"
             parts = o["key"].split("/")
+            if klass == "mpls-route":
+                # "lblspc:0/label:16"; the object carries no ownership field,
+                # so the reserved labels 0/1/2 the data plane installs for
+                # itself arrive as owned=None, i.e. unknown, which unowned()
+                # treats as not-drift -- the same rule as an image that cannot
+                # say, not a list of special labels kept here.
+                if len(parts) != 2 or not parts[1].startswith("label:"):
+                    continue
+                out.setdefault((klass, "default", parts[1]), []).append(
+                    {"table": None, "scope": None, "state": o.get("state"),
+                     "backend": o.get("backend"),
+                     "owned": o.get("dataplane_owned"),
+                     "protocol": None, "source": None, "next_hop_group": None,
+                     "dependencies": o.get("dependencies", [])})
+                continue
+            # "vrf:default/table:254/10.73.0.0/24/scope:0"
             if len(parts) < 3 or not parts[0].startswith("vrf:"):
                 continue
             vrf = parts[0][4:]
