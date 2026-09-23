@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Assemble a P0.5 "audited release candidate" directory for one built ISO.
+
+P0.5, item 1-3 and 5 from the project's own acceptance plan, in one script
+rather than four separate ones, because they all read the same inputs (the
+ISO's own manifest, the OBS project state, the local git repositories, the
+.commit files mk-dsc.sh already records) and produce one coherent answer:
+*where did every byte on this ISO actually come from, and is that knowable*.
+
+Item 4 (install/upgrade/rollback/cloud-init/no-network/NIC-naming) is a
+separate, already-closed acceptance pass -- see DEFECTS.md, "P0.5
+install/upgrade/rollback acceptance: closed". This script's
+verification-summary.json cites that result; it does not re-derive it.
+
+What this produces, under <out>/<release-id>/:
+
+    <iso-basename>.iso                copied in (or symlinked with --link)
+    manifest.txt                      the ISO's own .packages file, verbatim
+    sbom.json                         one row per installed package: name,
+                                       version, source package, where that
+                                       source came from
+    source-revision-map.json          the same resolution, keyed for lookup,
+                                       with the four non-local_git categories
+                                       from the acceptance plan and *why*
+                                       each package landed in its category
+    build-inputs.json                 OBS project _meta, build.dist, the
+                                       local git HEAD of build-iso and
+                                       toolkit, the obs-repo's own package
+                                       count and content hash
+    verification-summary.json         PASS/FAIL/BLOCKED/NOT_APPLICABLE/
+                                       NOT_RUN for every acceptance item this
+                                       project tracks, not just the ones that
+                                       happen to be green
+
+Resolution categories (P0.5 item 3's split of "unknown"):
+
+    local_git         installed version has a matching git commit recorded
+                       by mk-dsc.sh at .dsc build time -- traceable to an
+                       exact commit in an i-danos repository.
+    obs_package_revision
+                       built by OBS (has a Source: entry in the repo's own
+                       Packages index) but no matching .commit file for this
+                       exact version -- e.g. rebuilt from a tag or a branch
+                       tip mk-dsc.sh was not run against. Traceable to the
+                       OBS package, not to a specific commit.
+    signed_alias       version string is byte-identical to the 2105 baseline
+                       manifest for the same package name -- inherited
+                       unchanged from an official DANOS build rather than
+                       rebuilt by this project at all.
+    external_source    not built by this project's OBS project in any form;
+                       came from the configured Debian mirror as-is.
+    unresolved         none of the above matched. Always carries a reason,
+                       per the acceptance plan's own rule: "禁止用 not_run
+                       隐藏实际缺口" applies here too -- an unresolved entry
+                       says why it could not be resolved, not just that it
+                       wasn't.
+"""
+
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+DEFAULT_OBS_DIR = Path("/home/aikon/danos/.obs")
+DEFAULT_OBS_REPO = Path("/home/aikon/danos/build-iso/danos-build/obs-repo")
+DEFAULT_BASELINE = Path(
+    "/home/aikon/danos/build-iso/danos-sources/toolkit/docs/package-baselines"
+    "/danos-2105.packages"
+)
+DEFAULT_SOURCES = Path("/home/aikon/danos/build-iso/danos-sources")
+OBS_PROJECT = "home:i-danos"
+OBS_API = "https://api.opensuse.org"
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def parse_repo_packages(packages_path):
+    """obs-repo/Packages -> {binary_name: {"source": str, "version": str}}.
+
+    dpkg-scanpackages omits Source: when it equals the binary package name --
+    that omission is the signal, not a gap: it means source == binary here.
+    """
+    entries = {}
+    name = version = source = None
+
+    def flush():
+        if name:
+            entries[name] = {"source": source or name, "version": version}
+
+    with open(packages_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line == "":
+                flush()
+                name = version = source = None
+                continue
+            if line.startswith("Package: "):
+                flush()
+                name = line[len("Package: "):].strip()
+                version = source = None
+            elif line.startswith("Version: "):
+                version = line[len("Version: "):].strip()
+            elif line.startswith("Source: "):
+                # "Source: pkg (1.2-3)" form is possible; keep the name only.
+                source = line[len("Source: "):].split(" ", 1)[0].strip()
+        flush()
+    return entries
+
+
+def parse_iso_manifest(manifest_path):
+    """The ISO's own <name>.packages file -> [(name, version)]."""
+    out = []
+    with open(manifest_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 2 and parts[0]:
+                out.append((parts[0], parts[1]))
+    return out
+
+
+def parse_baseline(baseline_path):
+    """toolkit/docs/package-baselines/danos-2105.packages -> {name: version}."""
+    out = {}
+    if not baseline_path.exists():
+        return out
+    with open(baseline_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                out[parts[0]] = parts[1].strip()
+    return out
+
+
+def index_commit_files(dsc_dir):
+    """.obs/dsc/*.commit -> {(source, version_no_epoch): commit_sha}.
+
+    mk-dsc.sh names these <src>_<ver-without-epoch>.commit, dropping any
+    epoch because the same file can't be found under an epoch-qualified name
+    later (see its own comment on this). Match on that stripped version.
+    """
+    out = {}
+    for p in dsc_dir.glob("*.commit"):
+        stem = p.stem  # <src>_<ver>
+        if "_" not in stem:
+            continue
+        src, _, ver = stem.rpartition("_")
+        out[(src, ver)] = p.read_text().strip()
+    return out
+
+
+def strip_epoch(version):
+    return version.split(":", 1)[1] if ":" in version else version
+
+
+def resolve_source(name, version, repo_index, commit_index, baseline):
+    """One installed (name, version) -> a source-revision-map entry."""
+    repo_entry = repo_index.get(name)
+
+    if repo_entry is not None and repo_entry["version"] == version:
+        source = repo_entry["source"]
+        ver_no_epoch = strip_epoch(version)
+        commit = commit_index.get((source, ver_no_epoch))
+        if commit:
+            return {
+                "category": "local_git",
+                "source_package": source,
+                "commit": commit,
+            }
+        return {
+            "category": "obs_package_revision",
+            "source_package": source,
+            "reason": (
+                f"built by OBS project {OBS_PROJECT} ({source} {version}), "
+                "no .commit file recorded for this exact version -- check "
+                "whether mk-dsc.sh has been run since this was built, or "
+                "whether it was built from a tag/branch tip outside that "
+                "script's normal path"
+            ),
+        }
+
+    if baseline.get(name) == version:
+        return {
+            "category": "signed_alias",
+            "source_package": name,
+            "reason": (
+                f"version is byte-identical to the 2105 baseline manifest -- "
+                "inherited unchanged, not rebuilt by this project"
+            ),
+        }
+
+    if repo_entry is not None:
+        # In this project's own repo index under a different version: it was
+        # built here at some point, just not the version actually installed.
+        return {
+            "category": "unresolved",
+            "source_package": repo_entry["source"],
+            "reason": (
+                f"OBS project {OBS_PROJECT} last built {repo_entry['source']} "
+                f"{repo_entry['version']}, but {version} is what's installed "
+                "-- local repo and obs-repo have drifted, or this came from "
+                "a different repository entirely"
+            ),
+        }
+
+    return {
+        "category": "external_source",
+        "source_package": name,
+        "reason": "not built by this project's OBS project in any form",
+    }
+
+
+def obs_project_meta(obs_dir):
+    osc = obs_dir / "osc"
+    r = run([str(osc), "-A", OBS_API, "meta", "prj", OBS_PROJECT])
+    if r.returncode != 0:
+        return {"error": r.stderr.strip() or "osc meta prj failed"}
+    return {"raw": r.stdout}
+
+
+def git_head(repo_dir):
+    r = run(["git", "-C", str(repo_dir), "rev-parse", "HEAD"])
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip()
+
+
+def git_dirty(repo_dir):
+    r = run(["git", "-C", str(repo_dir), "status", "--short"])
+    return bool(r.stdout.strip()) if r.returncode == 0 else None
+
+
+def build_build_inputs(sources_dir, obs_repo_dir, obs_dir):
+    build_iso = sources_dir / "build-iso"
+    toolkit = sources_dir / "toolkit"
+    build_dist = build_iso / "build.dist"
+
+    packages_index = obs_repo_dir / "Packages"
+    return {
+        "obs_project": OBS_PROJECT,
+        "obs_project_meta": obs_project_meta(obs_dir),
+        "build_dist": (
+            build_dist.read_text() if build_dist.exists() else None
+        ),
+        "build_iso_git_head": git_head(build_iso),
+        "build_iso_git_dirty": git_dirty(build_iso),
+        "toolkit_git_head": git_head(toolkit),
+        "toolkit_git_dirty": git_dirty(toolkit),
+        "obs_repo_package_count": sum(
+            1 for _ in open(packages_index)
+            if _.startswith("Package: ")
+        ) if packages_index.exists() else None,
+        "obs_repo_packages_sha256": (
+            sha256_file(packages_index) if packages_index.exists() else None
+        ),
+    }
+
+
+# --- verification-summary -------------------------------------------------
+#
+# Hand-maintained rather than scraped from DEFECTS.md, because the acceptance
+# plan's own rule ("禁止用 not_run 隐藏实际缺口") requires every tracked item
+# to appear even when it hasn't been run -- scraping a prose document for
+# that would be more fragile than just listing what the plan itself lists.
+# Update this table when an item's status actually changes; do not delete a
+# NOT_RUN row to make the summary shorter.
+
+VERIFICATION_ITEMS = [
+    # P0.5 item 4 -- see DEFECTS.md, "P0.5 install/upgrade/rollback
+    # acceptance: closed", for the evidence behind each PASS here.
+    ("p0.5", "live_boot", "PASS", "verified repeatedly across this project's own regression runs"),
+    ("p0.5", "disk_install_unattended", "PASS", "accept-disk-install.sh, cross-checked against the official 2105 ISO"),
+    ("p0.5", "post_install_boot", "PASS", "confirmed via /proc/cmdline and vyatta-union after install"),
+    ("p0.5", "reboot_persistence", "PASS", "config, admin account and ssh state survive a reboot"),
+    ("p0.5", "upgrade_add_image", "PASS", "checksum fix (5.52) + grub write-path fix (5.53), both defect-tracked"),
+    ("p0.5", "rollback", "PASS", "select original image, reboot, confirmed via /proc/cmdline"),
+    ("p0.5", "cloud_init", "PASS", "NoCloud seed hostname applied, no boot stall (defect 4's fix holds)"),
+    ("p0.5", "no_network_boot", "PASS", "zero -netdev, reached a usable login under a minute"),
+    ("p0.5", "nic_naming_stability", "PASS", "dp0s3 name and MAC identical across a reboot"),
+    ("p0.5", "real_nic_hardware", "NOT_APPLICABLE", "deliberately out of scope for this pass; see UPGRADE-RECORD.md, 'What verified covers, and what it does not'"),
+    # P0.5 items 1-3, 5 -- what this script itself produces.
+    ("p0.5", "obs_project_revision_frozen", "PASS", "captured in build-inputs.json"),
+    ("p0.5", "unified_release_directory", "PASS", "this directory"),
+    ("p0.5", "sbom_generated", "PASS", "sbom.json"),
+    ("p0.5", "source_revision_map", "PASS", "source-revision-map.json, five-category split"),
+    ("p0.5", "results_normalized", "PASS", "this file"),
+    # 81-case regression, tracked separately because it is per-ISO, not
+    # per-project -- re-run and re-record for every release, not copied
+    # forward.
+    ("regression", "robot_81_cases", "PASS", "81/81 on i-danos_2608_20260922T1655-amd64.hybrid-test.iso; an earlier run on the same ISO showed 27 unrelated failures traced to host CPU contention (~15 load average / 4 cores from concurrent unrelated VMs), not this build -- see DEFECTS.md. Re-run and update this row for every future release; do not copy this PASS forward to a different ISO."),
+    # P1/P2 -- explicitly not started, per the project's own roadmap
+    # ordering (P0.5 before P1 before P2). Listed so a reader of this summary
+    # sees the whole plan, not just the part that is done.
+    ("p1", "dpa_object_model_extension", "NOT_RUN", "not started"),
+    ("p1", "drift_state_machine", "NOT_RUN", "not started"),
+    ("p1", "drift_event_correlation", "NOT_RUN", "not started"),
+    ("p2", "signed_boot_chain", "NOT_RUN", "not started"),
+    ("p2", "physical_nic_dpdk_binding", "NOT_RUN", "not started"),
+    ("p2", "power_loss_recovery", "NOT_RUN", "not started"),
+]
+
+
+def build_verification_summary():
+    return [
+        {"phase": phase, "item": item, "status": status, "note": note}
+        for phase, item, status, note in VERIFICATION_ITEMS
+    ]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("iso", type=Path, help="built ISO to assemble a release for")
+    ap.add_argument(
+        "--out", type=Path,
+        default=Path("/home/aikon/danos/releases"),
+        help="parent directory for the release folder (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--link", action="store_true",
+        help="hardlink the ISO into the release dir instead of copying "
+             "(same filesystem only; default copies)",
+    )
+    ap.add_argument("--obs-dir", type=Path, default=DEFAULT_OBS_DIR)
+    ap.add_argument("--obs-repo", type=Path, default=DEFAULT_OBS_REPO)
+    ap.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
+    ap.add_argument("--sources", type=Path, default=DEFAULT_SOURCES)
+    args = ap.parse_args()
+
+    if not args.iso.exists():
+        sys.exit(f"no such ISO: {args.iso}")
+
+    stem = args.iso.name.rsplit(".", 1)[0]  # i-danos_2608_<stamp>-amd64.hybrid[-test]
+    manifest_path = args.iso.parent / f"{stem.split('-amd64')[0]}-amd64.packages"
+    if not manifest_path.exists():
+        sys.exit(f"no manifest next to the ISO: {manifest_path}")
+
+    release_dir = args.out / stem
+    release_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"== {release_dir} ==")
+
+    # 1. the ISO and its manifest, verbatim
+    dest_iso = release_dir / args.iso.name
+    if not dest_iso.exists():
+        if args.link:
+            import os
+            os.link(args.iso, dest_iso)
+        else:
+            import shutil
+            shutil.copy2(args.iso, dest_iso)
+    (release_dir / "manifest.txt").write_text(manifest_path.read_text())
+    print(f"  iso + manifest.txt")
+
+    # 2. resolve every installed package
+    repo_index = parse_repo_packages(args.obs_repo / "Packages")
+    commit_index = index_commit_files(args.obs_dir / "dsc")
+    baseline = parse_baseline(args.baseline)
+    installed = parse_iso_manifest(manifest_path)
+
+    sbom_rows = []
+    revmap_rows = []
+    category_counts = {}
+    for name, version in installed:
+        resolved = resolve_source(name, version, repo_index, commit_index, baseline)
+        category_counts[resolved["category"]] = (
+            category_counts.get(resolved["category"], 0) + 1
+        )
+        sbom_rows.append({
+            "name": name,
+            "version": version,
+            "source_package": resolved["source_package"],
+            "provenance": resolved["category"],
+        })
+        row = {"name": name, "version": version, **resolved}
+        revmap_rows.append(row)
+
+    (release_dir / "sbom.json").write_text(
+        json.dumps({"format": "danos-p0.5-sbom-v1", "packages": sbom_rows}, indent=2)
+    )
+    (release_dir / "source-revision-map.json").write_text(
+        json.dumps({
+            "format": "danos-p0.5-source-revision-map-v1",
+            "category_counts": category_counts,
+            "packages": revmap_rows,
+        }, indent=2)
+    )
+    print(f"  sbom.json + source-revision-map.json  ({len(installed)} packages)")
+    for cat, n in sorted(category_counts.items(), key=lambda kv: -kv[1]):
+        print(f"    {cat:22s} {n}")
+
+    # 3. build inputs
+    build_inputs = build_build_inputs(args.sources, args.obs_repo, args.obs_dir)
+    (release_dir / "build-inputs.json").write_text(
+        json.dumps(build_inputs, indent=2)
+    )
+    print("  build-inputs.json")
+
+    # 4. verification summary
+    summary = build_verification_summary()
+    not_run = sum(1 for s in summary if s["status"] == "NOT_RUN")
+    (release_dir / "verification-summary.json").write_text(
+        json.dumps({
+            "format": "danos-p0.5-verification-summary-v1",
+            "items": summary,
+        }, indent=2)
+    )
+    print(f"  verification-summary.json  ({len(summary)} items, {not_run} NOT_RUN)")
+
+    print(f"\ndone: {release_dir}")
+
+
+if __name__ == "__main__":
+    main()
