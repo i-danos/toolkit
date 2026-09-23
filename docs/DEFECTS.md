@@ -912,12 +912,15 @@ rather than the less specific `obs_package_revision` -- ambiguous cases
 unchanged, so this does not turn into a guess where more than one candidate
 exists.
 
-`linux-signed` remains a genuine `obs_package_revision` gap, not a matching
-bug: there is no local repository for it at all in this checkout (checked:
-no `build-iso/danos-sources/linux-signed`, no `.obs/dsc/linux-signed*`),
-so this is worth deciding on purpose -- either it is legitimately external
-and the category is correct as-is, or it needs a tracked repository the way
-every other rebuilt package has one.
+`linux-signed` is correctly `obs_package_revision`, not a gap: its own
+`Packages` entry names `Maintainer: OBS signing service <obssign@obs.service>`
+-- it is the signed-kernel package OBS's signing infrastructure produces as
+a byproduct of building `linux-image`, not a package with source of its own.
+There is no local repository for it (checked: no
+`build-iso/danos-sources/linux-signed`, no `.obs/dsc/linux-signed*`) because
+there is nothing to check out -- `obs_package_revision`'s own definition
+("traceable to the OBS package, not to a specific commit") already says
+exactly what this is.
 
 `vyatta-image-tools` resolved correctly to `1923cc0`, today's grub-write-path
 fix commit -- confirming the mapping is right on a case already known to be
