@@ -67,18 +67,22 @@ VTYSH_CMDS = {
     "route": ["sudo", "vtysh", "-c", "show ip route vrf all json"],
     "route6": ["sudo", "vtysh", "-c", "show ipv6 route vrf all json"],
     "mpls-route": ["sudo", "vtysh", "-c", "show mpls table json"],
+    "mroute": ["sudo", "vtysh", "-c", "show ip mroute vrf all json"],
+    "mroute6": ["sudo", "vtysh", "-c", "show ipv6 mroute vrf all json"],
 }
 VPLSH_CMDS = {
     "route": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route"],
     "route6": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route6"],
     "mpls-route": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show mpls-route"],
+    "mroute": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show mroute"],
+    "mroute6": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show mroute6"],
 }
 VPLSH_CLASSES = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show"]
 
 # The classes compared. The object view enumerates six.
 #
 # Stated because "clean" would otherwise be read as "everything programmed was
-# checked", and it is three classes of six. That is the same shape as the VRF
+# checked", and it is five classes of six. That is the same shape as the VRF
 # gap this tool had until it was measured: a scope smaller than the report
 # implies, invisible in the numbers.
 #
@@ -86,9 +90,10 @@ VPLSH_CLASSES = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show"]
 # plane side, "show mpls table json" on the zebra side) and reports no
 # ownership, so the reserved labels 0/1/2 arrive as owned=unknown and are
 # excluded from drift by the same rule as an image that cannot say. mroute and
-# mroute6 have a Desired source ("show ip mroute json", "show ipv6 mroute
-# json") but no verified comparison yet. "show vrf" has no JSON form at all.
-COMPARED = {"route", "route6", "mpls-route"}
+# mroute6 are keyed "(source,group)" per VRF; zebra's any-source "*" is mapped to
+# the unspecified address the data plane uses. Only "show vrf" is left: it has
+# no JSON form at all.
+COMPARED = {"route", "route6", "mpls-route", "mroute", "mroute6"}
 
 
 def run(cmd):
@@ -136,6 +141,24 @@ def desired():
                     "scope": None, "next_hop_group": None,
                     "source": nh.get("type", "?"),
                 }
+            continue
+        if klass in ("mroute", "mroute6"):
+            # {vrf: {group: {source: entry}}}, entry["installed"] an int.
+            # zebra writes the any-source entry's source as "*"; the data
+            # plane writes the unspecified address. Measured for IPv6
+            # ("*" vs "::"); the IPv4 spelling ("0.0.0.0") is the same
+            # convention and has not been observed on a box with a (*,G).
+            wild = "::" if klass == "mroute6" else "0.0.0.0"
+            for vrf, groups in rib.items():
+                for group, sources in groups.items():
+                    for src, e in sources.items():
+                        if not e.get("installed"):
+                            continue
+                        key = "(%s,%s)" % (wild if src == "*" else src, group)
+                        out[(klass, vrf, key)] = {
+                            "protocol": "pim", "table": None, "scope": None,
+                            "next_hop_group": None, "source": e.get("flags"),
+                        }
             continue
         # Flatten {vrf: {prefix: [...]}} and {prefix: [...]} to one prefix map.
         flat = {}
@@ -200,6 +223,17 @@ def programmed():
             return None
         for o in doc.get("dpa_objects", {}).get("objects", []):
             parts = o["key"].split("/")
+            if klass in ("mroute", "mroute6"):
+                # "vrf:default/(65.1.1.2,232.1.1.1)"
+                if len(parts) != 2 or not parts[0].startswith("vrf:"):
+                    continue
+                out.setdefault((klass, parts[0][4:], parts[1]), []).append(
+                    {"table": None, "scope": None, "state": o.get("state"),
+                     "backend": o.get("backend"),
+                     "owned": o.get("dataplane_owned"),
+                     "protocol": None, "source": None, "next_hop_group": None,
+                     "dependencies": o.get("dependencies", [])})
+                continue
             if klass == "mpls-route":
                 # "lblspc:0/label:16"; the object carries no ownership field,
                 # so the reserved labels 0/1/2 the data plane installs for
