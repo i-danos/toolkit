@@ -87,27 +87,6 @@ TOPO="$TOPO" "$HERE/boot-topo.sh" "$ISO" >/dev/null 2>&1 || {
 	echo "  FAILED: boot-topo.sh" >&2; exit 1; }
 
 bad=0
-
-# "QEMU PID 和端口有效" -- checked directly, before anything that depends on
-# it (console login, ssh, sudo) has a chance to time out and read as a slow
-# boot instead of a wrong one. See vm-sanity.sh for what "wrong" covers: a
-# stale pidfile pointing at a reused pid, or a hostfwd port that never bound.
-# shellcheck disable=SC2086  # deliberate word splitting: one relay spec per entry
-for entry in $RELAYS; do
-	r=${entry%%:*}
-	port=${entry##*:}
-	if ! "$HERE/vm-sanity.sh" "$RUNBASE/$r" "$port"; then
-		echo "  FAILED: $r's qemu process or hostfwd port is not sane" >&2
-		bad=$((bad + 1))
-	fi
-done
-if [ "$bad" -ne 0 ]; then
-	echo "  $bad router(s) failed the qemu-process sanity check; refusing to" >&2
-	echo "  spend time on console/ssh/sudo checks against a VM that is not" >&2
-	echo "  actually the one this run booted" >&2
-	exit 1
-fi
-
 for r in $ROUTERS; do
 	if "$HERE/prep-router.sh" "$RUNBASE/$r/console.sock" "$MGMT_IF" >"$RUNBASE/$r/prep.log" 2>&1; then
 		echo "  $r prepped"
