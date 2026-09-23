@@ -820,7 +820,16 @@ the next rather than resolving the symptom.
 
 ---
 
-## P0.5 install/upgrade/rollback acceptance: closed
+## P0.5 acceptance: closed
+
+The plan has five items. Item 4 (install/upgrade/rollback/cloud-init/
+no-network/NIC-naming) is below first, since it is what this whole thread was
+chasing. Items 1-3 and 5 (freezing the build snapshot, a unified release
+directory, splitting `unknown` provenance into named categories, and
+normalizing every result) came after, in one script -- see the second half
+of this section.
+
+### Item 4: install, upgrade, rollback, boot
 
 Everything this thread was blocked on is now verified on a real disk, in
 order:
@@ -866,3 +875,31 @@ instead of an explicitly answered `2608b`, content correct, name not) --
 see the writeup under defect 14. It did not block this acceptance, because
 the real name is always knowable by listing `/boot`, but it is not
 explained.
+
+### Items 1-3 and 5: `toolkit/release/mk-release.py`
+
+One script rather than four, because all four items read the same inputs --
+the ISO's own manifest, the OBS project's current state, this project's git
+repositories, and the `.commit` files `mk-dsc.sh` already writes when it
+builds a `.dsc` -- and produce one coherent answer: where did every byte on
+this ISO come from, and is that knowable.
+
+Run for real against `i-danos_2608_20260922T1655-amd64.hybrid-test.iso`, not
+just exercised on sample input. Of 1522 installed packages: 568 resolved to
+an exact commit (`local_git`), 950 came unchanged from the configured Debian
+mirror (`external_source`), 2 matched the 2105 baseline byte-for-byte
+(`signed_alias`, inherited rather than rebuilt), 2 were built by this
+project's OBS project with no matching `.commit` for the exact version
+installed (`obs_package_revision`) -- and 0 were `unresolved`. Those two
+`obs_package_revision` rows are themselves a real, useful finding rather
+than noise: `linux-signed` and `vyatta-version` are built by OBS but
+`mk-dsc.sh` has no recorded commit for the versions actually on this ISO,
+worth checking before calling this release fully traceable. `vyatta-image-tools`
+resolved correctly to `1923cc0`, today's grub-write-path fix commit --
+confirming the mapping is right on a case already known to be right, not
+just plausible-looking on cases nobody checked.
+
+`verification-summary.json` lists every P0.5/P1/P2 item this project tracks,
+including the ones not started, with `NOT_RUN` rather than omitting them --
+the acceptance plan's own rule ("禁止用 not_run 隐藏实际缺口") applied to the
+summary about itself, not only to individual test results.
