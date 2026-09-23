@@ -888,16 +888,40 @@ Run for real against `i-danos_2608_20260922T1655-amd64.hybrid-test.iso`, not
 just exercised on sample input. Of 1522 installed packages: 568 resolved to
 an exact commit (`local_git`), 950 came unchanged from the configured Debian
 mirror (`external_source`), 2 matched the 2105 baseline byte-for-byte
-(`signed_alias`, inherited rather than rebuilt), 2 were built by this
+(`signed_alias`, inherited rather than rebuilt), 1 was built by this
 project's OBS project with no matching `.commit` for the exact version
-installed (`obs_package_revision`) -- and 0 were `unresolved`. Those two
-`obs_package_revision` rows are themselves a real, useful finding rather
-than noise: `linux-signed` and `vyatta-version` are built by OBS but
-`mk-dsc.sh` has no recorded commit for the versions actually on this ISO,
-worth checking before calling this release fully traceable. `vyatta-image-tools`
-resolved correctly to `1923cc0`, today's grub-write-path fix commit --
-confirming the mapping is right on a case already known to be right, not
-just plausible-looking on cases nobody checked.
+installed (`obs_package_revision`), 1 resolved to an exact commit under a
+*different* version string (`local_git_version_stamped`, added after
+checking the two `obs_package_revision` rows below) -- and 0 were
+`unresolved`.
+
+The original two `obs_package_revision` rows were themselves a real, useful
+finding rather than noise, and checking them (rather than accepting them as
+"known gaps") resolved one of the two: `vyatta-version`'s `debian/rules`
+deliberately overrides its package version at build time (`dh_gencontrol -p
+vyatta-version -- -v$(VVERSION)`, `VVERSION` computed from
+`scripts/get_vyatta_version`), stamping the release number ("2608") into
+every installed vyatta-version package regardless of what
+`debian/changelog` says ("1.4", which does have a recorded commit,
+`1faa5269d203f6310fa49f73d7563780e1da18b6`). `mk-release.py`'s
+`resolve_source()` now checks, when the exact installed version has no
+match, whether the same source package has exactly one commit recorded under
+any other version, and resolves that case as `local_git_version_stamped`
+rather than the less specific `obs_package_revision` -- ambiguous cases
+(more than one distinct commit on file for the source) still fall through
+unchanged, so this does not turn into a guess where more than one candidate
+exists.
+
+`linux-signed` remains a genuine `obs_package_revision` gap, not a matching
+bug: there is no local repository for it at all in this checkout (checked:
+no `build-iso/danos-sources/linux-signed`, no `.obs/dsc/linux-signed*`),
+so this is worth deciding on purpose -- either it is legitimately external
+and the category is correct as-is, or it needs a tracked repository the way
+every other rebuilt package has one.
+
+`vyatta-image-tools` resolved correctly to `1923cc0`, today's grub-write-path
+fix commit -- confirming the mapping is right on a case already known to be
+right, not just plausible-looking on cases nobody checked.
 
 `verification-summary.json` lists every P0.5/P1/P2 item this project tracks,
 including the ones not started, with `NOT_RUN` rather than omitting them --
