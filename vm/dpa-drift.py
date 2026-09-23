@@ -54,23 +54,37 @@ from datetime import datetime, timezone
 # appear as "programmed but not desired", which is a false drift report for
 # every route in every non-default VRF. Measured on a box with one routing
 # instance: three ordinary routes reported as programmed-and-unwanted.
-VTYSH = ["sudo", "vtysh", "-c", "show ip route vrf all json"]
-VPLSH = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route"]
+#
+# route6 uses the same shapes and the same VRF-name/table caveats as route --
+# verified live, not assumed: "show ipv6 route vrf all json" nests by VRF
+# exactly like the v4 form, and "dpa object show route6" keys the same
+# "vrf:.../table:.../prefix/scope:N" way. The one real difference found by
+# running both against a live box: route6's DPA state comes back lowercase
+# ("no_support") where route's comes back upper ("NO_SUPPORT"). classify_extra
+# normalizes case so this class does not silently fall through to
+# source_mismatch for a reason that is actually explained.
+VTYSH_CMDS = {
+    "route": ["sudo", "vtysh", "-c", "show ip route vrf all json"],
+    "route6": ["sudo", "vtysh", "-c", "show ipv6 route vrf all json"],
+}
+VPLSH_CMDS = {
+    "route": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route"],
+    "route6": ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show route6"],
+}
 VPLSH_CLASSES = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show"]
 
-# The only class compared. The object view enumerates six.
+# The classes compared. The object view enumerates six.
 #
 # Stated because "clean" would otherwise be read as "everything programmed was
-# checked", and it is one class of six. That is the same shape as the VRF gap
-# this tool had until it was measured: a scope smaller than the report implies,
-# invisible in the numbers.
+# checked", and it is two classes of six. That is the same shape as the VRF
+# gap this tool had until it was measured: a scope smaller than the report
+# implies, invisible in the numbers.
 #
-# route6 has a Desired source and is not yet wired. mpls-route, mroute and
-# mroute6 have one -- "show mpls table json", "show ip mroute json", "show ipv6
-# mroute json" all answer -- but each needs a topology that exercises it before
-# a comparison can be verified rather than merely written. "show vrf" has no
-# JSON form at all.
-COMPARED = {"route"}
+# mpls-route, mroute and mroute6 have a Desired source too -- "show mpls table
+# json", "show ip mroute json", "show ipv6 mroute json" all answer -- but each
+# needs a topology that exercises it before a comparison can be verified
+# rather than merely written. "show vrf" has no JSON form at all.
+COMPARED = {"route", "route6"}
 
 
 def run(cmd):
@@ -84,55 +98,64 @@ def run(cmd):
 
 
 def desired():
-    """(vrf_name, table, prefix) for every route zebra actually pushed down.
+    """(klass, vrf_name, prefix) for every route zebra actually pushed down.
 
-    "show ip route vrf all json" nests by VRF name, where the single-VRF form
-    is a flat map of prefixes. Both shapes are accepted so the tool works
-    against either, and so that an image or FRR that answers the old shape does
-    not silently produce an empty Desired side -- which would read as every
-    route having drifted.
+    One VTYSH call per compared class (route, route6, ...) -- each has its own
+    command, but the same shape and the same guards apply to all of them. "show
+    ip route vrf all json" nests by VRF name, where the single-VRF form is a
+    flat map of prefixes. Both shapes are accepted so the tool works against
+    either, and so that an image or FRR that answers the old shape does not
+    silently produce an empty Desired side -- which would read as every route
+    having drifted.
+
+    Unreadable for *any* compared class fails the whole call, same as before
+    route6 was added: a partial Desired side is worse than none, since it
+    would report the unread class's routes as gone missing rather than as
+    unreadable.
     """
-    rib = run(VTYSH)
-    if rib is None:
-        return None
-    # Flatten {vrf: {prefix: [...]}} and {prefix: [...]} to one prefix map.
-    flat = {}
-    for k, v in rib.items():
-        if isinstance(v, dict):
-            for prefix, entries in v.items():
-                flat.setdefault(prefix, []).extend(entries)
-        elif isinstance(v, list):
-            flat.setdefault(k, []).extend(v)
     out = {}
-    for prefix, entries in flat.items():
-        for e in entries:
-            # The whole point: only what was selected *and* installed.
-            if not (e.get("selected") and e.get("installed")):
-                continue
-            # vrfName, not vrfId. The numbers are separate namespaces --
-            # DANOS's default VRF is 1 and zebra's is 0 -- and comparing them
-            # made every route on a healthy box look like drift.
-            # (vrf, prefix). The table is deliberately not in the compared
-            # key.
-            #
-            # "table 254 in VRF RED" and "table 256 in vrfRED" are the same
-            # table: DANOS numbers a table per VRF and each VRF's main table is
-            # 254, while the kernel numbers them globally and gives vrfRED 256.
-            # Comparing the numbers reports every route in every non-default
-            # VRF as drift, which is what was measured before this changed.
-            # The number is kept as an attribute so it can still be read.
-            out[(e.get("vrfName", "default"), prefix)] = {
-                "protocol": e.get("protocol", "?"),
-                "table": e.get("table"),
-                "scope": e.get("scope"),
-                "next_hop_group": e.get("nexthopGroup", e.get("nextHopGroup")),
-                "source": e.get("source", e.get("protocol", "?")),
-            }
+    for klass in sorted(COMPARED):
+        rib = run(VTYSH_CMDS[klass])
+        if rib is None:
+            return None
+        # Flatten {vrf: {prefix: [...]}} and {prefix: [...]} to one prefix map.
+        flat = {}
+        for k, v in rib.items():
+            if isinstance(v, dict):
+                for prefix, entries in v.items():
+                    flat.setdefault(prefix, []).extend(entries)
+            elif isinstance(v, list):
+                flat.setdefault(k, []).extend(v)
+        for prefix, entries in flat.items():
+            for e in entries:
+                # The whole point: only what was selected *and* installed.
+                if not (e.get("selected") and e.get("installed")):
+                    continue
+                # vrfName, not vrfId. The numbers are separate namespaces --
+                # DANOS's default VRF is 1 and zebra's is 0 -- and comparing
+                # them made every route on a healthy box look like drift.
+                # (klass, vrf, prefix). The table is deliberately not in the
+                # compared key.
+                #
+                # "table 254 in VRF RED" and "table 256 in vrfRED" are the same
+                # table: DANOS numbers a table per VRF and each VRF's main
+                # table is 254, while the kernel numbers them globally and
+                # gives vrfRED 256. Comparing the numbers reports every route
+                # in every non-default VRF as drift, which is what was
+                # measured before this changed. The number is kept as an
+                # attribute so it can still be read.
+                out[(klass, e.get("vrfName", "default"), prefix)] = {
+                    "protocol": e.get("protocol", "?"),
+                    "table": e.get("table"),
+                    "scope": e.get("scope"),
+                    "next_hop_group": e.get("nexthopGroup", e.get("nextHopGroup")),
+                    "source": e.get("source", e.get("protocol", "?")),
+                }
     return out
 
 
 def programmed():
-    """(vrf_name, table, prefix) -> list of programmed entries.
+    """(klass, vrf_name, prefix) -> list of programmed entries.
 
     A *list*, because the data plane can legitimately hold more than one entry
     for one compared key. Its LPM keys on (prefix, depth, scope) and the
@@ -146,40 +169,46 @@ def programmed():
     basis for repairing them, which is why the duplicate-key guard was written
     before it had ever fired -- and it fired on its first run against a real
     box.
+
+    One VPLSH call per compared class -- "dpa object show route" does not
+    include route6 objects, confirmed by running both separately against a
+    live box.
     """
-    doc = run(VPLSH)
-    if doc is None:
-        return None
     out = {}
-    for o in doc.get("dpa_objects", {}).get("objects", []):
-        # "vrf:default/table:254/10.73.0.0/24/scope:0"
-        parts = o["key"].split("/")
-        if len(parts) < 3 or not parts[0].startswith("vrf:"):
-            continue
-        vrf = parts[0][4:]
-        table = int(parts[1][6:])
-        scope = None
-        body = parts[2:]
-        if body and body[-1].startswith("scope:"):
-            scope = int(body[-1][6:])
-            body = body[:-1]
-        prefix = "/".join(body)
-        # Absent is not False.
-        #
-        # An image built before the data plane reported ownership has no such
-        # field, and defaulting it to False turns "this image cannot say" into
-        # "this object is not owned" -- which then reports every reserved route
-        # as drift. That is the same confusion the producing side avoids by
-        # emitting the field on every object, reintroduced here by a default
-        # argument. None means unknown and is handled as its own case.
-        out.setdefault((vrf, prefix), []).append(
-            {"table": table, "scope": scope, "state": o.get("state"),
-             "backend": o.get("backend"),
-             "owned": o.get("dataplane_owned"),
-             "protocol": o.get("protocol"),
-             "source": o.get("source"),
-             "next_hop_group": o.get("nexthop_group", o.get("next_hop_group")),
-             "dependencies": o.get("dependencies", [])})
+    for klass in sorted(COMPARED):
+        doc = run(VPLSH_CMDS[klass])
+        if doc is None:
+            return None
+        for o in doc.get("dpa_objects", {}).get("objects", []):
+            # "vrf:default/table:254/10.73.0.0/24/scope:0"
+            parts = o["key"].split("/")
+            if len(parts) < 3 or not parts[0].startswith("vrf:"):
+                continue
+            vrf = parts[0][4:]
+            table = int(parts[1][6:])
+            scope = None
+            body = parts[2:]
+            if body and body[-1].startswith("scope:"):
+                scope = int(body[-1][6:])
+                body = body[:-1]
+            prefix = "/".join(body)
+            # Absent is not False.
+            #
+            # An image built before the data plane reported ownership has no
+            # such field, and defaulting it to False turns "this image cannot
+            # say" into "this object is not owned" -- which then reports every
+            # reserved route as drift. That is the same confusion the
+            # producing side avoids by emitting the field on every object,
+            # reintroduced here by a default argument. None means unknown and
+            # is handled as its own case.
+            out.setdefault((klass, vrf, prefix), []).append(
+                {"table": table, "scope": scope, "state": o.get("state"),
+                 "backend": o.get("backend"),
+                 "owned": o.get("dataplane_owned"),
+                 "protocol": o.get("protocol"),
+                 "source": o.get("source"),
+                 "next_hop_group": o.get("nexthop_group", o.get("next_hop_group")),
+                 "dependencies": o.get("dependencies", [])})
     return out
 
 
@@ -222,16 +251,22 @@ def classify_extra(p, k, cov):
     if unowned(p, k):
         return "reserved_owned"
     e = p[k][0]
-    if e["state"] in ("PARTIAL", "NOT_NEEDED"):
+    # Case-insensitive: route's DPA state comes back upper ("NO_SUPPORT"),
+    # route6's comes back lower ("no_support") -- measured live, not assumed.
+    # Comparing case-sensitively would let route6's own unsupported objects
+    # fall through to source_mismatch, which is unexplained-and-persistent --
+    # exactly the category this classifier exists to keep them out of.
+    state = (e["state"] or "").upper()
+    if state in ("PARTIAL", "NOT_NEEDED"):
         return "transient_in_flight"
-    if e["state"] in ("NO_RESOURCE", "NO_SUPPORT"):
+    if state in ("NO_RESOURCE", "NO_SUPPORT"):
         return "unsupported_or_unreadable"
     if e["dependencies"]:
         return "next_hop_dependency"
     return "source_mismatch"
 
 
-def classify_missing(cov):
+def classify_missing(klass, cov):
     """Why a desired-not-programmed key might not be programmed yet.
 
     The programmed side has nothing under this key at all -- no DPA state to
@@ -241,7 +276,7 @@ def classify_missing(cov):
     "observed" and it is the state machine's job, not a single snapshot's, to
     tell a route still in flight from one that is never coming.
     """
-    if cov and "route" not in cov.get("enumerable", []):
+    if cov and klass not in cov.get("enumerable", []):
         return "unsupported_or_unreadable"
     return "observed"
 
@@ -311,14 +346,14 @@ def main():
         "programmed_entries": sum(len(v) for v in p.values()),
         "matched": len(matched),
         "desired_not_programmed": [
-            {"vrf": k[0], "prefix": k[1], "protocol": d[k]["protocol"],
+            {"class": k[0], "vrf": k[1], "prefix": k[2], "protocol": d[k]["protocol"],
              "table": d[k]["table"], "scope": d[k]["scope"],
              "next_hop_group": d[k]["next_hop_group"], "source": d[k]["source"],
-             "classification": classify_missing(cov)}
+             "classification": classify_missing(k[0], cov)}
             for k in missing
         ],
         "programmed_not_desired": [
-            {"vrf": k[0], "prefix": k[1],
+            {"class": k[0], "vrf": k[1], "prefix": k[2],
              "state": p[k][0]["state"], "backend": p[k][0]["backend"],
              "table": p[k][0]["table"],
              "scope": p[k][0]["scope"],
@@ -330,14 +365,14 @@ def main():
             for k in extra
         ],
         "dataplane_owned": [
-            {"vrf": k[0], "prefix": k[1], "classification": "source_mismatch"}
+            {"class": k[0], "vrf": k[1], "prefix": k[2], "classification": "source_mismatch"}
             for k in owned
         ],
         # No longer a fault: more than one entry under a compared key is a
         # legitimate state the data plane can be in. Reported so that the
         # count on each side is explainable rather than merely consistent.
         "multi_entry": [
-            {"vrf": k[0], "prefix": k[1],
+            {"class": k[0], "vrf": k[1], "prefix": k[2],
              "scopes": sorted(e["scope"] for e in p[k] if e["scope"] is not None)}
             for k in sorted(p) if len(p[k]) > 1
         ],
@@ -363,17 +398,17 @@ def main():
                 print("  programmed %s" % (k,))
         else:
             for e in result["desired_not_programmed"]:
-                print("  DESIRED NOT PROGRAMMED  vrf:%(vrf)s/%(prefix)s  "
+                print("  DESIRED NOT PROGRAMMED  %(class)s vrf:%(vrf)s/%(prefix)s  "
                       "from %(protocol)s, zebra table %(table)s" % e)
             for e in result["programmed_not_desired"]:
-                print("  PROGRAMMED NOT DESIRED  vrf:%(vrf)s/%(prefix)s  "
+                print("  PROGRAMMED NOT DESIRED  %(class)s vrf:%(vrf)s/%(prefix)s  "
                       "%(state)s on %(backend)s, dp table %(table)s" % e)
             for e in result["dataplane_owned"]:
-                print("  dataplane-owned, not drift  vrf:%(vrf)s/%(prefix)s"
+                print("  dataplane-owned, not drift  %(class)s vrf:%(vrf)s/%(prefix)s"
                       % e)
         for e in result["multi_entry"]:
-            print("  %d entries under one key  vrf:%s/%s  scopes %s"
-                  % (len(e["scopes"]), e["vrf"], e["prefix"], e["scopes"]))
+            print("  %d entries under one key  %s vrf:%s/%s  scopes %s"
+                  % (len(e["scopes"]), e["class"], e["vrf"], e["prefix"], e["scopes"]))
 
     if keyspace_broken:
         return 3
@@ -473,7 +508,7 @@ def watch(interval, cycles, as_json, stale_after=3, confirm_after=3):
         cov = coverage()
         missing = set(d) - set(p)
         extra = set(k for k in set(p) - set(d) if unowned(p, k))
-        now = {("missing",) + k: classify_missing(cov) for k in missing}
+        now = {("missing",) + k: classify_missing(k[0], cov) for k in missing}
         now.update({("extra",) + k: classify_extra(p, k, cov) for k in extra})
 
         for key, classification in now.items():
@@ -493,7 +528,7 @@ def watch(interval, cycles, as_json, stale_after=3, confirm_after=3):
                 "desired": len(d),
                 "programmed_keys": len(p),
                 "disagreements": [
-                    {"kind": k[0], "vrf": k[1], "prefix": k[2],
+                    {"kind": k[0], "class": k[1], "vrf": k[2], "prefix": k[3],
                      "cycles": n, "classification": v["classification"],
                      "state": v["state"]}
                     for n, k, v in persistent
@@ -503,8 +538,8 @@ def watch(interval, cycles, as_json, stale_after=3, confirm_after=3):
             print("cycle %d  desired %d  programmed %d  disagreements %d"
                   % (cycle, len(d), len(p), len(persistent)))
             for n, k, v in persistent:
-                print("    %-8s vrf:%s/%s  %s (%s)  %d cycle%s"
-                      % (k[0], k[1], k[2], v["state"], v["classification"],
+                print("    %-8s %s vrf:%s/%s  %s (%s)  %d cycle%s"
+                      % (k[0], k[1], k[2], k[3], v["state"], v["classification"],
                          n, "" if n == 1 else "s"))
             confirmed = [k for _, k, v in persistent if v["state"] == "confirmed_stale"]
             if confirmed:

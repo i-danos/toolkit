@@ -14,6 +14,7 @@
         "properties": {
           "type": {"enum": ["active", "resolved", "unreadable"]},
           "kind": {"type": "string"},
+          "class": {"type": ["string", "null"]},
           "vrf": {"type": ["string", "null"]},
           "prefix": {"type": ["string", "null"]},
           "cycles": {"type": "integer", "minimum": 1},
