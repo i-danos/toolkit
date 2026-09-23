@@ -903,3 +903,42 @@ just plausible-looking on cases nobody checked.
 including the ones not started, with `NOT_RUN` rather than omitting them --
 the acceptance plan's own rule ("禁止用 not_run 隐藏实际缺口") applied to the
 summary about itself, not only to individual test results.
+
+---
+
+## Open: FIREWALL_DANOS has a narrow timing window, found by accident
+
+Filling the readiness gate's last uncovered condition -- an explicit check
+that a router's qemu process is still the one its pidfile claims, and its
+hostfwd ssh port actually accepts a connection, run before console/ssh/sudo
+checks -- destabilized a suite it has nothing to do with. Six controlled runs
+against the identical ISO: gate wired in, `FIREWALL_DANOS` failed the same
+six cases three times running (HTTP and HTTPS block rules not blocking
+traffic that should have been dropped, among others); gate removed, the same
+suite passed 16/16 twice running. The wiring was reverted (`defd3ac`); the
+check itself (`vm-sanity.sh`) is untouched and still correct on its own.
+
+**What's established:** the gate's per-router `/dev/tcp` probe, run right
+after `boot-topo.sh` and before `prep-router.sh`, can sit close to its own
+3-second timeout when a hostfwd port isn't literally bound the instant
+`console.sock` appears. Three routers' worth of that shifts when router
+configuration starts by several real seconds -- and `FIREWALL_DANOS`
+specifically, not the other suites sharing the same boot path, then fails
+consistently. A purely additive, read-only check moving *when* something
+starts should not have been able to change *whether* it passes; that it did
+means something in the dataplane's own startup or in npf's rule-commit path
+has a timing dependency narrow enough for a few seconds of shift to land
+inside it.
+
+**What's not established:** whether this is the same class already recorded
+as defects 6 and 7 (ACL trie rebuilt underneath live readers; deleted rules
+kept matching) resurfacing, or something distinct. Both of those were fixed
+in `vyatta-dataplane` 3.14.33/3.14.34 and this ISO carries versions well past
+that, so if it is the same class, it is an incomplete fix or a different
+manifestation, not the original bug returning unchanged.
+
+Found by accident, kept because the accident is reproducible: this window
+exists in the product independent of whether `vm-sanity.sh` is ever wired
+back in. Anything else that happens to shift router-prep timing by a few
+seconds -- a slower host, a different check added upstream of it, contention
+from something else running -- can land in it too.
