@@ -303,7 +303,7 @@ VERIFICATION_ITEMS = [
     # ordering (P0.5 before P1 before P2). Listed so a reader of this summary
     # sees the whole plan, not just the part that is done.
     ("p1", "dpa_object_model_extension", "NOT_RUN", "not started"),
-    ("p1", "drift_state_machine", "NOT_RUN", "not started"),
+    ("p1", "drift_state_machine", "PASS", "implemented in dpa-drift.py --watch: all eight named states (observed, transient_in_flight, reserved_owned, source_mismatch, next_hop_dependency, unsupported_or_unreadable, stale_candidate, confirmed_stale), promotion arithmetic unit-tested deterministically, classification verified live against a real router. Scope is route only, matching COMPARED in dpa-drift.py; route6/mpls-route/mroute/mroute6/vrf are readable but not yet compared -- P1 items 2-3 (extending the comparison itself, and correlating drift events to commits/transactions) are separate, still NOT_RUN work, not this item."),
     ("p1", "drift_event_correlation", "NOT_RUN", "not started"),
     ("p2", "signed_boot_chain", "NOT_RUN", "not started"),
     ("p2", "physical_nic_dpdk_binding", "NOT_RUN", "not started"),
