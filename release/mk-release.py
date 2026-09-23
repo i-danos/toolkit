@@ -20,7 +20,7 @@ What this produces, under <out>/<release-id>/:
                                        version, source package, where that
                                        source came from
     source-revision-map.json          the same resolution, keyed for lookup,
-                                       with the four non-local_git categories
+                                       with the five non-local_git categories
                                        from the acceptance plan and *why*
                                        each package landed in its category
     build-inputs.json                 OBS project _meta, build.dist, the
@@ -37,6 +37,16 @@ Resolution categories (P0.5 item 3's split of "unknown"):
     local_git         installed version has a matching git commit recorded
                        by mk-dsc.sh at .dsc build time -- traceable to an
                        exact commit in an i-danos repository.
+    local_git_version_stamped
+                       same source package has exactly one recorded commit,
+                       but under a *different* version string than what is
+                       installed -- because the package's own debian/rules
+                       overrides its version at build time (vyatta-version
+                       does this deliberately, stamping the release number
+                       via `dh_gencontrol -- -v$(VVERSION)` so the installed
+                       package always carries "2608" regardless of what
+                       debian/changelog says). Still traceable to an exact
+                       commit; the version mismatch is by design, not a gap.
     obs_package_revision
                        built by OBS (has a Source: entry in the repo's own
                        Packages index) but no matching .commit file for this
@@ -160,11 +170,27 @@ def index_commit_files(dsc_dir):
     return out
 
 
+def index_commits_by_source(commit_index):
+    """{(source, version): sha} -> {source: {(version, sha), ...}}.
+
+    Built from the same index resolve_source() matches exactly against, so a
+    package whose *installed* version has no exact hit can still ask "does
+    this source have exactly one commit recorded, just under some other
+    version" -- the case a build-time version stamp (vyatta-version) creates
+    on purpose, distinct from "no commit was ever recorded for this source".
+    """
+    out = {}
+    for (src, ver), sha in commit_index.items():
+        out.setdefault(src, set()).add((ver, sha))
+    return out
+
+
 def strip_epoch(version):
     return version.split(":", 1)[1] if ":" in version else version
 
 
-def resolve_source(name, version, repo_index, commit_index, baseline):
+def resolve_source(name, version, repo_index, commit_index, baseline,
+                    commits_by_source=None):
     """One installed (name, version) -> a source-revision-map entry."""
     repo_entry = repo_index.get(name)
 
@@ -177,6 +203,26 @@ def resolve_source(name, version, repo_index, commit_index, baseline):
                 "category": "local_git",
                 "source_package": source,
                 "commit": commit,
+            }
+        # No .commit for *this* version -- but if the source has exactly one
+        # recorded commit under some other version, the installed version was
+        # very likely stamped at build time (debian/rules overriding it with
+        # `dh_gencontrol -- -vX`), not actually untracked. Ambiguous (more
+        # than one distinct commit on file) falls through to the honest
+        # "no exact match" case below instead of guessing which one applies.
+        alt = (commits_by_source or {}).get(source)
+        if alt and len(alt) == 1:
+            (alt_ver, alt_sha), = alt
+            return {
+                "category": "local_git_version_stamped",
+                "source_package": source,
+                "commit": alt_sha,
+                "reason": (
+                    f"installed as {version}, but the recorded commit is for "
+                    f"{source} {alt_ver} -- debian/rules stamps this "
+                    "package's version at build time, decoupled from "
+                    "debian/changelog, so the mismatch is expected"
+                ),
             }
         return {
             "category": "obs_package_revision",
@@ -293,7 +339,7 @@ VERIFICATION_ITEMS = [
     ("p0.5", "obs_project_revision_frozen", "PASS", "captured in build-inputs.json"),
     ("p0.5", "unified_release_directory", "PASS", "this directory"),
     ("p0.5", "sbom_generated", "PASS", "sbom.json"),
-    ("p0.5", "source_revision_map", "PASS", "source-revision-map.json, five-category split"),
+    ("p0.5", "source_revision_map", "PASS", "source-revision-map.json, six-category split. Of the two obs_package_revision hits found on i-danos_2608_20260922T1655-amd64.hybrid-test.iso, vyatta-version turned out to have a recorded commit after all -- its debian/rules deliberately stamps the release number as the package version (dh_gencontrol -- -v$(VVERSION)), decoupled from debian/changelog's own '1.4' -- now correctly resolved as local_git_version_stamped. linux-signed has no local repo in this checkout at all and remains a genuine obs_package_revision gap, not a matching bug."),
     ("p0.5", "results_normalized", "PASS", "this file"),
     # 81-case regression, tracked separately because it is per-ISO, not
     # per-project -- re-run and re-record for every release, not copied
@@ -367,6 +413,7 @@ def main():
     # 2. resolve every installed package
     repo_index = parse_repo_packages(args.obs_repo / "Packages")
     commit_index = index_commit_files(args.obs_dir / "dsc")
+    commits_by_source = index_commits_by_source(commit_index)
     baseline = parse_baseline(args.baseline)
     installed = parse_iso_manifest(manifest_path)
 
@@ -374,7 +421,8 @@ def main():
     revmap_rows = []
     category_counts = {}
     for name, version in installed:
-        resolved = resolve_source(name, version, repo_index, commit_index, baseline)
+        resolved = resolve_source(name, version, repo_index, commit_index, baseline,
+                                   commits_by_source)
         category_counts[resolved["category"]] = (
             category_counts.get(resolved["category"], 0) + 1
         )
