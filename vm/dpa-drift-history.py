@@ -15,10 +15,10 @@ def main(path):
         ts=row.get('timestamp'); cycle=row.get('cycle')
         current={}
         for item in row.get('disagreements',[]):
-            key=(item.get('kind'),item.get('vrf'),item.get('prefix'))
+            key=(item.get('kind'),item.get('class'),item.get('vrf'),item.get('prefix'))
             current[key]=item
             if key not in active:
-                active[key]={'kind':key[0],'vrf':key[1],'prefix':key[2],
+                active[key]={'kind':key[0],'class':key[1],'vrf':key[2],'prefix':key[3],
                              'first_cycle':cycle,'first_timestamp':ts}
             active[key]['last_cycle']=cycle; active[key]['last_timestamp']=ts
             active[key]['cycles']=item.get('cycles',1)
