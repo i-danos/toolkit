@@ -47,6 +47,22 @@ total_pass=0
 total_fail=0
 bad=0
 summary=""
+# Suites that never ran because a prerequisite failed, not because nobody
+# tried: "key:reason" pairs. The project's own acceptance vocabulary is
+# PASS/FAIL/BLOCKED/NOT_APPLICABLE/NOT_RUN, and a readiness-gate failure is
+# BLOCKED, not NOT_RUN -- the difference is whether an attempt was made and a
+# specific condition stopped it, which is exactly what's known here and
+# exactly what "NO RESULTS -- the suite did not run" in the totals section
+# below does not say on its own.
+blocked=""
+
+# All suite keys belonging to one topology group, for marking every one of
+# them BLOCKED at once when that group's gate fails -- a reader of the totals
+# section should not have to know which keys map to which topology to
+# understand why three of six rows say BLOCKED and not zero.
+suite_keys_for_topo() {
+	printf '%s\n' "$SUITES" | awk -v t="$1" 'NF==4 && $2==t {print $1}'
+}
 
 run_suite() {
 	local key=$1 file=$2 want=$3
@@ -85,6 +101,9 @@ for topo in ipsec fw bgp; do
 		echo "  rather than run against it -- a suite that fails for this reason"
 		echo "  reads as a product defect." >&2
 		bad=$((bad + 1))
+		for key in $(suite_keys_for_topo "$topo"); do
+			blocked="$blocked$key:readiness gate failed for TOPO=$topo (see above)"$'\n'
+		done
 		continue
 	fi
 	# REST drives the router through a dedicated SSH/curl client at .6.  Keep
@@ -94,6 +113,9 @@ for topo in ipsec fw bgp; do
 		"$HERE/restclient.sh" up || {
 			echo "  REST client did not come up; refusing BGP/REST" >&2
 			bad=$((bad + 1))
+			for key in $(suite_keys_for_topo "$topo"); do
+				blocked="$blocked$key:REST client did not come up"$'\n'
+			done
 			continue
 		}
 	fi
@@ -130,14 +152,30 @@ echo "=== totals ==="
 # absent from the verdict -- its failures counted nowhere, and the total it was
 # missing from still read as complete.
 want_args=$(printf '%s\n' "$SUITES" | awk 'NF==4 {printf "%s=%s ", $1, $4}')
-# shellcheck disable=SC2086  # deliberate word splitting: one key=count per arg
-verdict=$(docker exec -i danos-robot python3 - "$TAG" $want_args <<'PY'
+# base64 each "key:reason" pair so a reason's own spaces and colons can't be
+# mistaken for argument or field separators; the python side decodes them.
+blocked_args=$(printf '%s' "$blocked" | while IFS= read -r line; do
+	[ -n "$line" ] && printf 'BLOCKED:%s ' "$(printf '%s' "$line" | base64 -w0)"
+done)
+# shellcheck disable=SC2086  # deliberate word splitting: one key=count/BLOCKED:... per arg
+verdict=$(docker exec -i danos-robot python3 - "$TAG" $want_args $blocked_args <<'PY'
+import base64
 import glob
 import sys
 import xml.etree.ElementTree as ET
 
 tag = sys.argv[1]
-want = dict((k, int(v)) for k, v in (a.split("=", 1) for a in sys.argv[2:]))
+want_str = [a for a in sys.argv[2:] if not a.startswith("BLOCKED:")]
+want = dict((k, int(v)) for k, v in (a.split("=", 1) for a in want_str))
+# Suites the shell side already knows never ran, and why -- a readiness-gate
+# failure, not silence. Decoded from base64 so a reason's own punctuation
+# can't be mistaken for the "key:reason" separator it was packed with.
+blocked = {}
+for a in sys.argv[2:]:
+    if not a.startswith("BLOCKED:"):
+        continue
+    key, reason = base64.b64decode(a[len("BLOCKED:"):]).decode().split(":", 1)
+    blocked[key] = reason
 if not want:
     print("  NO SUITES -- the expected counts did not reach this program")
     print("VERDICT DIRTY 0 0 0")
@@ -148,7 +186,12 @@ bad = 0
 for key, n in want.items():
     paths = glob.glob("/tests/Test_Automation/results-%s-%s/output.xml" % (tag, key))
     if not paths:
-        print("  %-6s NO RESULTS -- the suite did not run" % key)
+        if key in blocked:
+            print("  %-6s BLOCKED -- %s" % (key, blocked[key]))
+        else:
+            print("  %-6s NO RESULTS -- the suite did not run, and nothing" % key)
+            print("         on the shell side said why -- that gap is itself")
+            print("         worth investigating, not just this suite")
         bad += 1
         continue
     stat = ET.parse(paths[0]).getroot().find("statistics/total/stat")
