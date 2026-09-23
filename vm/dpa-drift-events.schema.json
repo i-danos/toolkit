@@ -18,7 +18,18 @@
           "prefix": {"type": ["string", "null"]},
           "cycles": {"type": "integer", "minimum": 1},
           "first_cycle": {"type": "integer", "minimum": 1},
-          "last_cycle": {"type": "integer", "minimum": 1}
+          "last_cycle": {"type": "integer", "minimum": 1},
+          "classification": {
+            "enum": ["observed", "transient_in_flight", "reserved_owned",
+                     "source_mismatch", "next_hop_dependency",
+                     "unsupported_or_unreadable"]
+          },
+          "state": {
+            "enum": ["observed", "stale_candidate", "confirmed_stale",
+                     "transient_in_flight", "reserved_owned",
+                     "source_mismatch", "next_hop_dependency",
+                     "unsupported_or_unreadable"]
+          }
         }
       }
     }

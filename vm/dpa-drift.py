@@ -3,6 +3,7 @@
 
 Usage: dpa-drift.py [--json]
        dpa-drift.py --watch <seconds> [--cycles N] [--json]
+                     [--stale-after N] [--confirm-after N]
 
 Desired is zebra's RIB, read with "vtysh -c 'show ip route json'".
 Programmed is the data plane's object view, "vplsh -c 'dpa object show route'".
@@ -198,6 +199,53 @@ def unowned(p, k):
     return all(e["owned"] is False for e in p[k])
 
 
+def classify_extra(p, k, cov):
+    """Why a programmed-not-desired key is programmed, if there's a reason.
+
+    Five of this project's eight named drift states are "this is programmed,
+    and here is the legitimate reason it isn't upstream" -- computed once
+    here, not duplicated between the single-snapshot comparison in main() and
+    the persistence-tracking state machine in watch(). Returns one of:
+
+        reserved_owned        the data plane made this for itself
+        transient_in_flight   PARTIAL or NOT_NEEDED -- a program still moving
+        unsupported_or_unreadable
+                               NO_RESOURCE/NO_SUPPORT, or this object's class
+                               is not enumerable on this image at all
+        next_hop_dependency   waiting on something else to program first
+        source_mismatch       none of the above -- programmed for a reason
+                               this tool cannot see, which is itself the
+                               category: not explained, but not yet a
+                               candidate for "gone missing" either, since it
+                               unambiguously *is* there
+    """
+    if unowned(p, k):
+        return "reserved_owned"
+    e = p[k][0]
+    if e["state"] in ("PARTIAL", "NOT_NEEDED"):
+        return "transient_in_flight"
+    if e["state"] in ("NO_RESOURCE", "NO_SUPPORT"):
+        return "unsupported_or_unreadable"
+    if e["dependencies"]:
+        return "next_hop_dependency"
+    return "source_mismatch"
+
+
+def classify_missing(cov):
+    """Why a desired-not-programmed key might not be programmed yet.
+
+    The programmed side has nothing under this key at all -- no DPA state to
+    read a reason from, unlike classify_extra(). "unsupported_or_unreadable"
+    is the one reason this function *can* still give, when the route class
+    itself isn't enumerable on this image; every other case starts as plain
+    "observed" and it is the state machine's job, not a single snapshot's, to
+    tell a route still in flight from one that is never coming.
+    """
+    if cov and "route" not in cov.get("enumerable", []):
+        return "unsupported_or_unreadable"
+    return "observed"
+
+
 def coverage():
     """Which object classes exist, and which of them this compares."""
     doc = run(VPLSH_CLASSES)
@@ -265,7 +313,8 @@ def main():
         "desired_not_programmed": [
             {"vrf": k[0], "prefix": k[1], "protocol": d[k]["protocol"],
              "table": d[k]["table"], "scope": d[k]["scope"],
-             "next_hop_group": d[k]["next_hop_group"], "source": d[k]["source"]}
+             "next_hop_group": d[k]["next_hop_group"], "source": d[k]["source"],
+             "classification": classify_missing(cov)}
             for k in missing
         ],
         "programmed_not_desired": [
@@ -277,12 +326,7 @@ def main():
              "protocol": p[k][0]["protocol"],
              "source": p[k][0]["source"],
              "dependencies": p[k][0]["dependencies"],
-             "classification": (
-                 "reserved_owned" if unowned(p, k) else
-                 "transient_in_flight" if p[k][0]["state"] in ("PARTIAL", "NOT_NEEDED") else
-                 "resource_or_support" if p[k][0]["state"] in ("NO_RESOURCE", "NO_SUPPORT") else
-                 "next_hop_dependency" if p[k][0]["dependencies"] else
-                 "source_mismatch")}
+             "classification": classify_extra(p, k, cov)}
             for k in extra
         ],
         "dataplane_owned": [
@@ -336,8 +380,52 @@ def main():
     return 1 if (missing or extra) else 0
 
 
-def watch(interval, cycles, as_json):
-    """Compare repeatedly and count how long each disagreement persists.
+# Classifications that already have an explanation. An item carrying one of
+# these is not "unexplained absence/presence waiting to be judged" -- it is
+# accounted for, and it stays whatever it is for as long as the classifier
+# keeps saying so. Only the residual category, "observed" (nothing about it
+# explains why it disagrees), is eligible to be promoted toward
+# confirmed_stale -- that is the whole point of naming the other five:
+# separating "drift" from "drift-shaped but actually fine" before a
+# persistence counter ever runs, not after.
+EXPLAINED = {"reserved_owned", "transient_in_flight", "unsupported_or_unreadable",
+             "next_hop_dependency", "source_mismatch"}
+
+
+def advance_state(prior, classification, stale_after, confirm_after):
+    """One item's state machine, one cycle.
+
+    prior is None (never seen before) or the dict this function returned last
+    cycle for the same key. Returns the new tracking dict; its "state" field
+    is one of this project's eight named values.
+
+    An EXPLAINED classification is reported as itself, every cycle, and does
+    not accumulate a streak -- there is nothing to confirm about a route this
+    tool already knows the reason for. Only "observed" counts a streak, and
+    only a streak of the *same* classification: a route that was
+    next_hop_dependency last cycle and is unexplained this cycle has not been
+    unexplained for two cycles, it has been unexplained for one, because
+    whatever was true of it changed.
+    """
+    if classification in EXPLAINED:
+        return {"classification": classification, "state": classification,
+                "streak": 0}
+
+    streak = 1
+    if prior and prior["classification"] == classification:
+        streak = prior["streak"] + 1
+
+    if streak >= stale_after + confirm_after:
+        state = "confirmed_stale"
+    elif streak >= stale_after:
+        state = "stale_candidate"
+    else:
+        state = "observed"
+    return {"classification": classification, "state": state, "streak": streak}
+
+
+def watch(interval, cycles, as_json, stale_after=3, confirm_after=3):
+    """Compare repeatedly and run each disagreement through the state machine.
 
     A single comparison cannot tell drift from a route in flight. The path is
     asynchronous -- zebra pushes, brokerd queues, the data plane programs --
@@ -345,12 +433,19 @@ def watch(interval, cycles, as_json):
     as long as that takes. Every probe written against this pipeline has slept
     for several seconds before reading, for exactly that reason.
 
-    So what is reported is not whether a disagreement exists but how many
-    consecutive cycles it has survived. That is the number a trigger condition
-    would eventually be written against, and collecting it is the reason this
-    runs without repairing anything: the threshold is not known yet, and a loop
-    that acts on an unknown threshold with a whole-session repair would reset
-    the routing plane on a schedule.
+    So what is reported per item is not just whether a disagreement exists but
+    which of the eight named states it is in: five explained ones from
+    classify_extra()/classify_missing(), computed fresh every cycle, and the
+    progression observed -> stale_candidate -> confirmed_stale for the
+    residual that none of the five explain -- see advance_state(). Reaching
+    confirmed_stale needs `stale_after + confirm_after` *consecutive* cycles
+    of that same unexplained classification: no in-flight transaction, no
+    dependency, not reserved, not a source mismatch, the whole time.
+
+    Still not a repair loop, on purpose: the thresholds above are exactly the
+    unknown this collects evidence for, and a loop that acts on an unproven
+    threshold with a whole-session repair would reset the routing plane on a
+    schedule instead of when something is actually wrong.
     """
     seen = {}
     cycle = 0
@@ -375,17 +470,21 @@ def watch(interval, cycles, as_json):
             print(json.dumps({"cycle": 0, "note": msg}) if as_json
                   else "note: " + msg)
 
+        cov = coverage()
         missing = set(d) - set(p)
         extra = set(k for k in set(p) - set(d) if unowned(p, k))
-        now = {("missing",) + k for k in missing} | {("extra",) + k for k in extra}
+        now = {("missing",) + k: classify_missing(cov) for k in missing}
+        now.update({("extra",) + k: classify_extra(p, k, cov) for k in extra})
 
-        for k in now:
-            seen[k] = seen.get(k, 0) + 1
-        for k in list(seen):
-            if k not in now:
-                del seen[k]
+        for key, classification in now.items():
+            seen[key] = advance_state(seen.get(key), classification,
+                                       stale_after, confirm_after)
+        for key in list(seen):
+            if key not in now:
+                del seen[key]
 
-        persistent = sorted(((v, k) for k, v in seen.items()), reverse=True)
+        persistent = sorted(
+            ((v["streak"], k, v) for k, v in seen.items()), reverse=True)
         if as_json:
             print(json.dumps({
                 "cycle": cycle,
@@ -395,16 +494,20 @@ def watch(interval, cycles, as_json):
                 "programmed_keys": len(p),
                 "disagreements": [
                     {"kind": k[0], "vrf": k[1], "prefix": k[2],
-                     "cycles": n} for n, k in persistent
+                     "cycles": n, "classification": v["classification"],
+                     "state": v["state"]}
+                    for n, k, v in persistent
                 ],
             }))
         else:
             print("cycle %d  desired %d  programmed %d  disagreements %d"
                   % (cycle, len(d), len(p), len(persistent)))
-            for n, k in persistent:
-                print("    %-8s vrf:%s/%s  %d cycle%s"
-                      % (k[0], k[1], k[2], n, "" if n == 1 else "s"))
-            if persistent:
+            for n, k, v in persistent:
+                print("    %-8s vrf:%s/%s  %s (%s)  %d cycle%s"
+                      % (k[0], k[1], k[2], v["state"], v["classification"],
+                         n, "" if n == 1 else "s"))
+            confirmed = [k for _, k, v in persistent if v["state"] == "confirmed_stale"]
+            if confirmed:
                 print("    repair, if this persists: vtysh -c 'configure "
                       "terminal' -c 'no fpm address 127.0.0.1' then set it "
                       "again -- whole-session, not per route")
@@ -421,6 +524,13 @@ if "--watch" in sys.argv:
     cycles = None
     if "--cycles" in sys.argv:
         cycles = int(sys.argv[sys.argv.index("--cycles") + 1])
-    sys.exit(watch(interval, cycles, "--json" in sys.argv))
+    stale_after = 3
+    if "--stale-after" in sys.argv:
+        stale_after = int(sys.argv[sys.argv.index("--stale-after") + 1])
+    confirm_after = 3
+    if "--confirm-after" in sys.argv:
+        confirm_after = int(sys.argv[sys.argv.index("--confirm-after") + 1])
+    sys.exit(watch(interval, cycles, "--json" in sys.argv,
+                    stale_after, confirm_after))
 
 sys.exit(main())
