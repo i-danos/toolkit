@@ -906,39 +906,43 @@ summary about itself, not only to individual test results.
 
 ---
 
-## Open: FIREWALL_DANOS has a narrow timing window, found by accident
+## Retracted: the "FIREWALL_DANOS timing window" was a confound, not a finding
 
-Filling the readiness gate's last uncovered condition -- an explicit check
-that a router's qemu process is still the one its pidfile claims, and its
-hostfwd ssh port actually accepts a connection, run before console/ssh/sudo
-checks -- destabilized a suite it has nothing to do with. Six controlled runs
-against the identical ISO: gate wired in, `FIREWALL_DANOS` failed the same
-six cases three times running (HTTP and HTTPS block rules not blocking
-traffic that should have been dropped, among others); gate removed, the same
-suite passed 16/16 twice running. The wiring was reverted (`defd3ac`); the
-check itself (`vm-sanity.sh`) is untouched and still correct on its own.
+An earlier version of this section claimed `vm-sanity.sh` (the readiness
+gate's qemu-process check) destabilized `FIREWALL_DANOS` -- six runs, three
+failing with the gate wired in, three passing without it, read as a causal
+timing effect and used to justify reverting the gate's wiring (`defd3ac`).
 
-**What's established:** the gate's per-router `/dev/tcp` probe, run right
-after `boot-topo.sh` and before `prep-router.sh`, can sit close to its own
-3-second timeout when a hostfwd port isn't literally bound the instant
-`console.sock` appears. Three routers' worth of that shifts when router
-configuration starts by several real seconds -- and `FIREWALL_DANOS`
-specifically, not the other suites sharing the same boot path, then fails
-consistently. A purely additive, read-only check moving *when* something
-starts should not have been able to change *whether* it passes; that it did
-means something in the dataplane's own startup or in npf's rule-commit path
-has a timing dependency narrow enough for a few seconds of shift to land
-inside it.
+That comparison had a real flaw: the two blocks of runs were sequential, not
+interleaved -- all three "with the gate" first, then all three "without"
+after. A sequential before/after comparison cannot distinguish "the change
+caused this" from "something else changed during the time it took to run
+both blocks", and something else genuinely had changed: this same session
+hit a severe host memory crisis in exactly that window (down to ~3Gi free of
+22Gi, swap nearly full -- severe enough that the harness's own low-memory
+protection killed an unrelated background wait loop partway through), which
+eased across the gap between the two blocks.
 
-**What's not established:** whether this is the same class already recorded
-as defects 6 and 7 (ACL trie rebuilt underneath live readers; deleted rules
-kept matching) resurfacing, or something distinct. Both of those were fixed
-in `vyatta-dataplane` 3.14.33/3.14.34 and this ISO carries versions well past
-that, so if it is the same class, it is an incomplete fix or a different
-manifestation, not the original bug returning unchanged.
+Re-tested properly on request: the exact original gate, re-applied fresh,
+passed `FIREWALL_DANOS` 16/16 three separate times under normal host load
+(one of those runs also correctly caught a genuine, unrelated router-boot
+failure and refused to waste time on it -- the gate doing its job). Three
+further isolation tests -- a flat sleep matching the gate's worst-case added
+delay, the network probe alone, and the pidfile/proc/socket checks alone,
+none of the others active in each -- all passed 16/16 too, which argues
+against a delay-based mechanism specifically, not just against the gate in
+general.
 
-Found by accident, kept because the accident is reproducible: this window
-exists in the product independent of whether `vm-sanity.sh` is ever wired
-back in. Anything else that happens to shift router-prep timing by a few
-seconds -- a slower host, a different check added upstream of it, contention
-from something else running -- can land in it too.
+**Corrected: there is no established timing window, and the gate is
+re-wired** (`ab448b5`). Whatever made the original three runs fail was most
+plausibly the host itself struggling under the memory crisis, not
+`FIREWALL_DANOS`'s own logic -- though that was never confirmed either, since
+by the time it was worth confirming, the pressure had already passed. If this
+resurfaces, the first thing to check is host memory/swap state at the moment
+of failure, not the test harness's own recent changes.
+
+The mistake worth keeping on record is procedural: run paired comparisons
+interleaved, not as two back-to-back blocks, especially on a host shared with
+other work whose load is not under this project's control. This one cost a
+correctly-working readiness check several hours of being wrongly blamed and
+sitting reverted.
