@@ -1459,3 +1459,54 @@ the other three as `external_source`).
 Not yet known: where in the live-build sequence the manifest is written, and
 whether the two extra names (`libfribidi0`, `shared-mime-info`) are removed by a
 hook; only the difference was established, not its cause.
+
+---
+
+## The MOK enrollment an operator has to do, walked through
+
+The Secure Boot chain only boots once the OBS certificate is a MOK (see the
+Secure Boot section). Until now the tests wrote it into NVRAM directly; this is
+the flow an operator actually follows, on the installed UEFI system:
+`vm/mok-import.sh` for the first half, MokManager driven by key presses for the
+second, a screenshot at each step (`steps/`).
+
+1. Boot the installed system with Secure Boot **supported but off**
+   (`SecureBootEnable=0`, on the Secure Boot firmware) and `mokutil --import`.
+2. Turn Secure Boot on, reboot. shim starts MokManager (`attempting to load
+   \EFI\debian\mmx64.efi`, `Verification succeeded`: it is signed by the Debian
+   CA that shim carries). Screens, in order: "Press any key to perform MOK
+   management" (10 s), "Perform MOK management" (Continue boot / Enroll MOK / ...),
+   "[Enroll MOK]" (View key 0 / Continue), the key's details, "Enroll the
+   key(s)?" (defaults to **No**), "Password:", then a menu whose first item is
+   Reboot.
+3. After Reboot the same boot entry goes shim -> GRUB menu -> `login:`, with
+   Secure Boot on. In the guest: `mokutil --sb-state` = `SecureBoot enabled`,
+   `mokutil --list-enrolled` lists `CN=home:i-danos OBS Project` (valid to
+   2028-10-29) beside `Debian Secure Boot CA`, and the kernel logs `Secure boot
+   enabled`. MokManager's "View key 0" showed issuer/subject `CN=home:i-danos
+   OBS Project`, Code Signing, and a SHA-1 fingerprint and serial that match the
+   certificate byte for byte (checked against `openssl` on the host).
+
+**Four things an operator will hit** (all reproduced, none fixed -- they are
+properties of mokutil, shim and this kernel, and the third is worth a line in a
+deployment note):
+
+- `mokutil` refuses on firmware with no Secure Boot at all ("This system doesn't
+  support Secure Boot"), so the firmware must be a Secure Boot build with
+  Secure Boot switched off, not a non-enforcing one.
+- **`mokutil --import` silently does nothing for this certificate.** It prints
+  `Already in kernel trusted keyring. Skip <file>` and exits 0, because the
+  kernel has the certificate built in (`Loaded X.509 cert 'Vyatta Secure Boot
+  DB: ...'`). The kernel's keyring is not shim's MOK list, which is what GRUB
+  and the kernel are verified against, so nothing is submitted and the next boot
+  fails with "Verification failed". `--ignore-keyring` is the option that submits it.
+- The request is **consumed even when nothing is enrolled.** A first attempt
+  pressed a Shift key to get past the 10-second gate; a modifier alone produces
+  no key event in UEFI, MokManager timed out, continued to boot, and both
+  `MokNew` and `MokAuth` were gone from NVRAM with no `MokList` created. The
+  operator sees the shim error on the next boot and has to import again.
+- A second key press at the wrong moment is a choice: the menu opens on
+  "Continue boot", and extra key presses after the gate carried it on to boot.
+
+Not covered here: dbx/SBAT revocation, and behaviour after the certificate
+expires on 2028-10-29.
