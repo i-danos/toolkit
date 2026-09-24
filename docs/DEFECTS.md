@@ -1510,3 +1510,38 @@ deployment note):
 
 Not covered here: dbx/SBAT revocation, and behaviour after the certificate
 expires on 2028-10-29.
+
+---
+
+## SBAT revocation and certificate expiry, measured
+
+Same ISO and the same NVRAM (OBS certificate enrolled), Secure Boot firmware.
+
+**SBAT.** The ISO's GRUB declares `grub,5`, `grub.debian,5`, `grub.debian13,1`;
+shim's revocation level (`SbatLevel`) is `sbat,1,2025021800 / shim,4 / grub,5`.
+With the level as it is, shim logs `grub, 5` verified and the GRUB menu appears
+(~24 s). With `SbatLevel` set to `grub,6` in the NVRAM (`virt-fw-vars
+--set-sbat-level`), shim logs
+
+```
+component grub, generation 5, was revoked by SbatLevel variable
+Verification failed: Security Policy Violation
+```
+
+and no GRUB menu appears. (A different message from a bad signature's `Security
+Violation`.) The practical consequence for DANOS: this GRUB is at exactly the
+current revocation level, so the day shim or the firmware raises the minimum
+`grub` generation to 6, this image stops booting under Secure Boot until GRUB is
+rebuilt and re-signed from a newer Debian `grub2`. Nothing in the image or the
+release process tracks that.
+
+**Expiry.** With the VM clock set to 2030-01-01 (the guest's `date` confirms it),
+past the OBS certificate's 2028-10-29 end, shim, GRUB and the kernel all still
+boot: `Secure boot enabled` in the kernel log, a login prompt. shim does not
+check certificate validity dates, so an expired signing certificate does not
+stop an existing image from booting. Not tested: whether a *new* build signed
+after expiry, or kernel module loading, behaves the same; only the boot chain was.
+
+**Not done: dbx.** A firmware `dbx` entry revoking the shim's signer or hash. It
+is the firmware's own behaviour, not something specific to this image, so it was
+left; the SBAT test above covers the revocation that shim and GRUB enforce.
