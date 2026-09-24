@@ -1036,3 +1036,82 @@ A process note in the same vein as the retraction above: a `rm -f $RUN/*.sock`
 issued while the VM was still running deleted its console socket, leaving it
 reachable only by ssh. The commands now use `"${RUN:?}"` and only clean up
 after the pid is verified gone.
+
+---
+
+## 16. A power cut during `add system image` leaves a machine that cannot boot
+
+Found by `vm/verify-power-loss-more.sh`, the second half of the P2 power-loss
+work. **Fixed in vyatta-image-tools 5.54 (`b8db06c`), not yet verified against a
+rebuilt image.**
+
+Cutting power (SIGKILL of qemu, as the guest sees it) at 13 points across an
+uninterrupted 31s `vyatta-install-image` run on an installed 2608 disk:
+
+| cut at | what was on disk afterwards | outcome |
+|---|---|---|
+| 7.7s - 23.2s (8 points) | nothing, or an unreferenced partial `/boot/upg1/` | old image boots; the retry install completes |
+| **24.7s** | `grub.cfg` default = new image; squashfs truncated | old image came up (see below); retry recovered |
+| **26.3s** | `grub.cfg` default = new image; kernel 0 bytes, initrd 43%, squashfs 89% | **no boot, forever** |
+| 27.8s - 30.9s (3 points) | complete | the new image boots |
+
+The 26.3s disk was kept and reproduced the failure exactly: GRUB prints
+`error: file '/boot/upg1/vmlinuz' not found. error: you need to load the
+kernel first. Press any key to continue...` and returns to the menu whose
+default is the broken entry. Choosing the old image by hand over the console
+boots it normally, so nothing was lost -- but an unattended box does not
+recover without someone at the console.
+
+The 24.7s state (kernel and initrd whole, squashfs truncated) was rebuilt on
+the 26.3s disk by copying the old kernel and initrd in: live-boot prints `BOOT
+FAILED! ... Can not mount /dev/loop0 (/run/live/medium//boot/upg1/upg1.squashfs)`
+and stops at an `(initramfs)` shell. Same result, no automatic fallback.
+
+**Cause.** `install_image()` copies the squashfs, kernel and initrd and
+returns; there is no sync or fsync anywhere in `vyatta-install-image`, its
+functions file, `vyatta_update_grub.pl` or the postinstall scripts. The next
+step rewrites `grub.cfg` -- by writing a temp file and renaming it over the old
+one, which is correct, and which ext4 also flushes eagerly (its replace-via-
+rename heuristic), committing the journal with it. So the file that makes the
+new image the default is durable within seconds, while the several hundred MB
+it points at can sit in the page cache for tens of seconds. Timestamps on the
+26.3s disk agree: `grub.cfg` was written about 8s before the cut, the image
+data was not on disk at the cut.
+
+**Fix.** `sync -f` on the new image's directory (plain `sync` as fallback)
+between the copy and the post-install. Not touched: `cp`'s exit status is
+ignored (`>&/dev/null`, no check), a related weakness left alone because
+`cp --preserve=all` can fail harmlessly on some filesystems and checking it
+would change behaviour.
+
+**One thing not explained.** At 24.7s the machine did come up on the old image
+even though its `grub.cfg` said default = new. The hypothesis is that GRUB read
+`grub.cfg` before ext4 replayed its journal (so it saw the *old* file) and Linux
+replayed it only after mounting -- which would mean the *next* reboot fails the
+same way. That disk was overwritten by the retry before it could be checked, so
+this is a hypothesis, not a finding.
+
+**Not yet verified:** the installer executes *from the ISO being installed*
+(it re-runs itself from the mounted squashfs), so 5.54 only takes effect in an
+ISO built with it. The check is to rerun
+`MODE=upgrade FRACTIONS="0.75 0.8 0.85 ..." vm/verify-power-loss-more.sh` with
+that ISO and confirm the 24-27s window is now clean.
+
+### Cutting power during boot: 9 of 9 clean
+
+Same script, `MODE=boot`: qemu killed 4, 8, 12, 16, 20, 25, 30, 40 and 50
+seconds after it starts (firmware, kernel, initramfs, overlay mount, systemd),
+then booted again. All 9 came back to ssh with a writable filesystem, no failed
+units, the identical `config.boot` and a complete image set. Boot barely writes
+to the disk, so this was expected to be uneventful; it is recorded because that
+was an expectation, not a measurement, until now.
+
+### Two harness mistakes, kept because each read as a product result
+
+1. After a clean reboot into the new image the checker script was gone --
+   `/tmp` does not survive a reboot -- so `running` came back empty and the
+   control run reported "rebooted but not into upg1". The image did boot.
+2. A first look at the control disk left over from a run whose VM was killed
+   mid-first-boot would not accept the login. That is a separate, unexamined
+   question (a cut during the *first boot of a new image*) and is not part of
+   what was measured here.
