@@ -51,9 +51,14 @@ start)
   done
   mkdir -p "$RUN"
   pid_of >/dev/null && { echo "$NAME already running" >&2; exit 1; }
+  # Only the Secure Boot firmware wants variable writes confined to SMM. With
+  # secure=on and a firmware that has no SMM side, the OS cannot write variables at
+  # all: efibootmgr fails, the installer leaves no boot entry, and the disk it
+  # installed "has no bootable option".
+  case "$CODE" in *secboot*) PFLASH_SECURE=on ;; *) PFLASH_SECURE=off ;; esac
   rm -f "${RUN:?}"/*.sock "$RUN/serial.log"
   args=(-name "$NAME" -enable-kvm -cpu host -smp 2 -m 3072
-        -machine "${UEFI_MACHINE:-q35,smm=on}" -global driver=cfi.pflash01,property=secure,value=on
+        -machine "${UEFI_MACHINE:-q35,smm=on}" -global driver=cfi.pflash01,property=secure,value="$PFLASH_SECURE"
         -drive if=pflash,format=raw,unit=0,file="$CODE",readonly=on
         -drive if=pflash,format=raw,unit=1,file="$VARS"
         -chardev socket,id=ser0,path="$RUN/console.sock",server=on,wait=off,logfile="$RUN/serial.log"
