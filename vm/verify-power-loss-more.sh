@@ -111,7 +111,7 @@ push_checker() {
   docker cp "$HERE/imgcheck.py" danos-robot:/tmp/imgcheck.py >/dev/null 2>&1
   docker exec danos-robot sh -c "sshpass -p $PW scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SSHPORT /tmp/imgcheck.py vyatta@192.168.203.1:/tmp/" >/dev/null 2>&1
 }
-imgcheck() { T=240 rootcmd "python3 /tmp/imgcheck.py $EXP_SIZE $EXP_SHA" | tail -1; }
+imgcheck() { T=240 rootcmd "python3 /tmp/imgcheck.py $EXP_ARGS" | tail -1; }
 # The installer's prompts (image name, then save-config and ssh-keys, plus
 # "replace it?" on a retry) all take Yes; the name is the one answer that matters.
 INSTALL="{ echo $PW; printf '$IMG\\nYes\\nYes\\nYes\\nYes\\nYes\\n'; } | sudo -S -p '' /opt/vyatta/sbin/vyatta-install-image http://10.0.2.2:$ISO_PORT/upg.iso 2>&1 | tail -3"
@@ -130,6 +130,16 @@ OLD=$(inspect); echo "old  $OLD"; OLDSHA=$(kv "$OLD" sha)
 EXP_SIZE=$(rootcmd 'stat -c%s /run/live/persistence/vda2/boot/2608/2608.squashfs' | tail -1)
 EXP_SHA=$(rootcmd 'sha256sum /run/live/persistence/vda2/boot/2608/2608.squashfs' | cut -c1-16 | tail -1)
 echo "reference squashfs: size=$EXP_SIZE sha=$EXP_SHA"
+# The image being added may come from a different ISO than the one installed, so
+# its expected squashfs is measured from that ISO's own file when given.
+EXP_ARGS="2608=$EXP_SIZE:$EXP_SHA"
+if [ -n "${UPG_SQUASHFS:-}" ]; then
+  UPG_SIZE=$(stat -c%s "$UPG_SQUASHFS"); UPG_SHA=$(sha256sum "$UPG_SQUASHFS" | cut -c1-16)
+  EXP_ARGS="$EXP_ARGS $IMG=$UPG_SIZE:$UPG_SHA"
+  echo "upgrade squashfs: size=$UPG_SIZE sha=$UPG_SHA (from $UPG_SQUASHFS)"
+else
+  EXP_ARGS="$EXP_ARGS $IMG=$EXP_SIZE:$EXP_SHA"
+fi
 BASEIMG=$(imgcheck); echo "base images: $BASEIMG"
 case "$BASEIMG" in *"default_state=ok"*) ;; *) echo "BLOCKED: base images are not complete"; exit 1 ;; esac
 
@@ -154,8 +164,12 @@ if [ "$MODE" = upgrade ]; then
     echo "  console: $(console_screen)"; echo "BLOCKED: the completed new image does not boot"; exit 1
   fi
   stop_vm
-  DELAYS=(); for f in $FRACTIONS; do DELAYS+=("$(echo "scale=2; $f * $TU / 1" | bc)"); done
-  echo "cut delays from FRACTIONS=[$FRACTIONS] x ${TU}s: ${DELAYS[*]}"
+  if [ -z "${TRIGGER:-}" ]; then
+    DELAYS=(); for f in $FRACTIONS; do DELAYS+=("$(echo "scale=2; $f * $TU / 1" | bc)"); done
+    echo "cut delays from FRACTIONS=[$FRACTIONS] x ${TU}s: ${DELAYS[*]}"
+  else
+    echo "cuts are triggered by grub.cfg's first change, at +${DELAYS[*]} seconds"
+  fi
 else
   stop_vm
 fi
@@ -163,7 +177,7 @@ fi
 pass=0; fail=0; n=0
 for d in "${DELAYS[@]}"; do
   n=$((n + 1))
-  echo "===== trial $n: cut ${d}s after $([ "$MODE" = boot ] && echo 'qemu starts' || echo 'the install is sent') ====="
+  echo "===== trial $n: cut ${d}s after $([ "$MODE" = boot ] && echo 'qemu starts' || { [ -n "${TRIGGER:-}" ] && echo "grub.cfg first changes" || echo 'the install is sent'; }) ====="
   ov=$OUT/trial-$n.qcow2; rm -f "$ov"; qemu-img create -q -f qcow2 -b "$BASE" -F qcow2 "$ov"
   boot "$ov"
   if [ "$MODE" = upgrade ]; then
@@ -171,6 +185,14 @@ for d in "${DELAYS[@]}"; do
     push_checker
     P=$(qemu_pid) || { echo "  BLOCKED: no qemu pid"; fail=$((fail + 1)); continue; }
     ( gssh "$INSTALL" >/dev/null 2>&1 & )
+    if [ -n "${TRIGGER:-}" ]; then
+      # The dangerous window is "grub.cfg already names the new image, its data is
+      # not on disk yet". Its width does not depend on how long the install
+      # takes, and how long it takes moves with host load (24s to 33s were seen),
+      # so a fraction of the install time can miss it. Wait for the event instead.
+      W=$(T=240 rootcmd 'P=/run/live/persistence/vda2/boot/grub/grub.cfg; o=$(stat -c %.9Y $P); while [ "$(stat -c %.9Y $P)" = "$o" ]; do sleep 0.05; done; echo changed' | tail -1)
+      [ "$W" = changed ] || { echo "  BLOCKED: grub.cfg never changed (got: $W)"; fail=$((fail + 1)); stop_vm; continue; }
+    fi
   else
     P=$(qemu_pid) || { echo "  BLOCKED: no qemu pid"; fail=$((fail + 1)); continue; }
   fi

@@ -1239,3 +1239,45 @@ never match and the check fails on any standard Secure Boot machine, prompting
 `Continue with installation? (Yes/No) [No]`. This is read from the code and
 not yet observed: the check runs only in `add system image <URL>`, which needs
 an installed UEFI system first.
+
+---
+
+## 16, verified: the 5.54 flush closes the window
+
+`vyatta-image-tools` 5.55 (5.54's `sync -f` plus the defect 17 fix) was uploaded
+to OBS, built, pulled into the local repository, and put in a new test ISO
+(`i-danos_2608_20260924T1022`, checked to contain `vyatta-image-tools 5.55`,
+`shim-signed` and `shimx64.efi.signed`). The installer runs from the ISO being
+added, so that ISO was the upgrade source.
+
+**The method changed, because the first one could have given a false pass.**
+Cuts placed at fractions of the install time (24.7s, 26.3s of ~31s) hit the
+window by luck: how long an install takes moved between 24s and 33s with host
+load, and the window is only a few seconds wide. The cut is now triggered by an
+event -- the first change of the shared `grub.cfg` -- and delayed 0, 0.5, 1, 2,
+4 and 6 seconds after it. The window is "grub.cfg names the new image, its data
+is not on disk yet", and it opens at that event whatever the load.
+
+A positive control came first. With the **old** installer (5.53) as the upgrade
+source the same six cuts reproduced the defect, so the method is known to hit it:
+
+| cut after grub.cfg first changes | old installer (5.53) | new installer (5.55) |
+|---|---|---|
+| +0s | harmless: not referenced, orphan dir | harmless: same |
+| **+0.5s** | **FAIL**: referenced, squashfs 511,705,088 of 549,777,408 bytes, default = new image | pass: grub does not reference the new image yet |
+| **+1s** | **FAIL**: squashfs 494,927,872 bytes | pass: new image complete and running |
+| +2s, +4s, +6s | pass (data already written) | pass |
+| total | 4 passed, 2 failed | **6 passed, 0 failed** |
+
+At the offsets where the old installer left a default entry pointing at a
+truncated image, the new one either has not referenced the image yet or already
+has it in full.
+
+**What this does and does not show.** One trial per offset per installer, six
+offsets: the mechanism (flush before pointing grub at the data) and the A/B agree,
+but this is not a large sample. It covers cuts from the first `grub.cfg` change
+onward; cuts earlier in the install were already harmless in the fraction sweeps
+(a partial, unreferenced directory that a retry replaces). It is a guest-visible
+power cut, not a host power failure. The open hypothesis under defect 16 -- that
+GRUB reads `grub.cfg` before ext4 replays its journal, so a broken default can
+be masked for one boot -- is still untested.
