@@ -1328,3 +1328,134 @@ certificate enrolled as a MOK, the ISO (now `i-danos_2608_20260924T1022`, with
   refused the tampered GRUB on the same firmware and NVRAM.
 - The MOK was written into NVRAM directly; MokManager's interactive enrollment
   was not exercised. No dbx/SBAT revocation test.
+
+---
+
+## 19. Under Secure Boot the data plane will not start without an IOMMU (by design)
+
+Found while trying to run `add system image` on the installed UEFI system: on
+the q35 machine the NIC stayed the kernel's `enp0s2` and no `dp0*` interface ever
+appeared. It looked like the data plane failing to claim the NIC; it is the data
+plane deliberately not starting.
+
+**What the machine does.** `vyatta-dataplane.service` is `failed` and restarts in
+a loop. Its `ExecStartPre` `/lib/vplane/vplane-uio` prints
+
+```
+Secure Level / Lockdown enabled and iommu/vfio not available
+```
+
+and exits 255. The script (`vyatta-dataplane/tools/vplane-uio`) hands the NICs to
+DPDK one of three ways: with an IOMMU present (`/sys/kernel/iommu_groups`
+non-empty) it uses `vfio-pci`; without one, if "Secure Level" is on
+(`/sys/kernel/security/securelevel` is 1, **or `dmesg` contains `Secure boot
+enabled`**) it refuses; otherwise it uses `uio_pci_generic`. QEMU's q35 has no
+IOMMU unless one is added, so with Secure Boot on it takes the second branch.
+Without Secure Boot the same disk takes the third and works (`dp0p0s2`). The
+`dmesg: write error` line before it is `dmesg | grep -q` closing its pipe early;
+harmless. On real hardware with VT-d enabled the first branch applies.
+
+**Verified both ways on the same disk and NVRAM:** with Secure Boot and a virtual
+IOMMU (`-machine q35,kernel-irqchip=split -device intel-iommu,intremap=on,caching-mode=on`,
+NIC with `iommu_platform=on,disable-legacy=on`) the data plane is `active`, the
+NIC is bound to `vfio-pci` and comes up as `dp0p0s2` with a DHCP address. Without
+the IOMMU it does not start; with Secure Boot off it starts on `uio_pci_generic`.
+The NIC's name is `dp0p0s2` (bus 0, slot 2): on q35 DANOS uses the
+`dp<F>p<N>s<S>` form. `dp0s2` and `dataplane enp0s2`, which I tried first, are
+not valid there -- part of the first "not claimed" reading was me using the wrong name.
+
+**A deployment requirement, not a defect to fix:** a Secure Boot machine needs an
+IOMMU for the DANOS data plane to run. Nothing in the image says so before the
+service fails.
+
+### A wrong turn, kept because it was convincing
+
+I first explained this as kernel lockdown: enabling lockdown by hand on a working
+machine (`echo integrity > /sys/kernel/security/lockdown`, then restarting the
+data plane) really does give `0 ports available` and `dmesg` says `Lockdown:
+dataplane: direct PCI access is restricted`. But on the actual Secure Boot machine
+`/sys/kernel/security/lockdown` reads `[none]` and there are no `Lockdown:` lines:
+this kernel is built `LOCK_DOWN_KERNEL_FORCE_NONE` and has no lock-down-in-EFI-
+Secure-Boot option, so Secure Boot does not lock it down. The experiment was real
+and the conclusion did not apply. What separated them was reading the kernel's
+state on the machine in question instead of on the one where it was easy to look.
+
+### Two mistakes in the harness that made this look harder than it was
+
+- `console.py` reuses an already-open login, so a second call after making
+  `vyatta` a superuser still ran in the old session, without the new group, and
+  the sandbox stayed. The group was on disk (`vyattasu:x:109:vyatta`, in the
+  overlay's persistent `etc/group`, seen by mounting the disk in another guest).
+  Logging out first, or a fresh session, is what picks it up.
+- A host reboot between sessions took down the `danos-robot` container and the
+  running VMs; the installed disk and its NVRAM survived, the VM did not.
+
+## `add system image` under Secure Boot, observed
+
+With root and a network (the IOMMU setup above) `vyatta-install-image
+http://.../upg.iso` on the Secure Boot system prints, after the download and the
+MD5 check:
+
+```
+Signing check, no match in signature list for /mnt/cdsquash/usr/lib/shim/shimx64.efi.signed
+Warning: secure boot is enabled, but not all signed binaries could be verified ...
+Continue with installation? (Yes/No) [No]:
+```
+
+Answering No quits. This confirms what was read from the code. `check_binary_signatures`
+compares the **subject** of each binary's signing certificate with the subjects in
+the firmware `db` by equality. The shim's signer subject is `...CN=Microsoft
+Windows UEFI Driver Publisher`; `db` holds the *issuer*, `Microsoft Corporation UEFI
+CA 2011`, so it never matches, and the function returns at the first miss without
+looking at GRUB or the kernel. Those are signed by the OBS certificate, which is
+trusted through the shim's MOK and is not in `db`; the check never consults the
+MOK. So on a standard Secure Boot machine, `add system image` always warns and
+defaults to No, even with the OBS certificate correctly enrolled -- a false alarm
+the operator has to override each time, not a functional break. Not changed here:
+fixing it means deciding what the check should trust (issuer, chain, MOK).
+
+## What this closes of the earlier Secure Boot gaps
+
+- The kernel's own view was read: `mokutil --sb-state` says `SecureBoot enabled`,
+  the kernel logs `Secure boot enabled`, lockdown is `[none]`.
+- `add system image` under Secure Boot was run and its check observed (above).
+- Still not done: MokManager's interactive enrollment (the MOK is written into
+  NVRAM), dbx/SBAT revocation, behaviour after the OBS certificate expires
+  2028-10-29.
+
+---
+
+## 20. The ISO's `.packages` manifest is a mid-build snapshot, and the SBOM was built from it
+
+Found by checking that the new ISO's package count had moved after `shim-signed`
+was added: it had not (1522 before and after).
+
+Compared with what is really installed (`var/lib/dpkg/status` inside the ISO's
+squashfs, 1524 packages), the manifest live-build writes next to the ISO
+(`<name>.packages`) **lacks four installed packages** -- `shim-signed`,
+`shim-signed-common`, `mokutil` and `grub-efi-amd64-signed`, the signed-boot
+components an SBOM most needs to show -- and **lists two that are not in the
+image**, `libfribidi0` and `shared-mime-info`. Versions of the packages both
+have agree. The new manifest was identical to the previous ISO's, added and
+removed nothing, although a package list had changed in between. So it is
+captured before the last install step and the hooks that clean up, not from the
+final image.
+
+`mk-release.py` built `sbom.json` and `source-revision-map.json` from that
+manifest, so the P0.5 SBOM the summary marked PASS was incomplete in exactly the
+place this session's Secure Boot work cares about. Not caught earlier because
+every check of it compared the manifest with itself.
+
+**Fixed in `release/mk-release.py`.** The installed set is now read from the
+image's own dpkg status, extracted from the ISO's `/live/filesystem.squashfs`
+(so it works on a release directory, not only on the latest build tree); it
+fails loudly if that cannot be read rather than falling back to the manifest.
+The manifest is still copied verbatim, and `manifest-vs-image.json` records how
+it differs, so the disagreement stays visible. Re-run on the new ISO: 1524
+packages, the four above present (`grub-efi-amd64-signed` as
+`obs_package_revision`, the OBS signing service's product like `linux-signed`;
+the other three as `external_source`).
+
+Not yet known: where in the live-build sequence the manifest is written, and
+whether the two extra names (`libfribidi0`, `shared-mime-info`) are removed by a
+hook; only the difference was established, not its cause.

@@ -8,6 +8,13 @@
 # client blocks the machine, and on a host where qemu can take minutes to start
 # it made a stuck machine look like a refusal.
 #
+# UEFI_MACHINE overrides the machine type (default q35,smm=on) and UEFI_EXTRA adds
+# qemu arguments, e.g. a virtual IOMMU:
+#   UEFI_MACHINE=q35,smm=on,kernel-irqchip=split UEFI_EXTRA="-device intel-iommu,intremap=on,caching-mode=on"
+# and UEFI_NIC the NIC's -device string. Behind a virtual IOMMU the NIC has to say
+# it goes through it, or its DMA bypasses the IOMMU and the driver's addresses do
+# not match: UEFI_NIC=virtio-net-pci,netdev=n0,iommu_platform=on,disable-legacy=on
+#
 # Usage: uefi-vm.sh start <name> <vars.fd> <ssh-port> [--cdrom ISO] [--disk QCOW2]
 #        uefi-vm.sh stop  <name>
 #
@@ -46,14 +53,16 @@ start)
   pid_of >/dev/null && { echo "$NAME already running" >&2; exit 1; }
   rm -f "${RUN:?}"/*.sock "$RUN/serial.log"
   args=(-name "$NAME" -enable-kvm -cpu host -smp 2 -m 3072
-        -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on
+        -machine "${UEFI_MACHINE:-q35,smm=on}" -global driver=cfi.pflash01,property=secure,value=on
         -drive if=pflash,format=raw,unit=0,file="$CODE",readonly=on
         -drive if=pflash,format=raw,unit=1,file="$VARS"
         -chardev socket,id=ser0,path="$RUN/console.sock",server=on,wait=off,logfile="$RUN/serial.log"
         -serial chardev:ser0
         -monitor unix:"$RUN/monitor.sock",server,nowait
-        -netdev user,id=n0,hostfwd=tcp::"$SSHPORT"-:22 -device virtio-net-pci,netdev=n0
+        -netdev user,id=n0,hostfwd=tcp::"$SSHPORT"-:22 -device "${UEFI_NIC:-virtio-net-pci,netdev=n0}"
         -display none -pidfile "$RUN/qemu.pid")
+  # shellcheck disable=SC2206  # deliberate word splitting of extra arguments
+  [ -n "${UEFI_EXTRA:-}" ] && args+=($UEFI_EXTRA)
   [ -n "$CD" ] && args+=(-device ich9-ahci,id=ahci -drive file="$CD",media=cdrom,if=none,id=cd,readonly=on -device ide-cd,drive=cd,bus=ahci.0,bootindex=1)
   [ -n "$DISK" ] && args+=(-drive file="$DISK",if=none,id=hd0,format=qcow2 -device virtio-blk-pci,drive=hd0,bootindex=2)
   nohup setsid qemu-system-x86_64 "${args[@]}" </dev/null > "$RUN/qemu.log" 2>&1 &
