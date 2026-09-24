@@ -363,8 +363,7 @@ VERIFICATION_ITEMS = [
     ("p2", "power_loss_recovery_real_host_and_first_boot", "NOT_RUN", "no real host power loss or disk-cache-ignoring hypervisor was tested, and no cut was placed during the FIRST boot of a newly installed image (a leftover disk from a killed first boot refused the vyatta login; not examined)"),
     ("p2", "signed_boot_chain_live_iso", "PASS", "verify-secure-boot.sh with real OVMF (Secure Boot on, Microsoft keys). The ISO's chain is Debian shim 16.1 (Microsoft-signed) -> GRUB and kernel signed with the OBS project's own self-signed certificate (valid to 2028-10-29). T1 Microsoft keys only: refused by shim ('Verification failed: (0x1A) Security Violation'). T2 OBS certificate enrolled as MOK: boots, kernel logs 'UEFI Secure Boot is enabled', lockdown initialized. T3 one bit flipped in GRUB: refused by shim. T4 one bit flipped in the kernel: GRUB reaches its menu then 'bad shim signature'. T2 vs T4 differ by one bit. Deployment requirement: the OBS certificate must be enrolled as a MOK; without it the ISO does not boot under Secure Boot."),
     ("p2", "signed_boot_chain_installed_disk_and_mok_flow", "NOT_RUN", "only the live ISO was booted under Secure Boot. Not tested: the installed-disk UEFI path (install_grub_efi and the installer's check_binary_signatures; this project's disk installs boot by BIOS), the interactive MokManager enrollment (the MOK was written into NVRAM directly), dbx/SBAT revocation, module signature enforcement beyond lockdown initializing, and behaviour after the OBS certificate expires 2028-10-29."),
-    ("p2", "physical_nic_dpdk_binding", "NOT_RUN", "not started"),
-    ("p2", "power_loss_recovery", "NOT_RUN", "not started"),
+    ("p2", "physical_nic_dpdk_binding", "NOT_RUN", "not started; needs real NIC hardware, which a QEMU virtio test bed cannot stand in for"),
 ]
 
 
