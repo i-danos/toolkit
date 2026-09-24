@@ -114,7 +114,9 @@ def walk(raw, path):
             open(out + "/esp" + full, "wb").write(data)
             # Byte offset of this file's first cluster inside the ISO, assuming
             # it is stored contiguously (true for a freshly written image).
-            files[full] = (esp_off + data_start + (chain(cl)[0] - 2) * spc * bps, sz)
+            # An empty file has no cluster chain at all.
+            first = chain(cl)
+            files[full] = ((esp_off + data_start + (first[0] - 2) * spc * bps) if first else None, sz)
 
 
 walk(img[root_start:root_start + root_sz], "")
@@ -140,7 +142,9 @@ def signer(path, tag):
 
 print("UEFI image at ISO offset %d, %d bytes" % (esp_off, esp_size))
 for f, (o, sz) in sorted(files.items()):
-    if f.upper().endswith(".EFI"):
+    if o is None:
+        print("  %-22s %8d bytes  (empty)" % (f, sz))
+    elif f.upper().endswith(".EFI"):
         tag = os.path.basename(f).replace(".EFI", "").lower()
         print("  %-22s %8d bytes  iso_offset=%-9d signer: %s" % (f, sz, o, signer(out + "/esp" + f, tag)))
     else:
