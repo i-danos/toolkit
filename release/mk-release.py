@@ -16,7 +16,9 @@ What this produces, under <out>/<release-id>/:
 
     <iso-basename>.iso                copied in (or symlinked with --link)
     manifest.txt                      the ISO's own .packages file, verbatim
-    sbom.json                         one row per installed package: name,
+    manifest-vs-image.json            how the ISO's .packages manifest differs from
+                                       what is really installed in the image
+    sbom.json                         one row per package installed in the image: name,
                                        version, source package, where that
                                        source came from
     source-revision-map.json          the same resolution, keyed for lookup,
@@ -69,8 +71,10 @@ Resolution categories (P0.5 item 3's split of "unknown"):
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 DEFAULT_OBS_DIR = Path("/home/aikon/danos/.obs")
@@ -137,6 +141,36 @@ def parse_iso_manifest(manifest_path):
             parts = line.rstrip("\n").split("\t")
             if len(parts) >= 2 and parts[0]:
                 out.append((parts[0], parts[1]))
+    return out
+
+
+def installed_from_iso(iso, workdir):
+    """What is actually installed in the ISO -> [(name, version)], from its own dpkg status.
+
+    The ISO's <name>.packages file is not that. It is written mid-build: on the
+    2608 test ISO it lacked four installed packages (shim-signed,
+    shim-signed-common, mokutil, grub-efi-amd64-signed -- exactly the signed-boot
+    components an SBOM most needs to show) and listed two that the final image does
+    not have, and it was byte-identical to the previous ISO's after a package list
+    change. So the image's own /var/lib/dpkg/status, read out of the squashfs the ISO
+    carries, is the source; the manifest is kept only to say how it differs.
+    """
+    sq = Path(workdir) / "filesystem.squashfs"
+    r = run(["xorriso", "-osirrox", "on", "-indev", str(iso), "-extract",
+             "/live/filesystem.squashfs", str(sq)])
+    if not sq.exists():
+        sys.exit(f"could not extract /live/filesystem.squashfs from {iso}: {r.stderr[-300:]}")
+    r = run(["unsquashfs", "-cat", str(sq), "var/lib/dpkg/status"])
+    sq.unlink()
+    if r.returncode != 0 or not r.stdout:
+        sys.exit(f"could not read var/lib/dpkg/status from the squashfs: {r.stderr[-300:]}")
+    out = []
+    for blk in r.stdout.split("\n\n"):
+        name = re.search(r"^Package: (\S+)", blk, re.M)
+        status = re.search(r"^Status: (.*)", blk, re.M)
+        version = re.search(r"^Version: (\S+)", blk, re.M)
+        if name and version and status and "install ok installed" in status.group(1):
+            out.append((name.group(1), version.group(1)))
     return out
 
 
@@ -338,7 +372,7 @@ VERIFICATION_ITEMS = [
     # P0.5 items 1-3, 5 -- what this script itself produces.
     ("p0.5", "obs_project_revision_frozen", "PASS", "captured in build-inputs.json"),
     ("p0.5", "unified_release_directory", "PASS", "this directory"),
-    ("p0.5", "sbom_generated", "PASS", "sbom.json"),
+    ("p0.5", "sbom_generated", "PASS", "sbom.json, from the image's own dpkg status. Until 2026-09-24 it was built from the ISO's .packages manifest, which is a mid-build snapshot: it lacked shim-signed, shim-signed-common, mokutil and grub-efi-amd64-signed and listed libfribidi0 and shared-mime-info, which are not in the image (DEFECTS.md 20). manifest-vs-image.json records the difference for every release."),
     ("p0.5", "source_revision_map", "PASS", "source-revision-map.json, six-category split. Of the two obs_package_revision hits found on i-danos_2608_20260922T1655-amd64.hybrid-test.iso, vyatta-version turned out to have a recorded commit after all -- its debian/rules deliberately stamps the release number as the package version (dh_gencontrol -- -v$(VVERSION)), decoupled from debian/changelog's own '1.4' -- now correctly resolved as local_git_version_stamped. linux-signed is correctly obs_package_revision, not a gap -- its own Packages entry names 'Maintainer: OBS signing service <obssign@obs.service>', confirming it is the signed-kernel package OBS's signing infrastructure produces as a byproduct of building linux-image, with no source package of its own to check out."),
     ("p0.5", "results_normalized", "PASS", "this file"),
     # 81-case regression, tracked separately because it is per-ISO, not
@@ -363,7 +397,9 @@ VERIFICATION_ITEMS = [
     ("p2", "power_loss_recovery_real_host_and_first_boot", "NOT_RUN", "no real host power loss or disk-cache-ignoring hypervisor was tested, and no cut was placed during the FIRST boot of a newly installed image (a leftover disk from a killed first boot refused the vyatta login; not examined)"),
     ("p2", "signed_boot_chain_live_iso", "PASS", "verify-secure-boot.sh with real OVMF (Secure Boot on, Microsoft keys). The ISO's chain is Debian shim 16.1 (Microsoft-signed) -> GRUB and kernel signed with the OBS project's own self-signed certificate (valid to 2028-10-29). T1 Microsoft keys only: refused by shim ('Verification failed: (0x1A) Security Violation'). T2 OBS certificate enrolled as MOK: boots, kernel logs 'UEFI Secure Boot is enabled', lockdown initialized. T3 one bit flipped in GRUB: refused by shim. T4 one bit flipped in the kernel: GRUB reaches its menu then 'bad shim signature'. T2 vs T4 differ by one bit. Deployment requirement: the OBS certificate must be enrolled as a MOK; without it the ISO does not boot under Secure Boot."),
     ("p2", "signed_boot_chain_installed_disk", "PASS", "the rebuilt ISO (vyatta-image-tools 5.55 + shim-signed) installed to a blank disk under OVMF Secure Boot: install image ran to 'Setting up grub on /dev/vda: OK' (the old ISO died on the missing linuxefi.mod, defect 17). The installed ESP holds shimx64.efi (Microsoft-signed), grubx64.efi (OBS certificate), mmx64.efi and fbx64.efi (Debian CA), BOOTX64.CSV, grub.cfg (defect 18: the old package set wrote no shim). Booted alone with the installer's NVRAM: entry 'Vyatta-vda' -> shim -> GRUB 2.12 -> Vyatta 2608 menu -> node login:. One bit flipped in the installed grubx64.efi (qemu-io on a disk copy): shim stops at 'Verification failed: (0x1A) Security Violation'. Limits: one tamper location; the MOK was written into NVRAM, not enrolled through MokManager."),
-    ("p2", "signed_boot_chain_add_image_check_and_kernel_view", "NOT_RUN", "not done: (1) add system image under Secure Boot and the installer's check_binary_signatures -- needs root and a network in the guest, and on this q35 UEFI machine the data plane never took over the NIC (it stayed enp0s2; dp0s2 'does not exist'), cause not investigated; the reading that the subject comparison can never match the Microsoft-signed shim is from the code, not observed. (2) The kernel's own view (mokutil --sb-state, lockdown): the login sandbox hides both and root was unreachable. (3) MokManager's interactive enrollment. (4) dbx/SBAT revocation. (5) behaviour after the OBS certificate expires 2028-10-29."),
+    ("p2", "signed_boot_chain_kernel_view_and_add_image_check", "PASS", "observed on the installed UEFI system under Secure Boot, with root and a network (needed the IOMMU setup, see secure_boot_dataplane_requires_iommu). Kernel's own view: 'mokutil --sb-state' = SecureBoot enabled, the kernel logs 'Secure boot enabled', /sys/kernel/security/lockdown = [none] (this kernel is LOCK_DOWN_KERNEL_FORCE_NONE, Secure Boot does not lock it down). add system image <URL>: after the download and MD5 check the installer prints 'Signing check, no match in signature list for .../shimx64.efi.signed' and 'Continue with installation? (Yes/No) [No]'. Cause, shown with the certificates: check_binary_signatures compares the signer SUBJECT of each binary with the SUBJECTS in the firmware db; the shim's signer subject is '...CN=Microsoft Windows UEFI Driver Publisher' while db holds its issuer 'Microsoft Corporation UEFI CA 2011', so it never matches, and the function returns at the first miss. GRUB and kernel (OBS certificate, trusted via MOK, not in db) would also miss; the check never consults the MOK. So on a standard Secure Boot machine add system image always warns and defaults to No, even with the certificate enrolled: a false alarm to override, not a functional break. Not changed."),
+    ("p2", "secure_boot_dataplane_requires_iommu", "PASS", "on the q35 UEFI machine with Secure Boot on the data plane did not start and the NIC stayed enp0s2. Cause read from the service's own output and the source: vplane-uio prints 'Secure Level / Lockdown enabled and iommu/vfio not available' and exits 255, by design -- with no IOMMU and Secure Boot on (dmesg contains 'Secure boot enabled') it refuses uio_pci_generic. Verified both ways on the same disk and NVRAM: with a virtual IOMMU (q35 kernel-irqchip=split, intel-iommu, NIC iommu_platform=on) the data plane is active, the NIC is bound to vfio-pci and is dp0p0s2 with a DHCP address; with Secure Boot off it starts on uio_pci_generic. NIC name on q35 is dp0p0s2 (dp<F>p<N>s<S>), not dp0s2. A deployment requirement: a Secure Boot machine needs an IOMMU for the DANOS data plane. A first explanation (kernel lockdown) was wrong: on the real Secure Boot machine lockdown is [none]. Not tested on real hardware with VT-d."),
+    ("p2", "signed_boot_chain_mok_flow_revocation_expiry", "NOT_RUN", "not done: MokManager's interactive enrollment (the MOK was written into NVRAM), dbx/SBAT revocation, and behaviour after the OBS certificate expires 2028-10-29."),
     ("p2", "physical_nic_dpdk_binding", "NOT_RUN", "not started; needs real NIC hardware, which a QEMU virtio test bed cannot stand in for"),
 ]
 
@@ -424,7 +460,19 @@ def main():
     commit_index = index_commit_files(args.obs_dir / "dsc")
     commits_by_source = index_commits_by_source(commit_index)
     baseline = parse_baseline(args.baseline)
-    installed = parse_iso_manifest(manifest_path)
+    with tempfile.TemporaryDirectory(dir=release_dir) as tmp:
+        installed = installed_from_iso(args.iso, tmp)
+    listed = {n.split(":")[0]: v for n, v in parse_iso_manifest(manifest_path)}
+    actual = dict(installed)
+    diff = {
+        "note": "the ISO's .packages manifest is a mid-build snapshot; the SBOM uses the image's own dpkg status",
+        "only_in_image": sorted(set(actual) - set(listed)),
+        "only_in_manifest": sorted(set(listed) - set(actual)),
+        "version_differs": sorted(p for p in actual if p in listed and actual[p] != listed[p]),
+    }
+    (release_dir / "manifest-vs-image.json").write_text(json.dumps(diff, indent=2))
+    print(f"  manifest-vs-image.json  ({len(diff['only_in_image'])} in the image but not the manifest, "
+          f"{len(diff['only_in_manifest'])} the other way)")
 
     sbom_rows = []
     revmap_rows = []
