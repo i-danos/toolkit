@@ -1115,3 +1115,58 @@ was an expectation, not a measurement, until now.
    mid-first-boot would not accept the login. That is a separate, unexamined
    question (a cut during the *first boot of a new image*) and is not part of
    what was measured here.
+
+---
+
+## P2: the Secure Boot chain, measured with real OVMF firmware
+
+`vm/verify-secure-boot.sh` (with `vm/efi-inspect.py`). The ISO's UEFI image was
+read with no root and no mtools, and booted under OVMF with Secure Boot on
+(`OVMF_CODE_4M.secboot.fd`, Microsoft keys enrolled).
+
+**The chain.** Debian shim 16.1, signed by Microsoft (UEFI CA 2011), then
+`GRUBX64.EFI` and the kernel, both signed with the OBS project's own
+certificate (`CN=home:i-danos OBS Project`, self-signed, valid until
+2028-10-29). The shim carries the Debian CA, not the OBS certificate, so the
+firmware accepts the shim and the shim will not accept GRUB unless the OBS
+certificate is enrolled as a MOK. That is a deployment requirement, not a
+defect: a machine with only Microsoft keys and no enrolled OBS certificate
+cannot boot this ISO under Secure Boot, and says so (below).
+
+| test | setup | result |
+|---|---|---|
+| T1 | Microsoft keys only | refused by shim: `Verification failed: (0x1A) Security Violation` (screenshot kept) |
+| T2 | OBS certificate enrolled as MOK | boots: `EFI stub: UEFI Secure Boot is enabled`, `Secure boot enabled`, `LSM: initializing lsm=capability,lockdown` |
+| T3 | T2 + one bit flipped in GRUB | refused by shim |
+| T4 | T2 + one bit flipped in the kernel | GRUB reaches its menu, then `bad shim signature` and refuses the kernel |
+
+T2 and T4 differ by exactly one bit, so the T4 refusal is the signature check
+and not the kernel failing for another reason. The tampered bit was written into
+a private copy of the ISO at the offset `efi-inspect.py` reported (checked by
+comparing those bytes against the extracted files first) and restored after; the
+original ISO was never opened for writing. The MOK was injected into OVMF's
+variable store with `virt-fw-vars` from a scratch virtualenv -- nothing was
+installed system-wide.
+
+The running kernel also logs `Loaded X.509 cert 'Vyatta Secure Boot DB: ...'`,
+a certificate of its own on the platform keyring.
+
+**What this does not show.**
+- Only the **live ISO** boot was tested. The installed-disk UEFI path
+  (`install_grub_efi`, and the installer's own `check_binary_signatures`, which
+  warns when Secure Boot is on and the image's binaries cannot be verified) was
+  not run. The disk installs in this project boot by BIOS.
+- The MOK was written into NVRAM directly. The interactive MokManager
+  enrollment an operator would do was not exercised.
+- One flipped bit in one place per binary. No revocation (dbx, SBAT) test, no
+  test of module signature enforcement beyond seeing `lockdown` initialize.
+- The OBS certificate expires 2028-10-29; nothing here checks what happens to
+  images signed after that.
+
+**A harness finding worth keeping.** OVMF's first line of output took 2s, 68s,
+138s, 192s, 412s and 474s to appear across runs on this host (swap full, other
+projects' VMs running). A fixed 60s window read that slowness as "not refused"
+three times and as "did not boot" once. The clock now starts at the first line
+of real text -- not the first byte, which is only the terminal's reset
+sequence -- and each test's verdict is read from the serial output and a
+screenshot, never from silence.
