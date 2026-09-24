@@ -2,6 +2,12 @@
 """What is the UEFI boot chain on this ISO, and who signed each link?
 
 Usage: efi-inspect.py <iso> <outdir>
+       efi-inspect.py --fat <raw-fat-image> <outdir>
+
+With --fat the input is a raw FAT filesystem (an ESP cut out of an installed
+disk, e.g. with `qemu-img dd -f qcow2 -O raw bs=1M skip=1 count=512 if=disk of=esp.raw`)
+instead of an ISO; the kernel step is skipped and iso_offset is the offset
+inside that image.
 
 Extracts the ISO's El Torito UEFI image (a FAT filesystem embedded in the ISO,
 which needs no root and no mtools to read -- a small FAT12/16 reader is included
@@ -20,7 +26,11 @@ import struct
 import subprocess
 import sys
 
-iso, out = sys.argv[1], sys.argv[2]
+FAT_ONLY = sys.argv[1] == "--fat"
+if FAT_ONLY:
+    iso, out = sys.argv[2], sys.argv[3]
+else:
+    iso, out = sys.argv[1], sys.argv[2]
 os.makedirs(out, exist_ok=True)
 
 
@@ -28,13 +38,17 @@ def sh(*a):
     return subprocess.run(a, capture_output=True, text=True)
 
 
-# Where the UEFI image sits in the ISO and how big it is.
-r = sh("xorriso", "-osirrox", "on", "-indev", iso, "-extract_boot_images", out + "/bi/")
-m = re.search(r"eltorito_img\d+_uefi\.img : offset=(\d+) size=(\d+)", r.stdout + r.stderr)
-if not m:
-    sys.exit("no UEFI El Torito image found in %s" % iso)
-esp_off, esp_size = int(m.group(1)), int(m.group(2))
-img = open(glob_path := [os.path.join(out, "bi", f) for f in os.listdir(out + "/bi") if "uefi" in f][0], "rb").read()
+if FAT_ONLY:
+    esp_off, esp_size = 0, os.path.getsize(iso)
+    img = open(iso, "rb").read()
+else:
+    # Where the UEFI image sits in the ISO and how big it is.
+    r = sh("xorriso", "-osirrox", "on", "-indev", iso, "-extract_boot_images", out + "/bi/")
+    m = re.search(r"eltorito_img\d+_uefi\.img : offset=(\d+) size=(\d+)", r.stdout + r.stderr)
+    if not m:
+        sys.exit("no UEFI El Torito image found in %s" % iso)
+    esp_off, esp_size = int(m.group(1)), int(m.group(2))
+    img = open([os.path.join(out, "bi", f) for f in os.listdir(out + "/bi") if "uefi" in f][0], "rb").read()
 
 bps, spc, rsv, nfat, rootent, tot16, _, spf = struct.unpack_from("<HBHBHHBH", img, 11)
 tot = tot16 or struct.unpack_from("<I", img, 32)[0]
@@ -131,6 +145,9 @@ for f, (o, sz) in sorted(files.items()):
         print("  %-22s %8d bytes  iso_offset=%-9d signer: %s" % (f, sz, o, signer(out + "/esp" + f, tag)))
     else:
         print("  %-22s %8d bytes  (not a PE image)" % (f, sz))
+
+if FAT_ONLY:
+    sys.exit(0)
 
 # The kernel, to be verified the same way.
 k = sh("xorriso", "-osirrox", "on", "-indev", iso, "-extract", "/live/vmlinuz", out + "/vmlinuz")

@@ -2,7 +2,8 @@
 """Runs ON an installed DANOS box, as root. Are the images on disk what the
 boot menu says they are?
 
-Usage: imgcheck.py <expected-squashfs-size> [<expected-squashfs-sha256-prefix>]
+Usage: imgcheck.py <name>=<size>[:<sha256-prefix>] ...
+       imgcheck.py <size> [<sha256-prefix>]        (one expectation for every image)
 
 One line of key=value facts on stdout. The question is not "is there an image"
 but "does every image grub can boot actually exist in full": the shared
@@ -21,8 +22,18 @@ import os
 import re
 import sys
 
-exp_size = int(sys.argv[1])
-exp_sha = sys.argv[2] if len(sys.argv) > 2 else None
+# Two images built from different ISOs have different squashfs files, so the
+# expectation is per image. An image with no expectation is only required to
+# have a squashfs and kernel that are not empty.
+expect = {}
+default = None
+if sys.argv[1].isdigit():
+    default = (int(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else None)
+else:
+    for a in sys.argv[1:]:
+        n, _, v = a.partition("=")
+        sz, _, sha = v.partition(":")
+        expect[n] = (int(sz), sha or None)
 
 root = None
 for c in glob.glob("/run/live/persistence/*"):
@@ -55,9 +66,12 @@ default_image = entry_images[default_idx] if default_idx < len(entry_images) els
 def complete(name):
     b = "%s/boot/%s" % (root, name)
     sq = "%s/%s.squashfs" % (b, name)
+    exp_size, exp_sha = expect.get(name, default) or (None, None)
     try:
-        if os.path.getsize(sq) != exp_size:
+        if exp_size is not None and os.path.getsize(sq) != exp_size:
             return "squashfs-size-%d" % os.path.getsize(sq)
+        if exp_size is None and os.path.getsize(sq) == 0:
+            return "squashfs-empty"
         for k in ("vmlinuz", "initrd.img"):
             if os.path.getsize("%s/%s" % (b, k)) == 0:
                 return "%s-empty" % k
