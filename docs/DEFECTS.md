@@ -973,3 +973,66 @@ interleaved, not as two back-to-back blocks, especially on a host shared with
 other work whose load is not under this project's control. This one cost a
 correctly-working readiness check several hours of being wrongly blamed and
 sitting reverted.
+
+---
+
+## P2: power-loss recovery of an installed system, measured
+
+`vm/verify-power-loss.sh`. An installed 2608 system (fresh `accept-disk-install.sh`
+run, disk written, booted from the disk) has its qemu process SIGKILLed at
+chosen moments during `commit; save` of 40 static routes -- the operation that
+rewrites `/config/config.boot` -- and is then booted again from the same disk.
+A survivor must reach ssh, keep a writable filesystem, have no failed units,
+hold **exactly** the old or the new `config.boot` (by hash, from a no-cut
+control run and the pre-commit baseline), and agree with itself: the routes in
+the file must be the routes zebra is running.
+
+**Result: 23 of 23 cuts that could be judged were clean; 0 partial, corrupt or
+inconsistent configs.** 15 came back with the complete old file, 8 with the
+complete new one. The last sweep placed 10 cuts across the measured 2.02s
+commit+save window (30%-100% of it): old at 0.60, 1.00, 1.21, 1.41, 1.51, 1.61,
+1.71, 1.81 and 1.91s, new at 2.01s -- a single flip with nothing in between,
+which is what an atomic replace looks like. ext4 reported `orphan cleanup` on
+the cut boots, i.e. journal recovery did its job. Boot to ssh took 58-120s.
+
+What this does **not** show. SIGKILL of qemu is a power cut *as the guest sees
+it*: whatever the guest had not handed to the virtual disk is gone. It is not a
+host power failure -- the host's page cache survives -- so it says nothing about
+a hypervisor or disk that ignores flushes. Only one operation was cut
+(config commit and save), and the sweep has one transition sample (1.91s to
+2.01s), not a dense scan of it. No cut was placed during the boot itself, or
+during an image upgrade.
+
+### Three ways the harness was wrong first, recorded because each looked like a
+product failure
+
+1. **"Did not come back to ssh after the cut", 2 of the first 6.** Not a product
+   fault. The disk of a failed trial booted fine when copied and started on its
+   own (57s, config intact), and its journal showed no second boot at all
+   between the cut and the forensic boot -- the replacement VM never ran. The
+   harness restarted after a fixed 3s sleep, but a SIGKILLed qemu on this host
+   (or, for the ~130s case, a SIGTERM then SIGKILL) was measured to take
+   **0.2s, 3.9s, 15s, 32s, 130s and 432s** to actually exit, and
+   until it does it holds the image's write lock and the ssh port. The harness
+   also sent `boot-vm.sh`'s output to `/dev/null`, so the failed start looked
+   like a slow boot. The cause of the slow exits is the host: swap was 100%
+   full (8191/8191 MB) with 8.5 GB of RAM free, on a machine shared with a
+   dozen unrelated VMs. Fixed: `wait_gone` blocks until the process is gone, and
+   a failed post-cut boot now dumps the serial screen and `qemu.log`. The
+   original two failures were not reproduced after the fix (5 of 5 then 10 of
+   10 passed), which is consistent with this explanation but is not a
+   reproduction of it.
+2. **Fixed-second delays are the wrong instrument.** Two runs at the same
+   2.4s gave both answers (old, then new), because how long the commit takes
+   moves with host load and so does the delay at which the file flips. The
+   control run now times its own commit+save and `FRACTIONS` places the cuts at
+   fractions of that.
+3. **`sudo` did not exist over ssh** for the installer-created `vyatta` account
+   (pam_sandbox hides it for anything below `superuser`). The base disk was
+   given `set system login user vyatta level superuser`, which is what
+   `prep-router.sh` does for the test suites too.
+
+A process note in the same vein as the retraction above: a `rm -f $RUN/*.sock`
+issued while the VM was still running deleted its console socket, leaving it
+reachable only by ssh. The commands now use `"${RUN:?}"` and only clean up
+after the pid is verified gone.
