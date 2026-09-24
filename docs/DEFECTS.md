@@ -1281,3 +1281,50 @@ onward; cuts earlier in the install were already harmless in the fraction sweeps
 power cut, not a host power failure. The open hypothesis under defect 16 -- that
 GRUB reads `grub.cfg` before ext4 replays its journal, so a broken default can
 be masked for one boot -- is still untested.
+
+---
+
+## 17 and 18, verified through a real UEFI install of the rebuilt ISO
+
+Same machine setup as the Secure Boot tests: OVMF with Secure Boot on, the OBS
+certificate enrolled as a MOK, the ISO (now `i-danos_2608_20260924T1022`, with
+`vyatta-image-tools` 5.55 and `shim-signed`) and a blank 20 GB disk;
+`console-install.py` drove `install image` from the live system.
+
+- **17 fixed through the installer, not just at the grub-install level.** The
+  installer ran to `Setting up grub on /dev/vda: OK` and `Done.` where the old
+  ISO died on `linuxefi.mod`. The output also shows the 5.54 line, `Flushing
+  the new image to disk...`.
+- **18 confirmed.** The ESP the installer wrote holds `\EFI\debian\shimx64.efi`
+  (Microsoft UEFI CA 2011), `grubx64.efi` (OBS project certificate),
+  `mmx64.efi` and `fbx64.efi` (Debian Secure Boot CA), `BOOTX64.CSV` and
+  `grub.cfg`. The earlier grub-install run against a loop device, on the old
+  package set, wrote `grubx64.efi` and `grub.cfg` only. The one-line
+  `shim-signed` change (`build-iso` `15f95d7`) is what closes it.
+- **The installed disk boots under Secure Boot.** Booted alone, with the NVRAM
+  the installer had written: firmware loaded boot entry `Boot0005 "Vyatta-vda"`
+  = `\EFI\debian\shimx64.efi`, shim started GRUB 2.12, the menu showed `Vyatta
+  2608 (Configured console)`, and the system reached `node login:`.
+- **Tampering is refused.** One bit flipped in the installed
+  `\EFI\debian\grubx64.efi` (offset found by reading the ESP's FAT, changed in a
+  copy of the disk with `qemu-io`; the original was not touched): the same boot
+  entry now stops at shim's `Verification failed: (0x1A) Security Violation`
+  (screenshot kept). Untampered, the same NVRAM boots.
+
+**Not done, and why.**
+- **`add system image` under Secure Boot** (the installer's
+  `check_binary_signatures`) was not run. It needs root and a network inside the
+  guest, and on this machine the data plane never took over the NIC: it stayed
+  the kernel's `enp0s2` (state A/D) after a reset, `dp0s2` was accepted in the
+  configuration with "device dp0s2 does not exist", and `dataplane enp0s2` is
+  rejected. The BIOS test machines show `dp0s3` right after boot. Whether this
+  is the q35 machine's PCI naming (`enp0s2` where i440fx gives `ens3`) or
+  something about UEFI was not investigated. So the reading in the note under
+  defect 18 -- that the subject comparison can never match the Microsoft-signed
+  shim -- is still from the code, not observed.
+- The running kernel's own view (`mokutil --sb-state`, lockdown) was not read:
+  the login sandbox hides `mokutil` and `/sys/kernel/security`, and root was not
+  reachable for the reason above. What shows Secure Boot was on is that shim
+  refused the tampered GRUB on the same firmware and NVRAM.
+- The MOK was written into NVRAM directly; MokManager's interactive enrollment
+  was not exercised. No dbx/SBAT revocation test.
