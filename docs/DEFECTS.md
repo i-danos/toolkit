@@ -1170,3 +1170,72 @@ three times and as "did not boot" once. The clock now starts at the first line
 of real text -- not the first byte, which is only the terminal's reset
 sequence -- and each test's verdict is read from the serial output and a
 screenshot, never from silence.
+
+---
+
+## 17. The image cannot be installed to disk on a UEFI machine
+
+Found by the first UEFI install of this image (`vm/uefi-vm.sh`, OVMF with
+Secure Boot on, `console-install.py` driving `install image` from the live
+system). Every disk install in this project until now booted by BIOS, which is
+why nothing had exercised this path.
+
+The installer partitions the disk correctly (GPT, a 512 MB ESP, an ext4 root)
+and then fails at the boot loader:
+
+```
+Setting up grub on /dev/vda: ERROR: grub-install --uefi-secure-boot --no-floppy ...
+grub-install: error: cannot open `/usr/lib/grub/x86_64-efi/linuxefi.mod': No such file or directory.
+ERROR: Grub failed to install!
+```
+
+**Cause.** `install_grub_efi` passes `grub-install` a hardcoded 55-module list
+(`grub_efi_modules`, "based on grub2/debian/build-efi-images"). GRUB 2.12
+(Debian 13; the image has 2.12-9+deb13u2) folded `linuxefi` into `linux` and
+does not ship `linuxefi.mod`. Compared against the modules the image actually
+has, `linuxefi` is the only one of the 55 that is missing.
+
+**Verified at the grub-install level, not yet through the installer.** The same
+command run against a loop device with a real ESP, in a guest running the same
+GRUB: with `linuxefi` it fails with the message above (rc=1); without it, it
+finishes (rc=0) and writes `/EFI/debian/grubx64.efi` and `grub.cfg`. (The test
+adds `--target=x86_64-efi` and `--no-nvram` because the guest was BIOS-booted;
+a first run without the target silently exercised `i386-pc` and proved
+nothing.) **Fixed in vyatta-image-tools 5.55 (`ff5ffc7`).** The installer runs
+from the ISO being installed, so it needs an ISO built with 5.55 to test the
+real thing.
+
+## 18. Probably: an installed UEFI disk gets no shim, so it cannot boot under Secure Boot
+
+Not confirmed end to end -- listed with what is and is not known.
+
+Known: the image has `shim-unsigned` and `shim-helpers-amd64-signed` (only
+`fbx64.efi.signed` and `mmx64.efi.signed`) but not `shim-signed`, the package
+that provides `usr/lib/shim/shimx64.efi.signed`. The installer's own
+`check_binary_signatures` looks for that exact file. And the ESP that
+`grub-install --uefi-secure-boot` wrote in the test above held only
+`grubx64.efi` and `grub.cfg` -- no `shimx64.efi`, no `BOOTX64.EFI`.
+
+Also known, from the Secure Boot work above: the firmware trusts the Microsoft
+shim, not the OBS-signed GRUB, which is trusted only through the shim's MOK. A
+GRUB with no shim in front of it is therefore refused by the firmware.
+
+Not known: whether the installer, when it runs for real on UEFI with NVRAM, puts
+a boot entry that points at something bootable, and what an installed disk does
+under Secure Boot end to end. Same limit as above -- it needs the rebuilt ISO.
+
+The change made (`build-iso` `15f95d7`) is one line: `shim-signed` in
+`bootloaders-signed.list.chroot` (1.51~1+deb13u1+16.1-2~deb13u1 is on the
+Debian 13 mirror). It is an inference from the evidence, to be confirmed or
+rejected by the UEFI install of the rebuilt ISO.
+
+### A note on `check_binary_signatures`
+
+It compares the *subject* of each binary's signing certificate with the subjects
+of certificates in the firmware's `db`, by equality. The shim is signed by a
+Microsoft leaf certificate (`Microsoft Windows UEFI Driver Publisher`) and `db`
+holds the CA (`Microsoft Corporation UEFI CA 2011`), so as written the shim can
+never match and the check fails on any standard Secure Boot machine, prompting
+`Continue with installation? (Yes/No) [No]`. This is read from the code and
+not yet observed: the check runs only in `add system image <URL>`, which needs
+an installed UEFI system first.
