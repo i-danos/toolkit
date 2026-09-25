@@ -162,12 +162,23 @@ else
 	# networking that is indistinguishable from a system that never booted:
 	# the host side of a hostfwd accepts either way. So configure it over the
 	# console before calling this a boot failure.
+	#
+	# The service alone is not enough: a fresh install has no address on the
+	# management NIC (dp0s3 under qemu user networking, admin-down), so hostfwd
+	# has nothing to reach and sshd never answers.
+	#
+	# Level superuser is needed too: the installer creates the admin account
+	# as a plain admin, whose shell is a sandbox with no systemctl, so every
+	# service check below would report "Host is down" for a healthy system.
+	#
+	# The command has to reach the shell as ONE line with no tab characters.
+	# console.py types it into an interactive vbash, and a tab is completion:
+	# the indented continuation lines this used to send turned into a listing of
+	# operational commands, the set/commit never ran, and the run reported a
+	# product failure that was really garbled input.
 	echo "    no ssh yet; enabling it over the console"
 	timeout 180 "$HERE/console.py" "$RUN/console.sock" "$ADMIN_USER" "$ADMIN_PASS" \
-	  'SID=$$; eval "$(cli-shell-api getSessionEnv $SID)"; cli-shell-api setupSession
-	   vcli -s $SID -c "set service ssh" 2>&1 | grep -vi "node exists" || true
-	   vcli -s $SID -c commit 2>&1 | tail -2
-	   vcli -s $SID -c save 2>&1 | tail -1' 2>&1 | tail -6 | sed 's/^/      /'
+	  'SID=$$; eval "$(cli-shell-api getSessionEnv $SID)"; cli-shell-api setupSession; vcli -s $SID -c "set service ssh" 2>&1 | grep -vi "node exists" || true; vcli -s $SID -c "set interfaces dataplane dp0s3 address dhcp" 2>&1 | grep -vi "node exists" || true; vcli -s $SID -c "set system login user vyatta level superuser" 2>&1 | grep -vi "node exists" || true; vcli -s $SID -c commit 2>&1 | tail -2; vcli -s $SID -c save 2>&1 | tail -1' 2>&1 | tail -6 | sed 's/^/      /'
 	if wait_ssh 180; then
 		record "it booted; ssh needed configuring" PASS "expected on a fresh install"
 	else
@@ -185,24 +196,46 @@ echo "    root      ${root:-unreadable}"
 echo "    cmdline   ${cmdline:-unreadable}"
 echo "    dataplane ${dp:-unreadable}"
 
-case "$root" in
-	*overlay*) record "root is an overlay -- still the live system" FAIL "$root" ;;
-	*ext4*|*/dev/vd*|*/dev/mapper*) record "root is a real filesystem on the disk" PASS "$root" ;;
-	*) record "could not tell what root is" BLOCKED "${root:-unreadable}" ;;
+# An installed DANOS is not a plain ext4 root. It boots as boot=live with a
+# union root (overlay) assembled from the image under /boot/<release>, so
+# "root is an overlay" and "boot=live" are true of the installed system and
+# say nothing about live versus installed. What only a disk boot has is a
+# bootloader-supplied BOOT_IMAGE and vyatta-union under /boot, and a virtio
+# disk partition in use by the guest -- the live CD has neither.
+#
+# The admin account's shell is a sandbox whose /proc/mounts hides the source
+# device, so no '/dev/vda2' line ever appears there. The partition shows up as
+# the persistence layer's path instead (/run/live/persistence/vda2/boot/...),
+# so match that as well as a plain /dev/vd* source.
+mounts=$(ssh_guest "cat /proc/mounts")
+disk=$(printf '%s\n' "$mounts" | grep -m1 -E '^/dev/vd|/run/live/persistence/vd[a-z][0-9]*/boot/' | cut -c1-120)
+echo "    disk mnt  ${disk:-none}"
+
+case "$cmdline" in
+	*BOOT_IMAGE=/boot/*) record "the kernel came from the disk's /boot" PASS "" ;;
+	*) record "the kernel did not come from the disk's /boot" FAIL "${cmdline:-unreadable}" ;;
 esac
 case "$cmdline" in
-	*boot=live*) record "the kernel was told boot=live" FAIL "still the live path" ;;
-	*) record "the kernel was not told boot=live" PASS "" ;;
+	*vyatta-union=/boot/*) record "the root union is assembled from /boot" PASS "" ;;
+	*) record "no vyatta-union=/boot/ on the command line" FAIL "${cmdline:-unreadable}" ;;
 esac
+[ -n "$disk" ] && record "a virtio disk partition is in use by the guest" PASS "$disk" \
+               || record "no /dev/vd* partition in use -- not running from the disk" FAIL ""
 [ "$dp" = active ] && record "the data plane runs on the installed system" PASS "" \
                    || record "the data plane is not running" FAIL "${dp:-unreadable}"
 
 echo
 echo "===== 4. Does it survive its own restart? ====="
 before_root="$root"
-ssh_guest "sudo systemctl reboot" > /dev/null 2>&1
+before_boot=$(ssh_guest "cat /proc/sys/kernel/random/boot_id" | tail -1)
+ssh_guest "echo $ADMIN_PASS | sudo -S -p '' systemctl reboot" > /dev/null 2>&1
 sleep 25
 if wait_ssh "$BOOT_TIMEOUT"; then
+	after_boot=$(ssh_guest "cat /proc/sys/kernel/random/boot_id" | tail -1)
+	# ssh answering proves nothing if the reboot never ran; a new boot_id does.
+	[ -n "$before_boot" ] && [ "$before_boot" != "$after_boot" ] \
+	  && record "it really restarted" PASS "" \
+	  || record "it did not restart" FAIL "boot_id ${before_boot:-unreadable} -> ${after_boot:-unreadable}"
 	after_root=$(ssh_guest "findmnt -no SOURCE,FSTYPE /" | tail -1)
 	after_dp=$(ssh_guest "systemctl is-active vyatta-dataplane" | tail -1)
 	[ "$after_root" = "$before_root" ] \
