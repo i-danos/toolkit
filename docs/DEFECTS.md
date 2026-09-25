@@ -1584,17 +1584,31 @@ the class is enumerable and lists `if:dp0s8.100 no_support sw-dataplane`; the sa
 after `systemctl restart vyatta-dataplane`. With no data plane interfaces configured
 it lists nothing, correctly.
 
-**Not covered -- physical ports.** `dp0s8` and `dp0s9` are never listed. Measured with
-uprobes (addresses from the 3.14.41 dbgsym) across a data plane restart: six
-`if_change_features_mode` calls (lo, pimreg, pim6reg, dp0s8, dp0s9, dp0s8.100 fits
-the count, but the calls were not matched to names), four reached `if_l3_enable`, one
-reached `if_fal_create_l3_intf`, and `dpdk_eth_if_l3_enable` was never called. So the
-data plane does not ask the backend for a router interface for these ports on this
-build, and there is nothing for the class to report. Whether that is upstream
-behaviour or a porting gap is not known; nothing was compared against the 2110
-baseline. The class therefore must not be read as "the interfaces with a hardware L3
-object" -- it is "the ones the data plane asked about", and on these machines that is
-the VLAN interfaces.
+**Not covered -- physical ports, and why (found).** `dp0s8` and `dp0s9` are never
+listed because the data plane never asks the backend for a router interface for them.
+Traced with uprobes (addresses from the 3.14.41 dbgsym, interface name read from the
+ifnet) across a data plane restart. Every interface goes through
+`if_change_features_mode`; `lo`, `pimreg`, `pim6reg` and `dp0s8.100` then reach
+`if_l3_enable`, while `dp0s8` and `dp0s9` stop there. The gate is
+`if_get_emb_feats()`: for an ethernet port it asks `dpdk_eth_if_is_hw_switching_enabled`,
+which returns `ifp->hw_forwarding`, and that returned 0 (probed, ~8 calls per port);
+0 sets `IF_EMB_FEAT_HW_SWITCHING_DISABLED`, `l3_hw_enabled` becomes false, and
+`if_l3_enable` -- hence `dpdk_eth_if_l3_enable` and `if_fal_create_l3_intf` -- is never
+reached. `hw_forwarding` is only set by the `switchport <if> hw-switching enable`
+config command (`switchport.c`); nothing else turns it on. So this is how the code
+is meant to work: a router interface object is for a port switched in hardware, and a
+routed port on a software data plane has none. It is not a porting gap.
+What was not done: turning `hw_forwarding` on to see the port appear. `switchport` is
+a controller config command; `vplsh` only sends operational commands and answers
+"Unknown command". The chain is therefore shown by measurement at each step but the
+last one (flip the flag, see the object) was not.
+
+**Consequence for the class.** "interface" means "the interfaces the data plane asked
+the backend about", not "all L3 interfaces". A reader cannot tell a routed port that
+was never asked from one that does not exist. Reporting such ports with the existing
+`not_needed` state ("not programmed as it is not needed there") would close that, but
+it changes what the class means (objects for which no backend call happened), so it
+is a decision, not done here.
 
 **Known gap.** The recorded state is cleared only from `if_fal_delete_l3_intf`, which
 the caller reaches only when `fal_l3` is non-zero. With no backend it always is zero,
