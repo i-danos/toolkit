@@ -1545,3 +1545,28 @@ after expiry, or kernel module loading, behaves the same; only the boot chain wa
 **Not done: dbx.** A firmware `dbx` entry revoking the shim's signer or hash. It
 is the firmware's own behaviour, not something specific to this image, so it was
 left; the SBAT test above covers the revocation that shim and GRUB enforce.
+
+## DPA object model: nexthop-group class, and a coverage-probe defect
+
+**Added.** `dpa object show nexthop-group` (vyatta-dataplane 3.14.40) walks the
+IPv4 and IPv6 next-hop tables and emits `{class, key, state, backend}` with key
+`inet/idx:N` or `inet6/idx:N`. The index is the slot routes point at, so a route
+can be joined to its group. Verified live on three routers built from the 3.14.40
+ISO: each router enumerated its groups, and every `nh_index` in `vplsh -c 'route
+show'` was present in the enumeration (0 missing, three routers). Indices 0-3 are
+enumerated but not referenced by any zebra route; that fits the four routes the
+data plane installs itself (`reserved_routes` in `route.c`), which are allocated
+first, but the index-to-route mapping was not checked one by one.
+
+**Limits.** State is `no_support` and backend `sw-dataplane` on these machines
+because there is no hardware backend; the programmed-in-hardware case is untested.
+The class is coverage only: zebra has no comparable "desired" view, so it is not in
+`dpa-drift.py`'s `COMPARED` set. Still `not_enumerable`: `qos-if`, `qos-vlan`.
+
+**Defect (older than this change): `probe-dpa-coverage.sh` misreported QoS.** It
+decided `enumerable` by finding the word `dpa_objects` in the reply, but a class with
+no walker answers with the same envelope (`"enumerable":false,"reason":"no walker"`,
+empty `objects`). It therefore reported `qos-if` and `qos-vlan` as `enumerable` --
+the exact "absent vs not carried" confusion the class list exists to prevent. It now
+reads the `enumerable` field, and also covers `vrf` and `nexthop-group`. Any earlier
+coverage JSON that shows the QoS classes as enumerable is wrong.
