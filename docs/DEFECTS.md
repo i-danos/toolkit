@@ -1570,3 +1570,37 @@ empty `objects`). It therefore reported `qos-if` and `qos-vlan` as `enumerable` 
 the exact "absent vs not carried" confusion the class list exists to prevent. It now
 reads the `enumerable` field, and also covers `vrf` and `nexthop-group`. Any earlier
 coverage JSON that shows the QoS classes as enumerable is wrong.
+
+## DPA object model: interface class
+
+**Added.** `dpa object show interface` (vyatta-dataplane 3.14.41) lists the router
+interface each L3 interface asked the backend to create, keyed `if:<name>`, with the
+state and backend that creation returned. The result is stored on the ifnet
+(`fal_l3_pd`, with `fal_l3_pd_set` marking that one exists, because the state's zero
+value is FULL and a zero `fal_l3` handle cannot say *why* there is no object).
+
+**Verified.** On a router with `dp0s8` (address) and `dp0s8.100` (VLAN, address):
+the class is enumerable and lists `if:dp0s8.100 no_support sw-dataplane`; the same
+after `systemctl restart vyatta-dataplane`. With no data plane interfaces configured
+it lists nothing, correctly.
+
+**Not covered -- physical ports.** `dp0s8` and `dp0s9` are never listed. Measured with
+uprobes (addresses from the 3.14.41 dbgsym) across a data plane restart: six
+`if_change_features_mode` calls (lo, pimreg, pim6reg, dp0s8, dp0s9, dp0s8.100 fits
+the count, but the calls were not matched to names), four reached `if_l3_enable`, one
+reached `if_fal_create_l3_intf`, and `dpdk_eth_if_l3_enable` was never called. So the
+data plane does not ask the backend for a router interface for these ports on this
+build, and there is nothing for the class to report. Whether that is upstream
+behaviour or a porting gap is not known; nothing was compared against the 2110
+baseline. The class therefore must not be read as "the interfaces with a hardware L3
+object" -- it is "the ones the data plane asked about", and on these machines that is
+the VLAN interfaces.
+
+**Known gap.** The recorded state is cleared only from `if_fal_delete_l3_intf`, which
+the caller reaches only when `fal_l3` is non-zero. With no backend it always is zero,
+so an interface whose L3 is later disabled keeps its stale `no_support` entry until the
+ifnet is freed. Harmless with no backend; with one, the state is overwritten on the
+next create and cleared on delete. Not exercised.
+
+**Not exercised.** GRE tunnels (the call is wired the same way, via `gre_if_l3_enable`).
+Not compared against zebra: no comparable desired-side view.
