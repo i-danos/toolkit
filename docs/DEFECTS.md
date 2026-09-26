@@ -1411,8 +1411,9 @@ looking at GRUB or the kernel. Those are signed by the OBS certificate, which is
 trusted through the shim's MOK and is not in `db`; the check never consults the
 MOK. So on a standard Secure Boot machine, `add system image` always warns and
 defaults to No, even with the OBS certificate correctly enrolled -- a false alarm
-the operator has to override each time, not a functional break. Not changed here:
-fixing it means deciding what the check should trust (issuer, chain, MOK).
+the operator has to override each time, not a functional break. Fixed in
+vyatta-image-tools 5.56 and 5.57 -- see "21. `check_binary_signatures` rejected a
+bootable image" at the end of this file.
 
 ## What this closes of the earlier Secure Boot gaps
 
@@ -1618,3 +1619,92 @@ next create and cleared on delete. Not exercised.
 
 **Not exercised.** GRE tunnels (the call is wired the same way, via `gre_if_l3_enable`).
 Not compared against zebra: no comparable desired-side view.
+
+## 21. `check_binary_signatures` rejected a bootable image
+
+The two notes above ("A note on `check_binary_signatures`" and "`add system image`
+under Secure Boot, observed") described the symptom and a cause read from the code:
+on any standard Secure Boot machine `add system image` printed `Signing check, no
+match in signature list` and defaulted to No, although the machine boots that image.
+Both notes left the decision open ("what the check should trust: issuer, chain, MOK").
+It was closed in two steps, and the first step was not enough.
+
+**Two causes, not one.**
+
+1. It compared the subject of the binary's *signing* certificate with the subjects in
+   `db`. Firmware verifies a chain up to a `db` entry, and for a Microsoft-signed shim
+   that entry is `Microsoft Corporation UEFI CA 2011`, the issuer; the signer
+   (`Microsoft Windows UEFI Driver Publisher`) is never in `db`.
+2. `sbverify --list` prints one `subject:` line per certificate in the chain and the
+   code read them into one string. Reproduced with the real `shimx64.efi.signed` and a
+   `db` holding the CA: the string had two lines, and no `db` subject can equal it.
+
+**5.56 (`af89a40`, version `edd2628`).** Compares every certificate in the chain with
+every `db` subject, in a helper `sig_chain_in_db` that also tells "no signature" (rc 2)
+from "no match" (rc 1). Unit-tested against the real shim and GRUB: a `db` with the
+Microsoft CA matches shim, an unrelated CA or an empty `db` does not, an unsigned or
+missing file is "no signature". Built into an ISO and installed under OVMF Secure Boot,
+the check on the real installed system **still failed, one binary later**: it passed
+shim and stopped at `grubx64.efi.signed`.
+
+**Why it stopped at GRUB.** This image's GRUB and kernel are signed by the OBS project
+certificate (see the Secure Boot chain above). That certificate is enrolled as a MOK and
+is not in `db`, and it is shim, not the firmware, that verifies GRUB and the kernel
+against the MOK list. Comparing them with `db` alone can never match. The earlier note
+had predicted this ("GRUB and kernel ... would also miss"); 5.56 made it observable
+because shim no longer failed first.
+
+**5.57 (`f87e9c1`).** Exports the MOK certificates with `mokutil --export` and compares
+GRUB and the kernel with `db` plus MOK. Shim stays `db` only: firmware does not consult
+MOK for it, so a MOK-signed shim must not pass. Best effort -- without `mokutil`, or
+with nothing enrolled, only `db` counts, as before. Subjects are printed the same way
+on both sides (`openssl x509 -nameopt compat`), checked against `sbverify`'s output.
+
+**Verified**, on the installed disk of `i-danos_2608_20260926T0757-amd64.hybrid.iso`
+(vyatta-image-tools 5.57) under OVMF Secure Boot, with the certificates the machine
+really has (`db`: the Microsoft CAs; MOK: Debian Secure Boot CA and the OBS project
+certificate): the function shipped in the image returns success and prints nothing.
+Control: the same code with the MOK step disabled fails at GRUB with `no match in
+signature list`, so the pass is the MOK and not a check that cannot fail.
+
+**Not verified.** The interactive `add system image <URL>` run end to end with the new
+installer: it needs an ISO to add and a network path into a Secure Boot guest, and the
+data plane's IOMMU requirement (defect 19) makes that guest awkward to reach. The
+function was exercised directly on the installed system instead. Machines whose `db` or
+MOK differ from the one tested were not tried; in particular a machine that never
+enrolled the OBS certificate still (correctly) fails at GRUB.
+
+**A harness note.** The check was run by typing a script into the guest's serial
+console, because the guest had no address. The first attempt read the return code with
+`echo CHECK_RC=$?` and got `CHECK_RC=` -- the `$?` did not survive the console. Print an
+explicit word (`&& echo PASSED || echo FAILED`) instead. The same console also turns a
+tab into completion, which is the trap described in defect 22.
+
+## 22. `accept-disk-install.sh` reported failures on a healthy install
+
+Four independent harness faults, each of which read as a product failure. Fixed in
+`toolkit` `ef558ba`; the script then passed 14 of 14 on both the test and the product
+image, and the install itself was unchanged throughout.
+
+- **A tab typed into a shell is completion.** The command that enables ssh was
+  multi-line with tab-indented continuation lines. `console.py` types it into an
+  interactive `vbash`, so the tabs produced a listing of operational commands
+  (`traceroute ... twping ... update` in the log), and `set service ssh` and `commit`
+  never ran. It is now one line with no tabs.
+- **No address on the management NIC.** A fresh install leaves `dp0s3` admin-down. ssh
+  through QEMU's `hostfwd` needs an address, so the script also sets
+  `dp0s3 address dhcp`. Checked, not assumed: the configuration read back from the
+  installed disk had no `dp0s3` line until the script wrote it.
+- **The admin account is a sandbox.** The installer creates `vyatta` at level `admin`,
+  whose shell has no `systemctl`; every service check said `Host is down` for a
+  healthy system. The script sets `level superuser` in the same session.
+- **The "live or installed" test could not tell them apart.** An installed DANOS boots
+  as `boot=live` with an overlay root assembled from `/boot/<release>`, so "root is an
+  overlay" and "boot=live" are true of it. The script now requires `BOOT_IMAGE=/boot/`,
+  `vyatta-union=/boot/` and a virtio disk partition in use (`/dev/vda2`, or
+  `/run/live/persistence/vda2/boot/...` where the sandbox hides the device name).
+
+Also found: the restart step ran `sudo systemctl reboot` in the sandbox, which did
+nothing, and ssh kept answering, so "it came back" passed for a machine that never went
+away. It now reboots with `sudo -S` and requires a different `boot_id` afterwards.
+
