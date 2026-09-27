@@ -79,11 +79,15 @@ VPLSH_CMDS = {
 }
 VPLSH_CLASSES = ["sudo", "/opt/vyatta/bin/vplsh", "-l", "-c", "dpa object show"]
 
-# The classes compared. The object view enumerates six.
+# The classes compared. The object view enumerates eight walkable classes as of
+# vyatta-dataplane 3.14.42 (nexthop-group and interface came later, 3.14.40 and
+# 3.14.41 -- this comment used to say "six" and was wrong the moment they
+# shipped; see dpa-coverage-manifest.py, which derives this set from source
+# instead of a comment that can go stale).
 #
 # Stated because "clean" would otherwise be read as "everything programmed was
-# checked", and it is five classes of six. That is the same shape as the VRF
-# gap this tool had until it was measured: a scope smaller than the report
+# checked", and it is five of eight. That is the same shape as the VRF gap
+# this tool had until it was measured: a scope smaller than the report
 # implies, invisible in the numbers.
 #
 # mpls-route is keyed by incoming label alone ("lblspc:0/label:N" on the data
