@@ -24,6 +24,12 @@
 #   tag names the results directories, default "reg".
 set -u
 
+# See release/preflight-gate.sh's header for what each of these checks
+# actually catches -- every one of them has been mistaken for a product
+# failure in this project's own runs.
+HERE_GATE=$(cd "$(dirname "$0")/.." && pwd)
+"$HERE_GATE/release/preflight-gate.sh" --for=vm || exit 1
+
 ISO=${1:?usage: regression.sh <iso> [tag]}
 TAG=${2:-reg}
 HERE=$(cd "$(dirname "$0")" && pwd)
