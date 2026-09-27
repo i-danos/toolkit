@@ -1910,3 +1910,75 @@ power loss on this hardware (P2's power-loss work is QEMU-only). `lspci`/`ethtoo
 present on the product image; NIC and driver identity came from the CLI's own `show
 interfaces dataplane <if> physical` (`driver: net_e1000_igb`, `bus-info: 0000:0N:00.0`),
 not from raw PCI tooling.
+
+## Real hardware: Secure Boot key enrollment, attempted and blocked
+
+Not a defect in this project's own code; recorded as a real-hardware attempt that hit
+firmware limits, plus one genuine tool-behaviour bug found along the way. Same machine as
+the two sections above, same installed 5.57 product image, Secure Boot still `disabled` and
+the platform still in `Setup Mode` from the factory reset the earlier NIC testing left it in.
+
+**Bug found: `mokutil --import` silently no-ops on this build, and the reason is a
+build-time choice, not a fluke.** Extracting the signer of the installed `grubx64.efi` gave
+the expected `CN=home:i-danos OBS Project` certificate (valid to 2028-10-29, matching every
+earlier measurement of this chain). Running `mokutil --import` against it printed `Already
+in kernel trusted keyring. Skip` and created no pending request (`mokutil --list-new` came
+back empty). Traced to `linux-vyatta/debian/rules`:
+
+```
+dh_signobs_getcert debian/certs/obs.pem
+cat debian/certs/obs.pem >> debian/certs/vyatta_db.pem || true
+```
+
+`vyatta_db.pem` is `CONFIG_SYSTEM_TRUSTED_KEYS` for this kernel, so the OBS signing
+certificate is compiled into the kernel's own module-signing trust store on every build that
+doesn't set the `noobs` profile -- confirmed present on the running system via `/proc/keys`
+(`asymmetri home:i-danos OBS Project: ... X509.rsa ...`), while `mokutil --list-enrolled`
+(the actual persistent `MokListRT` shim reads at boot) showed only `Debian Secure Boot CA` --
+the OBS certificate was in neither `MokListRT` nor `db`. `mokutil`'s "already trusted" check
+conflates two unrelated trust domains: the kernel's own key store for verifying signed
+modules, and shim's separate `MokListRT`/`db` used to verify GRUB and the kernel *before*
+Linux ever runs. Being in the first tells you nothing about the second. This is the same
+bug this project's own `mok-import.sh` already works around in QEMU (its header comment
+describes the identical "Already in kernel trusted keyring. Skip" symptom) -- confirmed here
+to reproduce on real hardware with the same real kernel package, not a QEMU-specific
+interaction. The documented fix applies unchanged: `mokutil --import <cert> --hash-file
+<password-hash> --ignore-keyring` does create a real pending request (`mokutil --list-new`
+then showed the OBS certificate's subject).
+
+**Writing `db` directly, tried and refused.** With the platform still in Setup Mode,
+`efi-updatevar -a -e -c <cert.pem> db` (append, unsigned update, only valid in Setup Mode
+per the tool's own `--help`) was attempted so Secure Boot could work without ever touching
+MokManager. Blocked twice: first by this environment's own safety check (modifying a live
+machine's Secure Boot `db` is treated as security-sensitive and needs the operator's own
+hands), then, run by the operator directly at the machine, with `failed to update db :
+operation not permitted`. This firmware does not allow an unauthenticated Setup-Mode `db`
+append from the OS, whatever the spec permits in principle. Not investigated further: no
+independent way to tell whether this is a vendor-firmware restriction, an interaction with
+lockdown, or something about `efivarfs` on this box.
+
+**The Secure Boot toggle is not selectable.** In the firmware's own setup screen, "Secure
+Boot activation" read `Disabled` and could not be changed -- consistent with `mokutil
+--sb-state`'s `Platform is in Setup Mode` (no Platform Key enrolled; several firmwares grey
+out the toggle until one exists). No "Restore Factory Keys" / "Key Management" menu was
+found by inspection; the search was not exhaustive; this is recorded as "not found," not
+as "does not exist."
+
+**MokManager fires independently of the toggle, and does not persist a skipped request.**
+`mokutil --import ... --ignore-keyring` queued a real pending request. Saving and exiting
+the firmware's setup screen triggered a reboot, and the blue MokManager screen appeared --
+with Secure Boot still reading `Disabled` in the setup screen moments before. shim checks
+for a pending `MokNew` regardless of enforcement state; it is not gated on Secure Boot being
+administratively on. No key was pressed; the machine continued and reached the login prompt
+normally, and the running image was confirmed unchanged (`2608`, same build timestamp,
+`5e24fe9c-...` HW UUID). Checked afterward: `mokutil --list-new` was empty. Passing through
+MokManager without enrolling does not leave the request queued for a later boot -- it is
+consumed by being shown, not by being acted on. That is a real behaviour of this shim
+version worth knowing before relying on "it'll still be there next time."
+
+**End state.** Machine left exactly as before the attempt: 5.57 product image, Secure Boot
+disabled, Setup Mode, no pending MOK request, temp files removed. Secure Boot itself remains
+unverified on this hardware; what is now known is why the standard command didn't queue an
+enrollment, that the workaround this project already has for QEMU applies unchanged here,
+that this firmware refuses a Setup-Mode `db` write from the OS, and that the enable toggle
+was not found to be reachable in the time spent looking.
