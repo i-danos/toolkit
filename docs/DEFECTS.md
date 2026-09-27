@@ -1765,3 +1765,19 @@ still `not_needed`: the state describes the backend, not whether the port is in 
 "Not covered" says they reach `if_l3_enable`. Only ethernet ports and VLAN sub-interfaces
 appear. Not investigated here. Not compared against zebra; GRE not exercised.
 
+### `accept-lifecycle.sh` across two different versions
+
+The 13 of 13 above adds the ISO the disk was installed from, which is a valid upgrade but not a
+version change. With `UPG_ISO` set the script adds a different ISO and reads `vyatta-image-tools`
+inside each image it boots. Run on 2026-09-27: the disk installed from the 5.55 product ISO
+(`i-danos_2608_20260925T2005`) added the 5.57 product ISO (`i-danos_2608_20260926T0757`) over http.
+The added image is registered (`upg1`) and its files are on disk; selected and rebooted, the running
+image reports `vyatta-image-tools` **5.57**; selected back to `2608` and rebooted, it reports **5.55**
+again. The admin account survives both switches and `dp0s3` keeps its MAC across the three boots.
+12 of 12.
+
+The installer that ran was the one on the ISO being added (5.57), so this is the path an operator
+takes, not a same-version repeat. **Not covered:** an upgrade that changes the kernel (both images
+carry 6.12.107), and cloud-init/no-network in this cross-version run (`SKIP_BOOT_MODES=1`; both passed
+on the product image in the same-version run and do not depend on the version).
+
