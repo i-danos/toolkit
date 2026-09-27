@@ -98,17 +98,32 @@ yet:
   persists under real load and causes a forwarding error, not just a
   diagnostic disagreement.
 
-### C. Backend contract (capability + per-object backend), buildable without hardware
+### C. Backend contract (capability + per-object backend) -- built, and extended further
 
-`DPA-CAPABILITY-AND-BACKENDS.md`'s "What to build next" (capability answerable
-before programming, backend identity, per-object backend bits, operator
-visibility) is agreed with here: it is identical work regardless of which
-software forwarder ends up primary, which is the reason to do it before that
-question is settled. `fal.c` already has the plugin mechanism (205 entry
-points, a reference backend used 59), so this extends rather than replaces it.
-The risk is designing an abstraction against a single real consumer; mitigate
-by building a recording-only second backend to exercise load, capability
-partial-match, async errors and software fallback without needing hardware.
+**Correction (2026-09-28): this recommendation described work that was already
+done two weeks before this document was written** (`e28f399a`, `c1b36133`,
+`71ec9442`, all 2026-09-14) -- capability answerable before programming, a
+backend naming itself, per-object backend recording, and operator visibility
+through `fal capability show` and `pd show dataplane route full`, all verified
+by `whole_dp`'s `dp_test_fal_capability.c` with two real loaded test backends
+declaring a deliberately mixed capability set. This document cited
+`DPA-CAPABILITY-AND-BACKENDS.md`'s own "What to build next" section without
+noticing that section was already stale when this document was written; both
+are now corrected. Since then, one further piece has been closed: v4 and v6
+routes shared one capability check (`FAL_CAP_IPV4`) because they share one
+handler struct and dispatch token, so a v6 route's backend selection and
+per-object recording could both be wrong; fixed in `696771b4`
+(`FAL_OP_GROUP_IPV6` plus group-parameterized dispatch macros), verified with a
+new test checked able to fail before being trusted.
+
+What remains, correctly scoped: of the 187 total dispatch call sites, roughly
+186 still pick a capability per *op_type* rather than per object -- mostly
+harmless where a call site's objects cannot differ in kind, real for
+ports/interfaces/LAG/STP/mirroring/BFD/the switch, which still select the first
+loaded backend by deliberate deferral, not oversight. And no two backends have
+been loaded together outside two test plugins in `whole_dp` -- a recording-only
+second backend on real hardware, as originally proposed here, is still not
+done and is the concrete next increment if this line continues.
 
 ### D. Real hardware — no longer untouched, still the largest unknown
 
