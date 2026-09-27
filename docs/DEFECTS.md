@@ -1880,11 +1880,33 @@ NIC itself once it had an address:
 | ssh admin@\<router\> | succeeds; `uname -r` reports `6.12.0-trunk-vyatta-amd64` |
 | `show interfaces dataplane dp0p1s0` counters | 1/5/15-minute receive and transmit pkts/sec and bits/sec all non-zero, tracking the ping and ssh traffic just sent -- packets actually moved through the DPDK data plane on this NIC, not just link-up |
 
-**Not covered.** One port, one link partner, gigabit copper, idle-adjacent traffic
-levels (a handful of pings and one ssh session). Not exercised: the other three
-ports, multi-queue/RSS, sustained throughput or packet-rate limits, VLAN/bonding on
-a physical port, a link flap or NIC reset, offloads (checksum/TSO), and recovery from
-a power loss on this hardware (P2's power-loss work is QEMU-only). `lspci`/`ethtool`
-are not present on the product image; NIC and driver identity came from the CLI's own
-`show interfaces dataplane <if> physical` (`driver: net_e1000_igb`, `bus-info:
-0000:01:00.0`), not from raw PCI tooling.
+**All four ports run (2026-09-27), not just the one above.** Repeated the same check --
+static address, ping both directions, ssh, `systemctl is-active`, and the interface's own
+traffic counters -- on `dp0p2s0`, `dp0p3s0` and `dp0p4s0` in turn, moving the one test cable
+between them (the test host has a single wired NIC, so this was sequential, one port
+carrying traffic at a time, not four simultaneously):
+
+| Port | Link | Ping | ssh | services | counters |
+|---|---|---|---|---|---|
+| `dp0p1s0` (`0000:01:00.0`) | `u/u a-1g/a-full` | 0% loss | OK | active/active/active | non-zero |
+| `dp0p2s0` | `u/u a-1g/a-full` | 0% loss | OK | active/active/active | non-zero |
+| `dp0p3s0` | `u/u a-1g/a-full` | 0% loss | OK | active/active/active | non-zero |
+| `dp0p4s0` | `u/u a-1g/a-full` | 0% loss | OK | active/active/active | non-zero |
+
+Identical result on every port: no port-specific driver or negotiation failure. Afterward
+each port's address was deleted and then the whole `interfaces dataplane dp0pNs0` node was
+deleted for all four -- deleting only the address left the port administratively up
+(`u/D` instead of the original `A/D`), so the full delete was needed to actually restore
+the machine to its post-install state, confirmed by `show interfaces` reading `A/D` on all
+four again.
+
+**Still not covered.** One link partner, gigabit copper, idle-adjacent traffic levels (a
+handful of pings and one ssh session per port), and never more than one port carrying
+traffic at the same time -- the four were not exercised simultaneously, so this is not
+evidence about aggregate throughput or cross-port interference. Not exercised on any port:
+multi-queue/RSS, sustained throughput or packet-rate limits, VLAN/bonding across these
+physical ports, a link flap or NIC reset, offloads (checksum/TSO), and recovery from a
+power loss on this hardware (P2's power-loss work is QEMU-only). `lspci`/`ethtool` are not
+present on the product image; NIC and driver identity came from the CLI's own `show
+interfaces dataplane <if> physical` (`driver: net_e1000_igb`, `bus-info: 0000:0N:00.0`),
+not from raw PCI tooling.
