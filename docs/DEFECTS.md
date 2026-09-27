@@ -1708,3 +1708,34 @@ Also found: the restart step ran `sudo systemctl reboot` in the sandbox, which d
 nothing, and ssh kept answering, so "it came back" passed for a machine that never went
 away. It now reboots with `sudo -S` and requires a different `boot_id` afterwards.
 
+
+## 23. `accept-lifecycle.sh`: three ways the first runs were wrong
+
+Upgrade, rollback, interface naming, cloud-init and a no-network boot were each verified
+by hand earlier and never scripted. `vm/accept-lifecycle.sh` runs them on an installed disk
+(on a throwaway qcow2 overlay, so the disk is never written). On the 5.57 product image it
+passes 13 of 13: a second image is registered and its files are on disk, the machine boots
+it and boots the original again after a rollback with the admin account intact, `dp0s3` keeps
+its name and MAC (`52:54:00:12:34:56`) across three boots, the seed's hostname is applied, and a
+machine with no NIC reaches a login. The first two runs did not, for reasons that were the
+script's, not the product's:
+
+- **cloud-init was tested where it cannot run.** The cloud-init units carry
+  `ConditionKernelCommandLine=cloud-init`. An installed disk boots from grub without that token
+  by design (and the installer refuses to run with it), so a seed attached to an installed disk
+  changes nothing and the hostname stays `node`. The check now boots live with `CI_TOKEN=cloud-init`,
+  as the earlier evidence did. **What this leaves unverified:** cloud-init on an installed disk.
+- **The console puts a carriage return before every output line.** `id -un` came back as `\rvyatta`,
+  a whole-line match never succeeded, and a machine that booted to a login in about 150 seconds was
+  reported as having no usable login after 457. Strip `\r`, and match a marker (`WHO=vyatta`) rather
+  than a bare word, because the echoed command contains the word too.
+- **"No network" needs `-nic none`.** Leaving `-netdev` off is not enough: QEMU adds a default NIC
+  itself. And "only `lo`" is the wrong expectation: the guest always has virtual `pimreg` and
+  `pim6reg`. The test is that no interface has a `device` link (a NIC does).
+
+A fourth failure was environmental and looked like a product one: with the `danos-robot` container
+stopped (a host restart stops it) every ssh fails and the first boot "did not reach ssh". It was first
+put down to memory pressure -- an unrelated 9.7 GB process was running -- which was at most part of the
+story. The script now checks the container and says so. The commands used are
+`vyatta_update_grub.pl --list-images`, `--print-default-index` and `--set-default-boot-index=<name>`;
+`vyatta-install-image --list-images` does not exist.
