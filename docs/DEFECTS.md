@@ -1773,13 +1773,24 @@ so `if_l3_enable` runs for them, as the earlier trace showed, and then calls not
 code comment says so: types with no L3 router-interface support "are not listed at all: there
 is nothing they could have asked for".
 
-**A consequence worth knowing, not run.** By the same rule interfaces of type bridge, vxlan,
+**A consequence, and the bridge case run.** By the same rule interfaces of type bridge, vxlan,
 macvlan, vti, l2tpeth, ppp, ipip and vrf are never listed either, even when they carry an L3
-address, because their `ift_ops` set no `ifop_l3_enable` (a bridge SVI is the case an operator
-would ask about). So the class means "L3 interfaces of the three types that can ask the
-backend", and absence from it does not mean the interface does not exist or is not routed. Read
-from the source; a bridge or vxlan interface was not created to see it. Not compared against
-zebra; GRE not exercised.
+address, because their `ift_ops` set no `ifop_l3_enable`. Checked for the case an operator would
+ask about, a bridge SVI, on the installed 5.57 product image (evidence
+`acceptance-2608-20260927/dpa-bridge/`):
+
+| State | `ip -br addr` | Interface class |
+|---|---|---|
+| `br0` with `10.98.0.1/24`, no member (`DOWN`); `lo` given `10.98.9.1/32`; `dp0s4` routed | `br0 DOWN 10.98.0.1/24` | `if:dp0s3`, `if:dp0s4` (`not_needed`) -- no `br0`, no `lo` |
+| `dp0s4` moved into `br0` as its member; `br0` `UP` with its address | `br0 UP 10.98.0.1/24` | `if:dp0s3` only -- no `br0`; `dp0s4` gone |
+
+`br0` is absent when it is down and when it is up with a live member, so its absence is not the
+down state. `dp0s4` leaves the class once it is a bridge member, which fits the rule (it is no
+longer an L3 interface). So the class means "L3 interfaces of the three types that can ask the
+backend": absence from it does not mean the interface does not exist or is not routed. **Not run:**
+vxlan (the one attempt, `set interfaces vxlan vxlan0 ...`, was rejected as an invalid configuration
+path in this build, so it was not tried further), macvlan, vti, l2tpeth, ppp, ipip and vrf -- those
+remain read from the code. Not compared against zebra; GRE not exercised.
 
 ### `accept-lifecycle.sh` across two different versions
 
