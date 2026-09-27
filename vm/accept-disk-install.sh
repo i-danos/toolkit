@@ -36,6 +36,12 @@
 # This re-establishes it for 2608; it does not discover it.
 set -u
 
+# See release/preflight-gate.sh's header for what each of these checks
+# actually catches -- every one of them has been mistaken for a product
+# failure in this project's own runs.
+HERE_GATE=$(cd "$(dirname "$0")/.." && pwd)
+"$HERE_GATE/release/preflight-gate.sh" --for=vm || exit 1
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 ISO=${1:?usage: accept-disk-install.sh <product-iso> [outdir]}
 OUTDIR=${2:-/home/aikon/danos/acceptance-2608-20260920/disk-install}

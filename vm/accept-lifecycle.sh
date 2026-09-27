@@ -49,11 +49,11 @@ BOOT_TIMEOUT=${BOOT_TIMEOUT:-420}
 
 [ -f "$ISO" ] && [ -f "$BASE" ] && [ -f "$UPG_ISO" ] || { echo "need an ISO and an installed disk" >&2; exit 1; }
 [ -f "$SEED" ] || { echo "no NoCloud seed at $SEED" >&2; exit 1; }
-# Every ssh in this script goes through the robot container. With it stopped (a
-# host restart stops it) the first boot "did not reach ssh", which reads as a
-# product failure and was once put down to memory pressure. Say what is wrong.
-[ "$(docker inspect -f '{{.State.Running}}' danos-robot 2>/dev/null)" = true ] \
-	|| { echo "BLOCKED: the danos-robot container is not running (docker start danos-robot)" >&2; exit 1; }
+# See release/preflight-gate.sh's header for what each of these checks
+# actually catches -- every one of them has been mistaken for a product
+# failure in this project's own runs (a stopped danos-robot container among
+# them, which is where this check used to live on its own).
+"$HERE/../release/preflight-gate.sh" --for=vm || exit 1
 mkdir -p "$OUT" "$RUN"
 exec > >(tee "$OUT/accept-lifecycle.log") 2>&1
 
