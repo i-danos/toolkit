@@ -25,6 +25,13 @@
 
 set -euo pipefail
 
+# See release/preflight-gate.sh's header for what each of these checks
+# actually catches -- the local apt repo server not running produces
+# hundreds of lines of "Unable to locate package" deep in the chroot, which
+# reads like a missing package, not a missing server.
+HERE_GATE=$(cd "$(dirname "$0")/.." && pwd)
+"$HERE_GATE/release/preflight-gate.sh" --for=build
+
 BUILD_DIR=/build-iso/danos-sources/build-iso
 OVERLAY="$BUILD_DIR/test-overlay"
 TARGET="$BUILD_DIR/config/includes.chroot_after_packages"

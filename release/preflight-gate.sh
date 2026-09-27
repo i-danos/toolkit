@@ -40,33 +40,57 @@ MIN_DISK_FREE_GB=${MIN_DISK_FREE_GB:-15}
 MIN_MEM_AVAIL_MB=${MIN_MEM_AVAIL_MB:-4096}
 DISK_PATH=${DISK_PATH:-/}
 
+# /.dockerenv exists only inside a container. It decides which of two
+# otherwise-identical checks runs: from the host, "is the repo server up" has
+# to go through docker exec, because 127.0.0.1 inside the container is not
+# 127.0.0.1 on the host (see local-repo-http-server notes) -- checking from the
+# host proves nothing. From inside the container (90-mk-test-iso.sh and
+# 91-mk-product-iso.sh run here), there is no docker to exec through, and
+# 127.0.0.1 is now the right address to ask directly. /build-iso is where the
+# host disk is bind-mounted, and reports the same numbers "df /" does on the
+# host -- it is the disk that actually runs out, not the container's own thin
+# overlay root.
+IN_CONTAINER=0
+[ -e /.dockerenv ] && IN_CONTAINER=1
+[ "$IN_CONTAINER" = 1 ] && [ "$DISK_PATH" = / ] && [ -d /build-iso ] && DISK_PATH=/build-iso
+
 bad=0
 ok()   { printf '  \033[32mOK\033[0m    %s\n' "$1"; }
 no()   { printf '  \033[31mFAIL\033[0m  %s -- %s\n' "$1" "$2"; bad=1; }
 
 check_build() {
 	echo "== build =="
-	if [ "$(docker inspect -f '{{.State.Running}}' "$BUILD_CONTAINER" 2>/dev/null)" = true ]; then
-		ok "container $BUILD_CONTAINER is running"
-	else
-		no "container $BUILD_CONTAINER is running" "docker start $BUILD_CONTAINER (a host restart stops every container)"
-	fi
-
-	# The repo server is not persistent by design (see local-repo-http-server
-	# notes): it has to be started inside the container's own network
-	# namespace, on the container's own filesystem path, every time the
-	# container restarts. Checking it from the host proves nothing -- the
-	# host's 127.0.0.1 is not the container's.
-	if [ "$(docker inspect -f '{{.State.Running}}' "$BUILD_CONTAINER" 2>/dev/null)" = true ]; then
-		code=$(docker exec "$BUILD_CONTAINER" sh -c 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/Release' 2>/dev/null)
+	if [ "$IN_CONTAINER" = 1 ]; then
+		code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/Release 2>/dev/null)
 		if [ "$code" = 200 ]; then
-			ok "the local apt repo server answers 200 inside the container"
+			ok "the local apt repo server answers 200"
 		else
-			no "the local apt repo server answers 200 inside the container" \
-			   "got '${code:-no response}'; start it: docker exec -d $BUILD_CONTAINER sh -c 'cd $OBS_REPO_IN_CONTAINER && nohup python3 -m http.server 8080 >/tmp/repo_server.log 2>&1'"
+			no "the local apt repo server answers 200" \
+			   "got '${code:-no response}'; it is not persistent, start it: cd $OBS_REPO_IN_CONTAINER && nohup python3 -m http.server 8080 >/tmp/repo_server.log 2>&1 &"
 		fi
 	else
-		no "the local apt repo server answers 200 inside the container" "container is not running, see above"
+		if [ "$(docker inspect -f '{{.State.Running}}' "$BUILD_CONTAINER" 2>/dev/null)" = true ]; then
+			ok "container $BUILD_CONTAINER is running"
+		else
+			no "container $BUILD_CONTAINER is running" "docker start $BUILD_CONTAINER (a host restart stops every container)"
+		fi
+
+		# The repo server is not persistent by design (see local-repo-http-server
+		# notes): it has to be started inside the container's own network
+		# namespace, on the container's own filesystem path, every time the
+		# container restarts. Checking it from the host proves nothing -- the
+		# host's 127.0.0.1 is not the container's.
+		if [ "$(docker inspect -f '{{.State.Running}}' "$BUILD_CONTAINER" 2>/dev/null)" = true ]; then
+			code=$(docker exec "$BUILD_CONTAINER" sh -c 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/Release' 2>/dev/null)
+			if [ "$code" = 200 ]; then
+				ok "the local apt repo server answers 200 inside the container"
+			else
+				no "the local apt repo server answers 200 inside the container" \
+				   "got '${code:-no response}'; start it: docker exec -d $BUILD_CONTAINER sh -c 'cd $OBS_REPO_IN_CONTAINER && nohup python3 -m http.server 8080 >/tmp/repo_server.log 2>&1'"
+			fi
+		else
+			no "the local apt repo server answers 200 inside the container" "container is not running, see above"
+		fi
 	fi
 
 	avail_kb=$(df -Pk "$DISK_PATH" | awk 'NR==2{print $4}')
