@@ -197,11 +197,22 @@ def build_manifest(dp_src, drift_script):
     }
 
 
-def check_live(target, manifest):
-    """Cross-check the manifest's walkable set against what a running box says."""
-    cmd = ["sshpass", "-p", "vyatta", "ssh", "-o", "StrictHostKeyChecking=no",
+def check_live(target, manifest, port="22"):
+    """Cross-check the manifest's walkable set against what a running box says.
+
+    Run through the danos-robot container, like every other script here that
+    talks to a test router -- sshpass lives there, not on the host, and a
+    plain ssh from the host to a hostfwd port has nowhere to get vyatta's
+    password from either.
+    """
+    # sudo needs -S with the password piped in, same as every other script
+    # here that runs a root command over this same non-interactive ssh --
+    # a bare "sudo ..." just fails with "a terminal is required".
+    remote_cmd = "echo vyatta | sudo -S -p '' /opt/vyatta/bin/vplsh -l -c 'dpa object show'"
+    cmd = ["docker", "exec", "danos-robot", "timeout", "20", "sshpass", "-p", "vyatta",
+           "ssh", "-p", port, "-o", "StrictHostKeyChecking=no",
            "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
-           target, "sudo /opt/vyatta/bin/vplsh -l -c 'dpa object show'"]
+           target, remote_cmd]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if p.returncode != 0 or not p.stdout.strip():
         return {"reachable": False, "detail": p.stderr.strip() or "no output"}
@@ -233,14 +244,19 @@ def main():
     ap.add_argument("--dataplane-src", default=DEFAULT_DP_SRC)
     ap.add_argument("--drift-script", default=DEFAULT_DRIFT)
     ap.add_argument("--check-live", metavar="ssh-target",
-                     help="e.g. vyatta@192.168.203.155")
+                     help="e.g. vyatta@192.168.203.155 -- reached through the "
+                          "danos-robot container, like every other test script here")
+    ap.add_argument("--check-live-port", default="22",
+                     help="ssh port on the target (default 22; a single "
+                          "boot-vm.sh router reached via its hostfwd, e.g. "
+                          "vyatta@192.168.203.1, needs its mapped port here)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     manifest = build_manifest(args.dataplane_src, args.drift_script)
 
     if args.check_live:
-        manifest["live_check"] = check_live(args.check_live, manifest)
+        manifest["live_check"] = check_live(args.check_live, manifest, args.check_live_port)
 
     if args.json:
         print(json.dumps(manifest, indent=2))
