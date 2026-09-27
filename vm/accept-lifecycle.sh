@@ -21,6 +21,14 @@
 # Commands run over ssh as the admin account, which needs level superuser
 # (accept-disk-install.sh sets it). Passwords go in on the first stdin line.
 #
+# UPG_ISO, if set, is the ISO that gets ADDED, so the upgrade can go between two
+# different versions (the disk installed from an older ISO, UPG_ISO the newer).
+# The default is the ISO itself. With UPG_ISO set the run also reads
+# vyatta-image-tools' version inside each image it boots: the old image must say
+# the old version, the new image a different one, and the rollback the old one
+# again. EXPECT_BASE_VER / EXPECT_UPG_VER pin those versions if given. Set
+# SKIP_BOOT_MODES=1 to stop after the naming check (no cloud-init or no-network).
+#
 # Usage: accept-lifecycle.sh <iso> <installed.qcow2> <outdir>
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -31,6 +39,7 @@ NAME=${NAME:-lc}
 SSHPORT=${SSHPORT:-2297}
 ISO_PORT=${ISO_PORT:-8331}
 SEED=${SEED:-$HERE/../seed/seed.iso}
+UPG_ISO=${UPG_ISO:-$ISO}
 HOSTIP=${HOSTIP:-192.168.203.1}
 PW=vyatta
 IMG=upg1
@@ -38,7 +47,7 @@ RUN=${OBS_DIR:-/home/aikon/danos/.obs}/run/$NAME
 GRUBPL=/opt/vyatta/sbin/vyatta_update_grub.pl
 BOOT_TIMEOUT=${BOOT_TIMEOUT:-420}
 
-[ -f "$ISO" ] && [ -f "$BASE" ] || { echo "need an ISO and an installed disk" >&2; exit 1; }
+[ -f "$ISO" ] && [ -f "$BASE" ] && [ -f "$UPG_ISO" ] || { echo "need an ISO and an installed disk" >&2; exit 1; }
 [ -f "$SEED" ] || { echo "no NoCloud seed at $SEED" >&2; exit 1; }
 # Every ssh in this script goes through the robot container. With it stopped (a
 # host restart stops it) the first boot "did not reach ssh", which reads as a
@@ -101,13 +110,15 @@ reboot_guest() {
 cmdline() { gssh 'cat /proc/cmdline' | tail -1; }
 union_of() { printf '%s' "$1" | sed -n 's/.*vyatta-union=\([^ ]*\).*/\1/p'; }
 images() { rootcmd "$GRUBPL --list-images" | tail -1; }
+ver() { gssh "dpkg-query -W -f='\${Version}' vyatta-image-tools" | tail -1; }
+CROSS=0; [ "$UPG_ISO" != "$ISO" ] && CROSS=1
 
 echo "===== 0. A throwaway overlay of the installed disk ====="
 OV=$OUT/lifecycle.qcow2
 overlay "$OV" && record "overlay created; the installed disk is not written" PASS "$(basename "$BASE")" \
 	|| { record "could not create the overlay" FAIL ""; exit 1; }
 
-mkdir -p "$OUT/srv"; ln -sf "$ISO" "$OUT/srv/upg.iso"
+mkdir -p "$OUT/srv"; ln -sf "$UPG_ISO" "$OUT/srv/upg.iso"
 python3 -m http.server "$ISO_PORT" --bind 127.0.0.1 --directory "$OUT/srv" >/dev/null 2>&1 &
 SRV=$!
 sleep 2
@@ -122,12 +133,22 @@ wait_ssh "$BOOT_TIMEOUT" || { record "the installed disk did not boot to ssh" BL
 CMD0=$(cmdline); UN0=$(union_of "$CMD0")
 NIC0=$(gssh 'cat /sys/class/net/dp0s3/address' | tail -1)
 IM0=$(images)
+V0=$(ver)
+echo "    version ${V0:-unreadable}  (vyatta-image-tools in the running image)"
 echo "    union   ${UN0:-none}"
 echo "    dp0s3   ${NIC0:-unreadable}"
 echo "    images  ${IM0:-none}"
 [ -n "$UN0" ] && [ -n "$IM0" ] && [ -n "$NIC0" ] \
 	&& record "baseline read" PASS "" || { record "baseline unreadable" BLOCKED ""; exit 1; }
 ORIG=${UN0##*/}
+if [ "$CROSS" = 1 ]; then
+	if [ -n "${EXPECT_BASE_VER:-}" ]; then
+		[ "$V0" = "$EXPECT_BASE_VER" ] && record "the installed image is the old version" PASS "$V0" \
+			|| { record "the installed image is not the expected old version" BLOCKED "wanted $EXPECT_BASE_VER, got ${V0:-unreadable}"; exit 1; }
+	else
+		record "old image version read" PASS "${V0:-unreadable}"
+	fi
+fi
 
 echo
 echo "===== 2. Upgrade: add an image over http ====="
@@ -153,6 +174,16 @@ echo "    union   ${UN1:-none}"
 	|| record "it did not boot the new image" FAIL "wanted /boot/$NEW, got ${UN1:-none}"
 [ "$(gssh 'id -un' | tail -1)" = vyatta ] && record "the admin account survived the switch" PASS "" \
 	|| record "the admin account is gone" FAIL ""
+if [ "$CROSS" = 1 ]; then
+	V1=$(ver); echo "    version ${V1:-unreadable}"
+	if [ -n "${EXPECT_UPG_VER:-}" ]; then
+		[ "$V1" = "$EXPECT_UPG_VER" ] && record "the new image runs the new version" PASS "$V0 -> $V1" \
+			|| record "the new image does not run the expected version" FAIL "wanted $EXPECT_UPG_VER, got ${V1:-unreadable}"
+	else
+		[ -n "$V1" ] && [ "$V1" != "$V0" ] && record "the new image runs a different version" PASS "$V0 -> $V1" \
+			|| record "the new image runs the same version as the old" FAIL "$V0 -> ${V1:-unreadable}"
+	fi
+fi
 
 echo
 echo "===== 4. Roll back to the original ====="
@@ -165,6 +196,11 @@ echo "    union   ${UN2:-none}"
 	|| record "rollback did not land on the original" FAIL "wanted /boot/$ORIG, got ${UN2:-none}"
 [ "$(gssh 'id -un' | tail -1)" = vyatta ] && record "the admin account survived the rollback" PASS "" \
 	|| record "the admin account is gone after rollback" FAIL ""
+if [ "$CROSS" = 1 ]; then
+	V2=$(ver); echo "    version ${V2:-unreadable}"
+	[ -n "$V2" ] && [ "$V2" = "$V0" ] && record "the rollback runs the old version again" PASS "$V2" \
+		|| record "the rollback does not run the old version" FAIL "wanted $V0, got ${V2:-unreadable}"
+fi
 
 echo
 echo "===== 5. Interface naming across three boots ====="
@@ -173,6 +209,7 @@ echo "    dp0s3   $NIC0   $NIC1   $NIC2"
 	&& record "dp0s3 keeps its name and MAC across the image switches" PASS "$NIC0" \
 	|| record "dp0s3 changed across boots" FAIL "$NIC0 $NIC1 $NIC2"
 
+if [ "${SKIP_BOOT_MODES:-0}" != 1 ]; then
 echo
 echo "===== 6. cloud-init with a NoCloud seed ====="
 # A live boot with the "cloud-init" kernel token, not the installed disk: the
@@ -244,6 +281,7 @@ if [ -n "$got" ]; then
 	else
 		record "the guest sees a network device" FAIL "$(printf '%s\n' "$out" | grep -x 'NDEV=[0-9]*' | tail -1)"
 	fi
+fi
 fi
 
 echo
