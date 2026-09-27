@@ -1918,12 +1918,16 @@ firmware limits, plus one genuine tool-behaviour bug found along the way. Same m
 the two sections above, same installed 5.57 product image, Secure Boot still `disabled` and
 the platform still in `Setup Mode` from the factory reset the earlier NIC testing left it in.
 
-**Bug found: `mokutil --import` silently no-ops on this build, and the reason is a
-build-time choice, not a fluke.** Extracting the signer of the installed `grubx64.efi` gave
-the expected `CN=home:i-danos OBS Project` certificate (valid to 2028-10-29, matching every
-earlier measurement of this chain). Running `mokutil --import` against it printed `Already
-in kernel trusted keyring. Skip` and created no pending request (`mokutil --list-new` came
-back empty). Traced to `linux-vyatta/debian/rules`:
+**Not a new bug -- the same one this project already found and decided not to fix, now
+confirmed on real hardware.** "The MOK enrollment an operator has to do, walked through"
+(above) already reproduced this exact symptom in QEMU and recorded it as one of "four
+things an operator will hit ... all reproduced, none fixed -- they are properties of
+mokutil, shim and this kernel." What real hardware adds is the root cause and independent
+confirmation that it is not a QEMU artifact. Extracting the signer of the installed
+`grubx64.efi` gave the expected `CN=home:i-danos OBS Project` certificate (valid to
+2028-10-29, matching every earlier measurement of this chain). Running `mokutil --import`
+against it printed `Already in kernel trusted keyring. Skip` and created no pending request
+(`mokutil --list-new` came back empty). Traced to `linux-vyatta/debian/rules`:
 
 ```
 dh_signobs_getcert debian/certs/obs.pem
@@ -1944,7 +1948,12 @@ describes the identical "Already in kernel trusted keyring. Skip" symptom) -- co
 to reproduce on real hardware with the same real kernel package, not a QEMU-specific
 interaction. The documented fix applies unchanged: `mokutil --import <cert> --hash-file
 <password-hash> --ignore-keyring` does create a real pending request (`mokutil --list-new`
-then showed the OBS certificate's subject).
+then showed the OBS certificate's subject). This is a property of `mokutil`, shim and this
+kernel, not a DANOS defect to patch -- consistent with the earlier QEMU finding's own
+verdict. It matters only if this project ever ships operator-facing Secure Boot enrollment
+guidance or a wrapper command: nothing that ships today calls `mokutil --import` without
+`--ignore-keyring` except this project's own `vm/mok-import.sh`, which already has it
+right; a future deployment note or helper would need to as well.
 
 **Writing `db` directly, tried and refused.** With the platform still in Setup Mode,
 `efi-updatevar -a -e -c <cert.pem> db` (append, unsigned update, only valid in Setup Mode
@@ -1964,7 +1973,9 @@ out the toggle until one exists). No "Restore Factory Keys" / "Key Management" m
 found by inspection; the search was not exhaustive; this is recorded as "not found," not
 as "does not exist."
 
-**MokManager fires independently of the toggle, and does not persist a skipped request.**
+**MokManager fires independently of the toggle, and does not persist a skipped request
+(also confirming the QEMU section's own "the request is consumed even when nothing is
+enrolled" note -- there via a mistimed key press, here via never pressing one at all).**
 `mokutil --import ... --ignore-keyring` queued a real pending request. Saving and exiting
 the firmware's setup screen triggered a reboot, and the blue MokManager screen appeared --
 with Secure Boot still reading `Disabled` in the setup screen moments before. shim checks
