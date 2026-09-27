@@ -1853,14 +1853,33 @@ the interface-class list, not a per-interface `vrf` leaf. It does not appear in
 `dpa object show interface` either (same `if:dp0s3`/`if:dp0s4`-only result), confirming the rule
 for this type on real evidence.
 
-**Still not run:** macvlan, l2tpeth, ppp and ipip -- read from the code, not exercised. Of these,
-macvlan and (non-PPPoE) `ppp` have no top-level `set interfaces <type>` CLI path in this build at
-all (`grep` across every `.yang` in this tree found no `list macvlan` or `list ppp`); `IFT_MACVLAN`
-exists in `vyatta-dataplane` only as VRRP's own mac-passthrough mechanism, created over netlink by
-VRRP itself rather than by an operator, and PPP only appears as PPPoE's underlying link type. So
-those two are better described as "not independently configurable," not "not run yet." l2tpeth and
-ipip do have real YANG list entries and remain genuinely untested. Not compared against zebra; GRE
-not exercised.
+**IPIP and L2TPETH, run 2026-09-28.** `set interfaces tunnel tun1 encapsulation ipip` (with
+`local-ip`/`remote-ip`/`address`) committed clean and produced a real device on the first try:
+`ip -d link show tun1` shows `link/ipip 2.2.2.1 peer 2.2.2.2`, `UP`. It does not appear in
+`dpa object show interface` -- same rule, now confirmed for a fourth tunnel encapsulation
+(vxlan, ipip share the `tunnel` type). `l2tpeth`, by contrast, behaved like VTI, not like ipip: the
+CLI path is `set interfaces l2tpeth lttp0 l2tp-session {local-ip,remote-ip,local-session-id,
+remote-session-id,encapsulation,local-udp-port,remote-udp-port}` plus a top-level `address` (the
+first attempt used a flatter path and was rejected outright: "is not valid"; the corrected nested
+path was accepted). Committing it failed once on its own precondition ("Local address 3.3.3.1 must
+exist before adding tunnel" -- l2tpeth requires the local IP to already be configured on some local
+interface, unlike ipip/vxlan which accept any local-ip value); adding that address to `lo` and
+recommitting reported "Commit succeeded (non-fatal failures detected)" but still never created an
+`lttp0` link (`ip -d link show lttp0`: "Device does not exist"), with `l2tp_core`/`l2tp_netlink`
+confirmed loaded in `dmesg` and no error in the journal. Read together with the VTI result, this
+looks like the same pattern: some tunnel types are Linux devices the moment DANOS validates the
+config (vxlan, ipip, gre presumably), others (VTI, l2tpeth) need a live peer or protocol
+negotiation to actually instantiate the kernel link, and config-only testing cannot distinguish "in
+the interface class" from "the interface never came into being" for that second group -- their DPA
+class membership stays genuinely unverified, not confirmed excluded, without a second real (or
+netns-simulated) endpoint to peer with.
+
+**Still not run:** macvlan and (non-PPPoE) `ppp` -- neither has a top-level `set interfaces <type>`
+CLI path in this build at all (`grep` across every `.yang` in this tree found no `list macvlan` or
+`list ppp`); `IFT_MACVLAN` exists in `vyatta-dataplane` only as VRRP's own mac-passthrough
+mechanism, created over netlink by VRRP itself rather than by an operator, and PPP only appears as
+PPPoE's underlying link type. These two are better described as "not independently configurable,"
+not "not run yet." Not compared against zebra; GRE not exercised.
 
 ### `accept-lifecycle.sh` across two different versions
 
