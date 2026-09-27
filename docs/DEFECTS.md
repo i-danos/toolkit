@@ -1604,12 +1604,12 @@ a controller config command; `vplsh` only sends operational commands and answers
 "Unknown command". The chain is therefore shown by measurement at each step but the
 last one (flip the flag, see the object) was not.
 
-**Consequence for the class.** "interface" means "the interfaces the data plane asked
-the backend about", not "all L3 interfaces". A reader cannot tell a routed port that
+**Consequence for the class.** "interface" meant "the interfaces the data plane asked
+the backend about", not "all L3 interfaces". A reader could not tell a routed port that
 was never asked from one that does not exist. Reporting such ports with the existing
-`not_needed` state ("not programmed as it is not needed there") would close that, but
-it changes what the class means (objects for which no backend call happened), so it
-is a decision, not done here.
+`not_needed` state ("not programmed as it is not needed there") closes that, at the cost
+of changing what the class means (objects for which no backend call happened). That was
+decided and done in 3.14.42; see "Routed ports, verified" below.
 
 **Known gap.** The recorded state is cleared only from `if_fal_delete_l3_intf`, which
 the caller reaches only when `fal_l3` is non-zero. With no backend it always is zero,
@@ -1739,3 +1739,29 @@ put down to memory pressure -- an unrelated 9.7 GB process was running -- which 
 story. The script now checks the container and says so. The commands used are
 `vyatta_update_grub.pl --list-images`, `--print-default-index` and `--set-default-boot-index=<name>`;
 `vyatta-install-image --list-images` does not exist.
+
+## DPA object model: routed ports, verified
+
+`vyatta-dataplane` 3.14.42 (`9bf5bda`) lists a port that is not switched in hardware as
+`not_needed` in the interface class. Its changelog said so; the code was not checked on a
+running system until now, and the section "DPA object model: interface class" above still
+called it undecided.
+
+**Verified**, on the installed disk of `i-danos_2608_20260926T0757-amd64.hybrid.iso` (3.14.42),
+through `/opt/vyatta/bin/vplsh -l -c 'dpa object show interface'` (evidence in
+`acceptance-2608-20260926/dpa-interface/`):
+
+| Step | Objects listed |
+|---|---|
+| Nothing configured | `if:dp0s3 not_needed`, `if:dp0s4 not_needed` (both `sw-dataplane`) |
+| `dp0s4` given an address and a VLAN sub-interface `dp0s4.100` | the two above, plus `if:dp0s4.100 no_support` |
+| After `systemctl restart vyatta-dataplane` | the same three |
+
+The guest's own interfaces are `dp0s3 dp0s4 dp0s4.100 lo pim6reg pimreg`, so every listed
+name is a real interface. `dp0s3` is the management port, which carries a dhcp address and is
+still `not_needed`: the state describes the backend, not whether the port is in use.
+
+**Not explained.** `lo`, `pimreg` and `pim6reg` are not listed, although the trace under
+"Not covered" says they reach `if_l3_enable`. Only ethernet ports and VLAN sub-interfaces
+appear. Not investigated here. Not compared against zebra; GRE not exercised.
+
