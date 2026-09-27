@@ -282,27 +282,63 @@ than round numbers. All-true and all-false are both indistinguishable from a
 stub that ignores the attribute id, and all-false is exactly what a broken id
 mapping produces; 65536 and 4096 are exactly what a truncation produces.
 
-Still open from gap 2: more than one backend may not yet be *loaded*.
-`fal_register_message_handler()` asserts a single handler, so plurality is a
-separate change from identity. Identity first was deliberate -- the per-object
-`backend` field and any policy layer need a name to record before they need a
-second thing to choose between.
+**Update (2026-09-28): this section was already out of date the same day it was
+written.** Both things it named "still open" landed within hours, in the
+commits right after this note, and the note was never revisited.
+
+- **Plurality was not still open.** `e28f399a` (27 minutes after the commit
+  this note describes) replaced the single-handler assert with a per-slot one,
+  made `platform.conf`'s `fal_plugin` a comma-separated list, and made dispatch
+  capability-directed across up to four loaded backends. `71ec9442` (45 minutes
+  after that) records which backend actually held each object, sourced from the
+  same `fal_backend_for_group()` dispatch uses so the two cannot disagree. Both
+  are verified: `whole_dp`'s `dp_test_fal_capability.c` loads two real backends
+  with a deliberately mixed, discriminating capability set and asserts
+  selection and per-object recording against both.
+- **The per-object granularity gap is real, but was mis-scoped here as "more
+  backends", not "more precision".** The actual gap, named precisely in
+  `e28f399a`'s and `71ec9442`'s own commit messages: all 187 `call_handler()` /
+  `call_handler_def_ret()` / `call_handler_ret()` sites pick a capability from a
+  per-*op_type* table (`ip` -> `FAL_CAP_IPV4`, `qos` -> `FAL_CAP_QOS`, ...), not
+  per object, so a call site whose objects can differ in kind gets one
+  capability for all of them. The one instance already named by both commits --
+  v4 and v6 routes share `fal_ip_ops` and the `ip` token, so v6 routes were
+  checked against `FAL_CAP_IPV4` -- is fixed as of `696771b4` (2026-09-28):
+  `FAL_OP_GROUP_IPV6` plus group-parameterized macros
+  (`call_handler_grp`/`call_handler_grp_def_ret`/`fal_op_handler_grp`) that the
+  original three become thin wrappers over, so the other 181 sites in `fal.c`
+  are unchanged. Verified with `whole_dp` 98 of 98 plus a new test,
+  `route6_dispatches_by_its_own_capability`, checked able to fail (reverting the
+  one call site's group made it fail with the pre-fix wrong answer, not an
+  error) before being trusted.
+- **What is still genuinely open, correctly scoped now:** the other ~186 call
+  sites, most of which (bridge/qos/sys/rif/lag/stp/mirror/bfd/...) have no
+  v4/v6-style split to begin with and may need nothing; ports, router
+  interfaces, LAG, STP, mirroring, BFD and the switch still select the first
+  loaded backend regardless of capability, which `e28f399a`'s own commit
+  message called a deliberate deferral, not an omission; and no two backends
+  have been loaded together outside `dp_test_fal_capability.c`'s two test
+  plugins -- real hardware alongside a second backend is unmeasured.
 
 ## What to build next
 
-Gaps 1 and 2, together, as one additive change. They are prerequisites for
-everything else in the doctrine and for every backend, whichever forwarder ends
-up primary, and neither displaces anything:
+**Update (2026-09-28): the table this section used to list -- capability,
+backend identity, per-object backend, operator visibility -- is built.** See
+"Built: gaps 1 and 2, first half" above and the 2026-09-28 update note after
+it. Leaving the table here after it was done is exactly how it went stale for
+two weeks; it is removed rather than corrected in place, so there is nothing
+left in this section for a future change to silently outgrow.
 
-| | |
-|---|---|
-| `DataplaneCapability` | feature presence + scale limits, answerable before programming |
-| Backend identity | a backend names itself; `pd show` reports per backend |
-| Per-object backend | 4 bits of the 15 already spare in `pd_obj_state_and_flags` |
-| Operator visibility | YANG + op-mode for the above, so it can be tested through the CLI |
+What is actually next:
 
-Gap 3 (reconciliation) follows, because it needs gap 4's join, which in turn is
-easier to specify once objects can say which backend holds them.
+- **Gap 3 (reconciliation)**, which needs gap 4's join and is easier to specify
+  now that objects say which backend holds them.
+- **The remaining ~186 call sites** of per-object capability precision (see the
+  2026-09-28 note above): mostly no-op for groups with no natural split, real
+  for ports/interfaces/LAG/STP/mirroring/BFD/switch, which still select the
+  first loaded backend regardless of capability by deliberate deferral.
+- **Two backends loaded together on real hardware**, which has only been
+  exercised between `dp_test_fal_capability.c`'s two test plugins so far.
 
 ## Built: a coverage manifest, so "not covered" never reads as "clean"
 
