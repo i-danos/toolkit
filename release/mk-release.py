@@ -378,7 +378,7 @@ VERIFICATION_ITEMS = [
     # 81-case regression, tracked separately because it is per-ISO, not
     # per-project -- re-run and re-record for every release, not copied
     # forward.
-    ("regression", "robot_81_cases", "PASS", "81/81 on the product image i-danos_2608_20260926T0757-amd64.hybrid.iso (vyatta-image-tools 5.57, vyatta-dataplane 3.14.42; MGMT_IF=dp0s31 MGMT_restore=dp0s31, IPSEC 10, MPLS 11, DPA 7, FIREWALL 16, BGP 16, REST 21, no case missing). Earlier per-ISO results, each on the ISO it names: 81/81 on the product image i-danos_2608_20260925T2005-amd64.hybrid.iso and on the test image i-danos_2608_20260925T1344-amd64.hybrid-test.iso (both built from one OBS repository, identical 1524-package sets), and 81/81 on i-danos_2608_20260922T1655-amd64.hybrid-test.iso, where an earlier run showed 27 unrelated failures traced to host CPU contention (~15 load average / 4 cores from concurrent unrelated VMs), not that build -- see DEFECTS.md. The test image has NOT been rebuilt with 5.57, so it and the product image now differ by the 25 vyatta-image-tools packages. Re-run and update this row for every future release; do not copy this PASS forward to a different ISO."),
+    ("regression", "robot_81_cases", "PASS", "81/81 on the product image i-danos_2608_20260926T0757-amd64.hybrid.iso (vyatta-image-tools 5.57, vyatta-dataplane 3.14.42; MGMT_IF=dp0s31 MGMT_restore=dp0s31, IPSEC 10, MPLS 11, DPA 7, FIREWALL 16, BGP 16, REST 21, no case missing). Earlier per-ISO results, each on the ISO it names: 81/81 on the product image i-danos_2608_20260925T2005-amd64.hybrid.iso and on the test image i-danos_2608_20260925T1344-amd64.hybrid-test.iso (both built from one OBS repository, identical 1524-package sets), and 81/81 on i-danos_2608_20260922T1655-amd64.hybrid-test.iso, where an earlier run showed 27 unrelated failures traced to host CPU contention (~15 load average / 4 cores from concurrent unrelated VMs), not that build -- see DEFECTS.md. The test image was then rebuilt with 5.57 (i-danos_2608_20260926T0949-amd64.hybrid-test.iso): its 1524 installed packages are identical to the product image's, and it also passed 81/81 (tag t557). Re-run and update this row for every future release; do not copy this PASS forward to a different ISO."),
     # P1/P2 -- explicitly not started, per the project's own roadmap
     # ordering (P0.5 before P1 before P2). Listed so a reader of this summary
     # sees the whole plan, not just the part that is done.
@@ -411,11 +411,52 @@ VERIFICATION_ITEMS = [
 ]
 
 
-def build_verification_summary():
-    return [
-        {"phase": phase, "item": item, "status": status, "note": note}
-        for phase, item, status, note in VERIFICATION_ITEMS
-    ]
+# Rows above are written for the product image. Evidence is per ISO, so a
+# release directory for a different ISO must not inherit them: a test image has
+# its own regression and install results, and has not been through the lifecycle
+# runs at all. Anything not measured on the ISO in hand is NOT_RUN and says where
+# it was measured instead -- a PASS carried over from another image is exactly what
+# the robot_81_cases row warns against.
+PER_ISO_ROWS = {
+    "upgrade_add_image", "rollback", "cloud_init", "no_network_boot",
+    "nic_naming_stability", "add_system_image_signing_check",
+    "dpa_object_model_interface_routed_ports",
+}
+PRODUCT_ISO = "i-danos_2608_20260926T0757-amd64.hybrid.iso"
+ISO_OVERRIDES = {
+    "i-danos_2608_20260926T0949-amd64.hybrid-test.iso": {
+        "robot_81_cases": (
+            "PASS",
+            "81/81 on this test image (tag t557; IPSEC 10, MPLS 11, DPA 7, FIREWALL 16, BGP 16, "
+            "REST 21, no case missing), vyatta-image-tools 5.57, vyatta-dataplane 3.14.42. Its "
+            "installed package set (1524) is identical to the product image "
+            + PRODUCT_ISO + "'s, built from the same OBS repository. Not carried over from "
+            "another image.",
+        ),
+        "disk_install_unattended": (
+            "PASS",
+            "accept-disk-install.sh, 14 of 14 on this test image, installed disk booted and restarted, "
+            "data plane active afterwards.",
+        ),
+    },
+}
+
+
+def build_verification_summary(iso_name=None):
+    overrides = ISO_OVERRIDES.get(iso_name, {})
+    rows = []
+    for phase, item, status, note in VERIFICATION_ITEMS:
+        if item in overrides:
+            status, note = overrides[item]
+        elif iso_name in ISO_OVERRIDES and item in PER_ISO_ROWS:
+            status = "NOT_RUN"
+            note = (
+                "not run on this image. Measured on the product image " + PRODUCT_ISO
+                + " (same package set); see that release's verification-summary.json. "
+                "Previous note: " + note
+            )
+        rows.append({"phase": phase, "item": item, "status": status, "note": note})
+    return rows
 
 
 def main():
@@ -521,7 +562,7 @@ def main():
     print("  build-inputs.json")
 
     # 4. verification summary
-    summary = build_verification_summary()
+    summary = build_verification_summary(args.iso.name)
     not_run = sum(1 for s in summary if s["status"] == "NOT_RUN")
     (release_dir / "verification-summary.json").write_text(
         json.dumps({
