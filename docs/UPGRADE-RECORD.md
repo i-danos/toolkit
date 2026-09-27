@@ -442,6 +442,17 @@ Also not covered: the switch-vendor paths, deliberately, since hardware-vendor
 support was dropped for this port; and anything about thermals, PSUs, sensors
 or platform management, which the image still carries YANG for.
 
+**Update (2026-09-27).** A first physical run has since happened -- see
+`DEFECTS.md`, the "Confirmed on real hardware" note under defect 14 and the
+section "Real hardware: 2608 boots, and its data plane forwards, on a physical
+I210 NIC". It covers one port of a 4-port Intel I210 (`net_e1000_igb`), a
+static address, light ping/ssh traffic, and confirms the data plane, `frr` and
+`configd` come up and forward. Everything else in this paragraph's list --
+multi-queue/RSS, sustained throughput, IOMMU/VFIO, NUMA, offloads, link events
+from a real cable under load -- is still unexercised. This record's other
+findings remain QEMU-only exactly as stated above; only that one narrow slice
+has since been run on physical hardware.
+
 What QEMU does cover is everything above the driver: the CLI, configd, the YANG
 model, the routing protocols, the firewall and IPsec paths, the QoS scheduler's
 own logic, the sandbox, both boot paths, and the whole package and image build.
