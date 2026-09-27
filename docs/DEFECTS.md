@@ -1829,10 +1829,19 @@ ask about, a bridge SVI, on the installed 5.57 product image (evidence
 `br0` is absent when it is down and when it is up with a live member, so its absence is not the
 down state. `dp0s4` leaves the class once it is a bridge member, which fits the rule (it is no
 longer an L3 interface). So the class means "L3 interfaces of the three types that can ask the
-backend": absence from it does not mean the interface does not exist or is not routed. **Not run:**
-vxlan (the one attempt, `set interfaces vxlan vxlan0 ...`, was rejected as an invalid configuration
-path in this build, so it was not tried further), macvlan, vti, l2tpeth, ppp, ipip and vrf -- those
-remain read from the code. Not compared against zebra; GRE not exercised.
+backend": absence from it does not mean the interface does not exist or is not routed.
+
+**VXLAN, run 2026-09-28 (corrects the earlier "not run" note above).** The first attempt's path,
+`set interfaces vxlan vxlan0 ...`, does not exist in this build -- VXLAN is configured under the
+`tunnel` interface type instead (`vyatta-interfaces/yang/vyatta-interfaces-tunnel-v1.yang`):
+`set interfaces tunnel tun0 encapsulation vxlan`, `vxlan-id`, `local-ip`, `remote-ip`, then an
+`address`. Run on the same installed 5.57 product image, throwaway QEMU overlay (the installed
+disk itself was never written): `tun0` came up as a real Linux vxlan device (`ip -d link show`:
+`vxlan id 100 remote 1.1.1.2 local 1.1.1.1`, `state UP`) with `10.10.10.1/24` assigned. It does not
+appear in `dpa object show interface` -- only `if:dp0s3` and `if:dp0s4` are listed, both
+`not_needed` -- confirming the code-read rule above for this type too, not just by inference.
+**Still not run:** macvlan, vti, l2tpeth, ppp, ipip and vrf -- those remain read from the code. Not
+compared against zebra; GRE not exercised.
 
 ### `accept-lifecycle.sh` across two different versions
 
