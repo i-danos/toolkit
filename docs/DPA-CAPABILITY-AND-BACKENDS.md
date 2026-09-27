@@ -304,6 +304,54 @@ up primary, and neither displaces anything:
 Gap 3 (reconciliation) follows, because it needs gap 4's join, which in turn is
 easier to specify once objects can say which backend holds them.
 
+## Built: a coverage manifest, so "not covered" never reads as "clean"
+
+`vm/dpa-coverage-manifest.py` (2026-09-27). Not gap 1 or 2 -- a precondition
+for trusting either, and for `dpa-drift.py`'s own coverage reporting, after
+this project hit the same failure twice: `probe-dpa-coverage.sh` once
+misreported the two QoS classes as enumerable by matching a word that a
+class with no walker also returns (see `DEFECTS.md`, "DPA object model:
+nexthop-group class, and a coverage-probe defect"), and `dpa-drift.py`'s own
+header comment said "the object view enumerates six" a full two classes
+after nexthop-group and interface shipped, because nothing forced the
+comment to notice.
+
+So this script does not remember the class list -- it parses it, every run,
+from the two places it actually lives: `vyatta-dataplane`'s `dpa_classes[]`
+table (`src/dpa_object.c`, which class exists and whether it has a walker at
+all) and `dpa-drift.py`'s own `COMPARED` set (which walkable classes have a
+zebra-side view to diff against). A class added to one and not the other
+shows up as unnoted or as a live-check disagreement, not as silence.
+
+What it adds beyond dpa-drift.py's own `coverage()` (which already reports
+enumerable/not_enumerable/compared/not_compared per run, correctly, from a
+live box): per-class notes on exclusions *inside* an enumerable, even
+compared, class -- cases no whole-class boolean can carry. The interface
+class is the sharpest example: it is enumerable, and "not compared" is true
+of it, but neither fact says that only three of roughly a dozen interface
+*types* are ever listed at all, or that a bridge SVI with a live member is
+silently absent. Those are the kind of exclusion this document's opening
+finding exists to prevent going unwritten, so they are hand-authored here,
+each cited to where it was established, with `unnoted_classes` in the output
+naming any class this file has not yet written a note for.
+
+`--check-live <ssh-target>` cross-checks the source-derived table against
+what a running box's own `dpa object show` actually says, so a mismatch
+between what the code advertises and what this file parsed is caught rather
+than assumed away. Verified against real data (a captured `dpa object show`
+reply) with a deliberate disagreement injected -- the checker flagged it --
+and again with an agreeing reply, where it did not; not yet run against a
+live router in this pass.
+
+Current state, current build: 10 classes, 8 walkable (`route`, `route6`,
+`mpls-route`, `mroute`, `mroute6`, `vrf`, `nexthop-group`, `interface`), 2
+with no walker at all (`qos-if`, `qos-vlan`); 5 of the 8 walkable classes are
+compared against zebra, 3 are coverage-only by design (`vrf` has no
+zebra-side JSON form at all; `nexthop-group` and `interface` have no
+comparable zebra "desired" view). None of this is new policy -- it is what
+the code and `dpa-drift.py` already do, made checkable instead of
+remembered.
+
 ## What this does not decide
 
 - **Which software forwarder is primary.** `vyatta-dataplane` today; VPP is the
