@@ -773,6 +773,48 @@ the #33 conclusion earlier in this record are unaffected by either finding.
 
 ---
 
+### Confirmed on real hardware (2026-09-27)
+
+Reproduced end to end on physical hardware, not QEMU: a BayTrail-platform box
+with a 4-port Intel I210 NIC (`net_e1000_igb` PMD), running the **official,
+unmodified 2105 shipping ISO** installed to disk (`DANOS:Shipping:2105:20210611`,
+kernel 5.4.115), console access over a real USB-serial adapter (`/dev/ttyUSB0`,
+115200) rather than a QEMU chardev.
+
+Bring-up needed one correction not seen in the QEMU harness: `dp0p1s0` was set to
+`address dhcp`, and `show interfaces` kept reporting `Link Down` although the
+switch/NIC link LED was lit and `show interfaces dataplane dp0p1s0 physical`
+separately reported `Link detected: yes` -- the two DHCP clients (this one and the
+test host's) were each waiting for the other to be a server, so neither side ever
+got an address to show. Replacing DHCP with static addresses on both ends
+(`192.168.50.2/24` on `dp0p1s0`, `192.168.50.1/24` on the test host) resolved it
+immediately: `u/u`, auto-negotiated to `a-1g/a-full`, sub-millisecond ping both
+ways.
+
+With connectivity confirmed, `add system image http://192.168.50.1:8080/upg.iso`
+against the newly built `i-danos_2608_20260927T0704-amd64.hybrid.iso` (served over
+plain HTTP from the test host) downloaded cleanly -- 571 MiB in 29s, 18-20 MB/s,
+`ISO download succeeded.` -- and then failed the checksum check with the exact
+text this section already documents:
+
+```
+Checking MD5 checksums of files on the ISO image...md5sum: WARNING: 1 computed
+checksum did NOT match
+Failed!
+1 checksum failures found!
+ISO image is corrupted and can not be used.
+```
+
+No interactive prompt followed; the shipped 2105 installer refuses outright and
+returns to the CLI. This confirms the defect is not an artifact of QEMU's virtio
+disks, sockets or timing, and that the "fix does not reach the systems that need
+it" finding above holds for a real, officially-shipped 2105 install: this
+machine cannot self-heal onto 2608 through `add system image` any more than a
+virtual one can. The machine was left on 2105, unmodified, at the end of this
+test -- no reinstall was attempted.
+
+---
+
 ## 15. `vyatta_update_grub.pl` registers new images in a file nothing reads
 
 Split out from the finding above with its own number because it is a
