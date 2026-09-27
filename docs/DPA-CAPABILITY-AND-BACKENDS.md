@@ -338,10 +338,13 @@ naming any class this file has not yet written a note for.
 `--check-live <ssh-target>` cross-checks the source-derived table against
 what a running box's own `dpa object show` actually says, so a mismatch
 between what the code advertises and what this file parsed is caught rather
-than assumed away. Verified against real data (a captured `dpa object show`
-reply) with a deliberate disagreement injected -- the checker flagged it --
-and again with an agreeing reply, where it did not; not yet run against a
-live router in this pass.
+than assumed away. First run against an actual router found two real bugs in
+the check itself -- it shelled out to a bare `sshpass`/`ssh` that only exists
+inside the `danos-robot` container this toolkit always drives test routers
+through, and its remote command was a bare `sudo` that fails
+non-interactively without `-S` and a piped password, the same trap every
+other root command run this way in this toolkit already avoids. Fixed and
+re-run against an installed 5.57 product image: `agrees with source table`.
 
 Current state, current build: 10 classes, 8 walkable (`route`, `route6`,
 `mpls-route`, `mroute`, `mroute6`, `vrf`, `nexthop-group`, `interface`), 2
