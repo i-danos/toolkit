@@ -41,11 +41,27 @@ likely to have and the one that would be most convincing if it were reported
 wrong.
 """
 
+import importlib.util
 import json
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+# Per-class sub-exclusion notes -- cases inside an enumerable, even compared,
+# class that no whole-class enumerable/compared boolean can carry (the
+# interface class's three-walkable-types limit is the sharpest example).
+# Imported rather than copied, for the same reason dpa-coverage-manifest.py
+# itself parses dpa_classes[] and COMPARED from source instead of remembering
+# them: a second copy of a fact is a second chance for it to go stale, which
+# is exactly how this file's own "enumerates six" comment went wrong for two
+# classes' worth of time (see dpa-coverage-manifest.py's module docstring).
+_manifest_path = Path(__file__).parent / "dpa-coverage-manifest.py"
+_spec = importlib.util.spec_from_file_location("dpa_coverage_manifest", _manifest_path)
+_dpa_coverage_manifest = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_dpa_coverage_manifest)
+CLASS_NOTES = _dpa_coverage_manifest.CLASS_NOTES
 
 # "vrf all", not the default VRF alone.
 #
@@ -354,16 +370,38 @@ def classify_missing(klass, cov):
 
 
 def coverage():
-    """Which object classes exist, and which of them this compares."""
+    """Which object classes exist, which of them this compares, and why not the rest.
+
+    The enumerable/compared booleans say a class was checked or was not; they
+    cannot say a *narrower* reason -- that a compared class still excludes
+    some of its own objects (route/route6's next-hop-group inheritance,
+    mpls-route's reserved labels), or that a not-compared one is that way by
+    design rather than by gap (vrf has no zebra JSON form at all). Those live
+    in CLASS_NOTES, hand-authored and cited in dpa-coverage-manifest.py, so a
+    reader of a drift report does not have to separately run that tool to
+    know a class's fine print. A class this box reports that CLASS_NOTES has
+    no entry for is not silently blank -- it is listed as unnoted, the same
+    signal dpa-coverage-manifest.py's own output gives for the same gap.
+    """
     doc = run(VPLSH_CLASSES)
     if doc is None:
         return None
     classes = doc.get("dpa_objects", {}).get("classes", [])
     have = [c["class"] for c in classes if c.get("enumerable")]
     unavailable = [c["class"] for c in classes if not c.get("enumerable")]
+    all_classes = sorted(have) + sorted(unavailable)
+    notes = {}
+    unnoted = []
+    for name in all_classes:
+        entry = CLASS_NOTES.get(name)
+        if entry is None:
+            unnoted.append(name)
+            continue
+        notes[name] = entry
     return {"enumerable": have, "not_enumerable": unavailable,
             "compared": sorted(COMPARED & set(have)),
-            "not_compared": sorted(set(have) - COMPARED)}
+            "not_compared": sorted(set(have) - COMPARED),
+            "notes": notes, "unnoted_classes": sorted(unnoted)}
 
 
 def main():
