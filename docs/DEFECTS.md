@@ -1840,8 +1840,27 @@ disk itself was never written): `tun0` came up as a real Linux vxlan device (`ip
 `vxlan id 100 remote 1.1.1.2 local 1.1.1.1`, `state UP`) with `10.10.10.1/24` assigned. It does not
 appear in `dpa object show interface` -- only `if:dp0s3` and `if:dp0s4` are listed, both
 `not_needed` -- confirming the code-read rule above for this type too, not just by inference.
-**Still not run:** macvlan, vti, l2tpeth, ppp, ipip and vrf -- those remain read from the code. Not
-compared against zebra; GRE not exercised.
+**VTI and VRF, run 2026-09-28.** `set interfaces vti vti0 address 172.16.0.1/24` committed with no
+error, but no `vti0` link ever appeared (`ip -d link show vti0`: "Device does not exist") -- the
+commit's own warning explains why: "Interface vti0 is not referenced in vpn configuration". A VTI
+is a real Linux interface only once an IPsec/VPN tunnel binds to it; configuring the address alone
+is accepted but inert. This is a different absence from the others in this section -- not "exists
+but outside the class," but "does not exist yet" -- so VTI's class membership remains unverified,
+not confirmed excluded, and needs an actual IPsec peer to test properly. Separately,
+`set routing routing-instance VRF1 instance-type vrf` committed and did create a real link --
+`vrfVRF1`, a Linux VRF master device, `UP`, `NOARP,MASTER,LOWER_UP` -- this is what "vrf" means in
+the interface-class list, not a per-interface `vrf` leaf. It does not appear in
+`dpa object show interface` either (same `if:dp0s3`/`if:dp0s4`-only result), confirming the rule
+for this type on real evidence.
+
+**Still not run:** macvlan, l2tpeth, ppp and ipip -- read from the code, not exercised. Of these,
+macvlan and (non-PPPoE) `ppp` have no top-level `set interfaces <type>` CLI path in this build at
+all (`grep` across every `.yang` in this tree found no `list macvlan` or `list ppp`); `IFT_MACVLAN`
+exists in `vyatta-dataplane` only as VRRP's own mac-passthrough mechanism, created over netlink by
+VRRP itself rather than by an operator, and PPP only appears as PPPoE's underlying link type. So
+those two are better described as "not independently configurable," not "not run yet." l2tpeth and
+ipip do have real YANG list entries and remain genuinely untested. Not compared against zebra; GRE
+not exercised.
 
 ### `accept-lifecycle.sh` across two different versions
 
