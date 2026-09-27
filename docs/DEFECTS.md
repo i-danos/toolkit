@@ -1849,3 +1849,42 @@ The installer that ran was the one on the ISO being added (5.57), so this is the
 takes, not a same-version repeat. **Not covered:** an upgrade that changes the kernel (both images
 carry 6.12.107), and cloud-init/no-network in this cross-version run (`SKIP_BOOT_MODES=1`; both passed
 on the product image in the same-version run and do not depend on the version).
+
+## Real hardware: 2608 boots, and its data plane forwards, on a physical I210 NIC
+
+Not a defect. Recorded because "real hardware" had been `NOT_APPLICABLE`/`NOT_RUN`
+everywhere in this project's own acceptance tables until now, and this closes the first
+piece of it: an image built by this pipeline runs on a physical machine and its data
+plane forwards real packets over a physical NIC, not virtio.
+
+**Hardware.** A BayTrail-platform box with a 4-port Intel I210 (`net_e1000_igb` PMD),
+the same machine used for the [defect 14 real-hardware confirmation](#confirmed-on-real-hardware-2026-09-27)
+above. Console over the same real USB-serial adapter, not a QEMU chardev.
+
+**What was on it.** The official 2105 install was fully reinstalled (not upgraded --
+see defect 14, which is exactly why an in-place upgrade was not attempted) from
+`i-danos_2608_20260927T0704-amd64.hybrid.iso`, the product image built and verified
+earlier the same day.
+
+**Verified after boot**, first over the serial console and then over SSH through the
+NIC itself once it had an address:
+
+| Check | Result |
+|---|---|
+| `show version` | `2608`, `Built on: Sun Sep 27 07:04:33 UTC 2026` -- matches the ISO's own build timestamp exactly; `HW UUID` matches the 2105 install this replaced, confirming same physical machine |
+| `dpkg-query -W vyatta-dataplane vyatta-image-tools` | `3.14.42`, `5.57` -- the versions this release was built and verified with |
+| `systemctl is-active vyatta-dataplane frr configd` | `active active active` |
+| `systemctl --failed` | empty |
+| `dp0p1s0` (physical port 1, `0000:01:00.0`) | brought up with a static address directly: `u/u`, auto-negotiated `a-1g/a-full` -- no DHCP involved this time, so the deadlock recorded under defect 14's real-hardware section did not recur |
+| ping, both directions, host \<-\> router | 0% loss, 0.6-2.0 ms |
+| ssh admin@\<router\> | succeeds; `uname -r` reports `6.12.0-trunk-vyatta-amd64` |
+| `show interfaces dataplane dp0p1s0` counters | 1/5/15-minute receive and transmit pkts/sec and bits/sec all non-zero, tracking the ping and ssh traffic just sent -- packets actually moved through the DPDK data plane on this NIC, not just link-up |
+
+**Not covered.** One port, one link partner, gigabit copper, idle-adjacent traffic
+levels (a handful of pings and one ssh session). Not exercised: the other three
+ports, multi-queue/RSS, sustained throughput or packet-rate limits, VLAN/bonding on
+a physical port, a link flap or NIC reset, offloads (checksum/TSO), and recovery from
+a power loss on this hardware (P2's power-loss work is QEMU-only). `lspci`/`ethtool`
+are not present on the product image; NIC and driver identity came from the CLI's own
+`show interfaces dataplane <if> physical` (`driver: net_e1000_igb`, `bus-info:
+0000:01:00.0`), not from raw PCI tooling.
