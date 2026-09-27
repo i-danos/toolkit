@@ -14,7 +14,7 @@ week's runs against a released image, and asks what follows.
 | Protocols and forwarding | 81 Robot cases pass on the product image: BGP, MPLS-LDP, IPsec, firewall, REST | One run, QEMU virtio, software data plane; no throughput, scale or fault injection |
 | Boot and signing | Secure Boot chain measured with real OVMF; the signing-check defect (comparing a certificate chain, then trusting MOK for grub/kernel) is fixed and verified on the running image | Virtual firmware only; trust rests on an OBS self-signed certificate enrolled as a MOK |
 | DPA | Per-object state is observable (state, backend, enumerable classes); a drift state machine exists | No source of truth for "what should be here"; the interface class covers three interface types only |
-| Hardware | Nothing | Unmeasured, not merely incomplete |
+| Hardware | One port of a physical Intel I210 boots and forwards (2026-09-27) | The other three ports, RSS/multi-queue, throughput/scale, offloads, link-flap recovery, IOMMU/VFIO under Secure Boot, and real firmware boot are all still unmeasured |
 
 **Overall reading.** This is a reproducible, traceable software baseline, not a
 releasable product. Its strongest asset is method, not code volume: `toolkit/README.md`'s
@@ -22,7 +22,8 @@ rule ("a check must come out differently depending on whether the thing is
 true") was violated and caught three times in this week's own work — a
 carriage return defeating a whole-line match, a cloud-init check run where
 cloud-init cannot start, a stopped container read as a boot failure. The
-weakest asset is hardware, which is unknown, not "close."
+weakest asset is hardware: one port of one physical NIC has run (2026-09-27), which
+moves it from "unknown" to "barely started," not to "close."
 
 ## 2. Structural findings worth carrying forward
 
@@ -108,18 +109,27 @@ The risk is designing an abstraction against a single real consumer; mitigate
 by building a recording-only second backend to exercise load, capability
 partial-match, async errors and software fallback without needing hardware.
 
-### D. Real hardware — the largest unknown, worth an early minimal experiment rather than a last step
+### D. Real hardware — no longer untouched, still the largest unknown
 
-- Smallest useful test: one physical host with VT-d, one common NIC, four
-  things only: DPDK binding, the Secure Boot IOMMU gate (`vplane-uio` requires
-  it by design, per `DEFECTS.md` defect 19), recovery from a link flap, and the
-  boot chain on real firmware (not OVMF).
-- This assessment cannot judge whether the current development host has a
-  usable NIC or passthrough capability — that needs an answer from whoever owns
-  the hardware.
-- Doing this early, not last, is deliberate: it is the place most likely to
-  surface a problem QEMU cannot reproduce, and it gates whether "production" is
-  an honest word to use.
+- **Update (2026-09-27):** a first physical run has happened. A 5.57 product
+  image, freshly installed (not upgraded — see the defect 14 checksum finding
+  below) on a BayTrail box with a 4-port Intel I210, brought `vyatta-dataplane`,
+  `frr` and `configd` up clean, forwarded real ping and ssh traffic on one port
+  at gigabit, and its own interface counters showed the traffic moving. See
+  `DEFECTS.md`, defect 14's "Confirmed on real hardware" note and the section
+  "Real hardware: 2608 boots, and its data plane forwards, on a physical I210
+  NIC". This closes "can it run at all," not "is it production-ready on
+  hardware."
+- Smallest useful next test, unchanged from before this run: DPDK binding on
+  the remaining three ports and under real load, the Secure Boot IOMMU gate
+  (`vplane-uio` requires it by design, per `DEFECTS.md` defect 19 — not
+  exercised, since this run did not enable Secure Boot), recovery from a link
+  flap, and the boot chain on real firmware (not OVMF, and this run did not
+  test Secure Boot on this hardware either).
+- Doing the rest early, not last, is still the right call: multi-queue,
+  sustained throughput and IOMMU/VFIO are exactly where QEMU is least likely to
+  reproduce a real failure, and they gate whether "production" is an honest
+  word to use.
 
 ### E. Feature scope — hold, do not extend
 
@@ -155,7 +165,7 @@ document's judgment, not verified here.
 
 1. **Intended use** — lab/research baseline, CPE, or a commercial release?
    Determines how far the hardware and Secure Boot trust work has to go.
-2. **Hardware** — is a physical machine available for D?
+2. **Hardware** — one machine has run one port; is it (or another) available for the rest of D (other ports, load, Secure Boot on real firmware)?
 3. **Secure Boot trust** — is a long-term OBS self-signed certificate enrolled
    as a MOK (operator enrollment required) acceptable, or does this need
    Debian-signed boot components instead (which would give up the custom
