@@ -1761,23 +1761,22 @@ The guest's own interfaces are `dp0s3 dp0s4 dp0s4.100 lo pim6reg pimreg`, so eve
 name is a real interface. `dp0s3` is the management port, which carries a dhcp address and is
 still `not_needed`: the state describes the backend, not whether the port is in use.
 
-**Not explained.** `lo`, `pimreg` and `pim6reg` are not listed, although the trace under
-"Not covered" says they reach `if_l3_enable`. Only ethernet ports and VLAN sub-interfaces
-appear. Not investigated here. Not compared against zebra; GRE not exercised.
+**Why `lo`, `pimreg` and `pim6reg` are not listed (read from the code, consistent with
+the observation above).** Two things have to be true for an interface to appear. Either it
+asked the backend for a router interface (`if_fal_create_l3_intf` ran and set `fal_l3_pd_set`),
+or it is one that *would* have asked but for hw switching being off: `if_created`,
+`if_l3_enabled`, its type's `ifop_l3_enable` is set, and `IF_EMB_FEAT_HW_SWITCHING_DISABLED`
+holds (`if_dpa_emit` in `src/if.c`). Only three interface types define `ifop_l3_enable` and
+call `if_fal_create_l3_intf`: `dpdk-eth` (`dpdk_eth_if_l3_enable`), `gre` and `vlan`.
+`lo_if_ops` (`src/if/loopback.c`) and `pimreg_if_ops` (`src/netinet/ip_mroute.c`) define none,
+so `if_l3_enable` runs for them, as the earlier trace showed, and then calls nothing. The
+code comment says so: types with no L3 router-interface support "are not listed at all: there
+is nothing they could have asked for".
 
-### `accept-lifecycle.sh` across two different versions
-
-The 13 of 13 above adds the ISO the disk was installed from, which is a valid upgrade but not a
-version change. With `UPG_ISO` set the script adds a different ISO and reads `vyatta-image-tools`
-inside each image it boots. Run on 2026-09-27: the disk installed from the 5.55 product ISO
-(`i-danos_2608_20260925T2005`) added the 5.57 product ISO (`i-danos_2608_20260926T0757`) over http.
-The added image is registered (`upg1`) and its files are on disk; selected and rebooted, the running
-image reports `vyatta-image-tools` **5.57**; selected back to `2608` and rebooted, it reports **5.55**
-again. The admin account survives both switches and `dp0s3` keeps its MAC across the three boots.
-12 of 12.
-
-The installer that ran was the one on the ISO being added (5.57), so this is the path an operator
-takes, not a same-version repeat. **Not covered:** an upgrade that changes the kernel (both images
-carry 6.12.107), and cloud-init/no-network in this cross-version run (`SKIP_BOOT_MODES=1`; both passed
-on the product image in the same-version run and do not depend on the version).
-
+**A consequence worth knowing, not run.** By the same rule interfaces of type bridge, vxlan,
+macvlan, vti, l2tpeth, ppp, ipip and vrf are never listed either, even when they carry an L3
+address, because their `ift_ops` set no `ifop_l3_enable` (a bridge SVI is the case an operator
+would ask about). So the class means "L3 interfaces of the three types that can ask the
+backend", and absence from it does not mean the interface does not exist or is not routed. Read
+from the source; a bridge or vxlan interface was not created to see it. Not compared against
+zebra; GRE not exercised.
