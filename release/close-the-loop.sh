@@ -204,6 +204,23 @@ export R2_BUCKET PREFIX WORK
   upload_one Packages.xz application/x-xz
   upload_one Release text/plain ) || true
 
+# A small fraction of uploads (consistently under 1%, different files each
+# run) fail all 3 of upload_one's retries under 12-way concurrency but
+# succeed immediately run serially -- contention for R2/wrangler connections,
+# not a real problem with those files. One uncontended serial pass over just
+# the failures is cheap and clears this reliably; only genuinely stop the run
+# on a file that still fails after that.
+if [ -s "$WORK/upload-failures.log" ]; then
+	retry_list=$(awk '{print $2}' "$WORK/upload-failures.log")
+	echo "   retrying $(echo "$retry_list" | wc -l) failed upload(s) serially (no contention) --" >&2
+	: > "$WORK/upload-failures.log"
+	( cd "$WORK/apt-final"
+	  while read -r f; do
+		[ -n "$f" ] || continue
+		upload_one "$f"
+	  done <<< "$retry_list" ) || true
+fi
+
 if [ -s "$WORK/upload-failures.log" ]; then
 	echo "upload failures, aborting before this snapshot is trusted:" >&2
 	cat "$WORK/upload-failures.log" >&2
