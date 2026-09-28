@@ -185,7 +185,7 @@ upload_one() {
 	return 1
 }
 export -f upload_one
-export R2_BUCKET PREFIX
+export R2_BUCKET PREFIX WORK
 
 : > "$WORK/upload-failures.log"
 ( cd "$WORK/apt-final" && find . -maxdepth 1 -name '*.deb' -printf '%f\n' \
