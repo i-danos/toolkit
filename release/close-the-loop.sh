@@ -307,8 +307,13 @@ wait "$SOCAT_PID" 2>/dev/null || true
 
 acceptance_pass=false
 if $boot_pass; then
+	# tr -d '\r': the serial console emits CRLF line endings, and a raw \r
+	# left at the start of "Version:"'s line makes ^Version: never match --
+	# the line literally begins with \r, not V. Confirmed by hand: the
+	# transcript looks completely normal to a human, cat -A shows why grep
+	# disagreed.
 	boot_output=$(timeout 100 python3 "$SRC/toolkit/vm/console.py" "$RUN/console.sock" tmpuser tmppwd \
-		"show version | cat" "show interfaces | cat" 2>&1) || true
+		"show version | cat" "show interfaces | cat" 2>&1 | tr -d '\r') || true
 	echo "$boot_output" > "$WORK/boot-console-transcript.log"
 	if echo "$boot_output" | grep -q "^Version:" && echo "$boot_output" | grep -qE '^dp[0-9a-z]+ '; then
 		acceptance_pass=true
