@@ -188,14 +188,20 @@ export -f upload_one
 export R2_BUCKET PREFIX WORK
 
 : > "$WORK/upload-failures.log"
+# `|| true` on both: xargs exits 123 when any invocation ultimately failed
+# (a file that needed all 3 retries, say), and under `set -e` that would abort
+# the whole script right here -- before the upload-failures.log check below
+# ever runs -- turning a single flaky upload into a silent, unexplained exit.
+# upload_one already records real failures to that log; let this block finish
+# and let the check after it be what decides whether the run stops.
 ( cd "$WORK/apt-final" && find . -maxdepth 1 -name '*.deb' -printf '%f\n' \
-	| xargs -P 12 -I{} bash -c 'upload_one "$@"' _ {} )
+	| xargs -P 12 -I{} bash -c 'upload_one "$@"' _ {} ) || true
 
 ( cd "$WORK/apt-final"
   upload_one Packages text/plain
   upload_one Packages.gz application/gzip
   upload_one Packages.xz application/x-xz
-  upload_one Release text/plain )
+  upload_one Release text/plain ) || true
 
 if [ -s "$WORK/upload-failures.log" ]; then
 	echo "upload failures, aborting before this snapshot is trusted:" >&2
