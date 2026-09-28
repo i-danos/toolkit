@@ -230,14 +230,18 @@ echo "   ISO: $(basename "$ISO")  sha256=$ISO_SHA256"
 
 # ---- stage 5: QEMU boot acceptance ----
 echo "-- stage 5: QEMU boot acceptance --"
-BOOT_WORK="$WORK/boot"
-rm -rf "$BOOT_WORK"
-mkdir -p "$BOOT_WORK/binary"
-xorriso -osirrox on -indev "$ISO" -extract /live "$BOOT_WORK/live" > /dev/null 2>&1
-ln -sf "$BOOT_WORK/live" "$BOOT_WORK/binary/live"
+# boot-vm.sh's live-boot mode looks for vmlinuz/initrd.img at
+# $(dirname ISO)/binary/live -- a sibling of the ISO itself, not of some other
+# work directory -- so the extracted tree has to land there, not under $WORK.
+ISO_DIR=$(cd "$(dirname "$ISO")" && pwd)
+BOOT_LIVE="$WORK/boot-live"
+rm -rf "${BOOT_LIVE:?}" "${ISO_DIR:?}/binary"
+xorriso -osirrox on -indev "$ISO" -extract /live "$BOOT_LIVE" > /dev/null 2>&1
+mkdir -p "$ISO_DIR/binary"
+ln -sf "$BOOT_LIVE" "$ISO_DIR/binary/live"
 
 RUN="$OBS_DIR/run/close-the-loop"
-rm -rf "$RUN"
+rm -rf "${RUN:?}"
 mkdir -p "$RUN"
 BOOT_LOG="$WORK/boot.log"
 bash "$SRC/toolkit/vm/boot-vm.sh" "$ISO" close-the-loop 12222 4096 > "$BOOT_LOG" 2>&1 &
@@ -248,6 +252,14 @@ wait "$BOOT_PID" || true
 # more robust than parsing its stdout for a path it does not actually print.
 RUN="$OBS_DIR/run/close-the-loop"
 grep -q "console socket up" "$BOOT_LOG" || { echo "qemu did not start -- see $BOOT_LOG" >&2; cat "$BOOT_LOG" >&2; exit 1; }
+
+# boot-vm.sh only opens the console socket; nothing writes console.log unless
+# something connects and captures it. socat does that here -- but the QEMU
+# serial backend serves exactly one client, so this has to be killed before
+# console.py connects below, or console.py's login blocks until it times out
+# ("LOGIN FAILED: timed out") with no indication the socket was the problem.
+socat -u UNIX-CONNECT:"$RUN/console.sock" - > "$RUN/console.log" 2>/dev/null &
+SOCAT_PID=$!
 
 boot_pass=false
 boot_output=""
@@ -261,6 +273,8 @@ for attempt in $(seq 1 30); do
 		break
 	fi
 done
+kill "$SOCAT_PID" 2>/dev/null || true
+wait "$SOCAT_PID" 2>/dev/null || true
 
 acceptance_pass=false
 if $boot_pass; then
@@ -278,7 +292,7 @@ if [ -f "$RUN/qemu.pid" ]; then
 	kill "$qpid" 2>/dev/null || true
 	while kill -0 "$qpid" 2>/dev/null; do sleep 1; done
 fi
-rm -f "$RUN"/*.sock 2>/dev/null || true
+rm -f "${RUN:?}"/*.sock 2>/dev/null || true
 
 if ! $acceptance_pass; then
 	echo "QEMU acceptance FAILED (boot_pass=$boot_pass) -- see $WORK/boot.log and $WORK/boot-console-transcript.log" >&2
