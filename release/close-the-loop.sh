@@ -259,6 +259,11 @@ echo "-- stage 5: QEMU boot acceptance --"
 # work directory -- so the extracted tree has to land there, not under $WORK.
 ISO_DIR=$(cd "$(dirname "$ISO")" && pwd)
 BOOT_LIVE="$WORK/boot-live"
+# xorriso extracts the ISO9660 tree's own read-only permissions (dr-xr-xr-x),
+# so a leftover extraction from a prior run blocks a plain rm -rf with
+# "Permission denied" -- unlink needs write on the parent dir, which xorriso
+# never grants. chmod it writable first.
+chmod -R u+w "$BOOT_LIVE" 2>/dev/null || true
 rm -rf "${BOOT_LIVE:?}" "${ISO_DIR:?}/binary"
 xorriso -osirrox on -indev "$ISO" -extract /live "$BOOT_LIVE" > /dev/null 2>&1
 mkdir -p "$ISO_DIR/binary"
