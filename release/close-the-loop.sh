@@ -180,6 +180,7 @@ upload_one() {
 	for attempt in 1 2 3; do
 		npx wrangler r2 object put "$R2_BUCKET/$PREFIX/$f" --file "$f" --content-type "$ct" --remote \
 			> "/tmp/close-loop-upload-$$.log" 2>&1 && return 0
+		sleep 2
 	done
 	echo "FAIL $f" >> "$WORK/upload-failures.log"
 	return 1
