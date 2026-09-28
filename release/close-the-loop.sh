@@ -107,8 +107,21 @@ python3 -c "import json; print('\n'.join(json.load(open('$WORK/obs-manifest.json
   > "$WORK/package-list.txt"
 while read -r pkg; do
 	[ -n "$pkg" ] || continue
-	$OSC getbinaries "$PRJ" "$pkg" "$REPO" "$ARCH" -d "$LOCAL_REPO" < /dev/null > /dev/null 2>&1 \
-		|| echo "   warning: getbinaries failed for $pkg, will show up as missing below" >&2
+	# osc getbinaries hits transient connection resets under back-to-back
+	# sequential calls (IncompleteRead on the OBS side, seen before on large
+	# source tarballs -- see danos-r2-containerized-iso-flow); a fixed-count
+	# retry here fixed every occurrence observed so far, and getbinaries is
+	# idempotent so a retry never duplicates or corrupts anything already
+	# downloaded.
+	ok=false
+	for attempt in 1 2 3; do
+		if $OSC getbinaries "$PRJ" "$pkg" "$REPO" "$ARCH" -d "$LOCAL_REPO" < /dev/null > /dev/null 2>&1; then
+			ok=true
+			break
+		fi
+		sleep 2
+	done
+	$ok || echo "   warning: getbinaries failed for $pkg after 3 attempts, will show up as missing below" >&2
 done < "$WORK/package-list.txt"
 
 deb_count=$(find "$LOCAL_REPO" -maxdepth 1 -name '*.deb' | wc -l)
