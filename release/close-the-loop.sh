@@ -374,8 +374,23 @@ npx wrangler r2 object put "$R2_BUCKET/$PREFIX/provenance.json" --file "$WORK/pr
 	--content-type application/json --remote > /dev/null 2>&1
 echo "   provenance archived to $R2_DOMAIN/danos-apt/$REPO/snapshots/$TS/provenance.json"
 
+# ---- stage 7: formal release assembly ----
+# mk-release.py builds the audited P0.5 release directory (sbom.json,
+# source-revision-map.json, build-inputs.json, verification-summary.json)
+# from the ISO's own manifest plus this run's own apt-final mirror --
+# --obs-repo points at $WORK/apt-final rather than mk-release.py's default
+# path, since this run's mirror never lands there. Only reached once QEMU
+# acceptance has already passed, so a formal release directory is never
+# assembled for an ISO that failed to boot.
+echo "-- stage 7: formal release assembly --"
+RELEASE_OUT=$(python3 "$SRC/toolkit/release/mk-release.py" "$ISO" \
+	--obs-repo "$WORK/apt-final" --sources "$SRC" --obs-dir "$OBS_DIR")
+echo "$RELEASE_OUT" | sed 's/^/   /'
+RELEASE_DIR=$(echo "$RELEASE_OUT" | grep '^== ' | sed 's/^== //; s/ ==$//')
+
 echo "== close-the-loop: PASS =="
 echo "   snapshot:   $R2_DOMAIN/danos-apt/$REPO/snapshots/$TS/"
 echo "   iso:        $ISO"
 echo "   sha256:     $ISO_SHA256"
 echo "   version:    $reported_version"
+echo "   release:    $RELEASE_DIR"
