@@ -237,20 +237,57 @@ echo "   uploaded to $R2_DOMAIN/danos-apt/$REPO/snapshots/$TS/"
 npx wrangler r2 object put "$R2_BUCKET/$PREFIX/_READY" --file "$WORK/READY_MARKER" \
 	--content-type text/plain --remote > /dev/null 2>&1
 
-# ---- stage 4: containerized ISO build ----
-echo "-- stage 4: containerized ISO build --"
-BUILD_LOG="$WORK/iso-build.log"
+# ---- stage 4: containerized ISO build (product variant) ----
+echo "-- stage 4: containerized ISO build (product) --"
+rm -rf "${WORK:?}/container-output-product"
+BUILD_LOG="$WORK/iso-build-product.log"
 ( cd "$BUILD_ISO_DIR" && \
   DANOS_APT_URL="$R2_DOMAIN/danos-apt/$REPO/snapshots/$TS/" \
-  OUTPUT="$WORK/container-output" \
+  OUTPUT="$WORK/container-output-product" \
+  ISO_VARIANT=product \
   ./scripts/build-iso-container.sh > "$BUILD_LOG" 2>&1 ) \
-  || { echo "ISO build failed -- see $BUILD_LOG" >&2; tail -40 "$BUILD_LOG" >&2; exit 1; }
+  || { echo "ISO build (product) failed -- see $BUILD_LOG" >&2; tail -40 "$BUILD_LOG" >&2; exit 1; }
 
-ISO=$(find "$WORK/container-output" -maxdepth 1 -name '*.hybrid.iso' -newer "$WORK/obs-manifest.json" | head -1)
-[ -n "$ISO" ] || ISO=$(find "$WORK/container-output" -maxdepth 1 -name '*.hybrid.iso' | sort | tail -1)
-[ -n "$ISO" ] && [ -f "$ISO" ] || { echo "no ISO produced" >&2; exit 1; }
+ISO=$(find "$WORK/container-output-product" -maxdepth 1 -name '*.hybrid.iso' | sort | tail -1)
+[ -n "$ISO" ] && [ -f "$ISO" ] || { echo "no product ISO produced" >&2; exit 1; }
 ISO_SHA256=$(sha256sum "$ISO" | awk '{print $1}')
-echo "   ISO: $(basename "$ISO")  sha256=$ISO_SHA256"
+echo "   product ISO: $(basename "$ISO")  sha256=$ISO_SHA256"
+
+# ---- stage 4b: containerized ISO build (test variant) + package-set diff ----
+# Closes item 1 of the 2026-09-28 project evaluation: product and test images
+# built from the SAME immutable snapshot must carry an identical package set.
+# The test overlay only drops config-file content into packages already
+# selected -- it never adds or removes a package -- so any difference here
+# means real drift, which is exactly what used to happen when the two
+# variants were built minutes-to-days apart against a moving live Debian
+# mirror (e.g. bind9 landing at different versions on each side; see
+# danos-release-and-secureboot-flow). Building both back-to-back from one
+# pinned snapshot in the same run doesn't just check for that drift, it
+# removes the time gap that caused it.
+echo "-- stage 4b: containerized ISO build (test) + package-set diff --"
+rm -rf "${WORK:?}/container-output-test"
+BUILD_LOG_TEST="$WORK/iso-build-test.log"
+( cd "$BUILD_ISO_DIR" && \
+  DANOS_APT_URL="$R2_DOMAIN/danos-apt/$REPO/snapshots/$TS/" \
+  OUTPUT="$WORK/container-output-test" \
+  ISO_VARIANT=test \
+  ./scripts/build-iso-container.sh > "$BUILD_LOG_TEST" 2>&1 ) \
+  || { echo "ISO build (test) failed -- see $BUILD_LOG_TEST" >&2; tail -40 "$BUILD_LOG_TEST" >&2; exit 1; }
+
+TEST_ISO=$(find "$WORK/container-output-test" -maxdepth 1 -name '*.hybrid.iso' | sort | tail -1)
+[ -n "$TEST_ISO" ] && [ -f "$TEST_ISO" ] || { echo "no test ISO produced" >&2; exit 1; }
+echo "   test ISO: $(basename "$TEST_ISO")"
+
+product_packages=$(find "$WORK/container-output-product" -maxdepth 1 -name '*.packages' | sort | tail -1)
+test_packages=$(find "$WORK/container-output-test" -maxdepth 1 -name '*.packages' | sort | tail -1)
+[ -n "$product_packages" ] && [ -n "$test_packages" ] || { echo "missing .packages manifest for diff" >&2; exit 1; }
+
+if ! diff -u <(sort "$product_packages") <(sort "$test_packages") > "$WORK/product-test-package-diff.txt"; then
+	echo "product/test package sets differ -- this should be impossible, the overlay never touches packages:" >&2
+	cat "$WORK/product-test-package-diff.txt" >&2
+	exit 1
+fi
+echo "   product and test package sets are identical ($(wc -l < "$product_packages") packages)"
 
 # ---- stage 5: QEMU boot acceptance ----
 echo "-- stage 5: QEMU boot acceptance --"
