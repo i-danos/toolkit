@@ -134,8 +134,16 @@ echo "   $deb_count .deb files present locally"
 missing=0
 while read -r pkg; do
 	[ -n "$pkg" ] || continue
+	# `|| true`: grep exits 1 on zero matches (not an error, but nonzero), and
+	# under set -e a failing command substitution inside an assignment kills
+	# the whole script right here -- silently, same as the xargs/set -e bug
+	# in stage 3's upload loop. A package that genuinely has zero .deb
+	# binaries is implausible, but a transient osc api hiccup producing empty
+	# output isn't, and this check is a secondary safety net on top of stage
+	# 2's own getbinaries retries -- skipping one package's cross-check on a
+	# hiccup is a far smaller cost than losing the whole run with no error.
 	expected=$($OSC api "/build/$PRJ/_result?package=$pkg&repository=$REPO&arch=$ARCH&view=binarylist" \
-		< /dev/null 2>/dev/null | grep -oE 'filename="[^"]+\.deb"' | sed 's/filename="//; s/"$//')
+		< /dev/null 2>/dev/null | grep -oE 'filename="[^"]+\.deb"' | sed 's/filename="//; s/"$//') || true
 	while read -r f; do
 		[ -n "$f" ] || continue
 		[ -f "$LOCAL_REPO/$f" ] || { echo "   MISSING: $f (from $pkg)" >&2; missing=$((missing + 1)); }
@@ -423,7 +431,7 @@ echo "-- stage 7: formal release assembly --"
 RELEASE_OUT=$(python3 "$SRC/toolkit/release/mk-release.py" "$ISO" \
 	--obs-repo "$WORK/apt-final" --sources "$SRC" --obs-dir "$OBS_DIR")
 echo "$RELEASE_OUT" | sed 's/^/   /'
-RELEASE_DIR=$(echo "$RELEASE_OUT" | grep '^== ' | sed 's/^== //; s/ ==$//')
+RELEASE_DIR=$(echo "$RELEASE_OUT" | grep '^== ' | sed 's/^== //; s/ ==$//') || true
 
 echo "== close-the-loop: PASS =="
 echo "   snapshot:   $R2_DOMAIN/danos-apt/$REPO/snapshots/$TS/"
