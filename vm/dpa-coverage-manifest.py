@@ -124,11 +124,18 @@ CLASS_NOTES = {
     },
     "qos-if": {
         "sub_exclusions": [],
-        "notes": "no walker exists; not a narrow class, an absent one",
+        "notes": "walks software scheduler state, one object per port with "
+                 "qos configured, key qos-if:<ifname>; hardware state is "
+                 "consulted only on the FAL path; not compared against "
+                 "anything; only the software path is unit-tested "
+                 "(no hardware available)",
     },
     "qos-vlan": {
         "sub_exclusions": [],
-        "notes": "no walker exists; not a narrow class, an absent one",
+        "notes": "walks software subport state, one object per vlan subport "
+                 "(subport 0, the port default, is excluded), key "
+                 "qos-vlan:<ifname>/<vlan>; not compared against anything; "
+                 "only the software path is unit-tested",
     },
 }
 
