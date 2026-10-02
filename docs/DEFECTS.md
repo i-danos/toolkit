@@ -2040,3 +2040,96 @@ unverified on this hardware; what is now known is why the standard command didn'
 enrollment, that the workaround this project already has for QEMU applies unchanged here,
 that this firmware refuses a Setup-Mode `db` write from the OS, and that the enable toggle
 was not found to be reachable in the time spent looking.
+
+
+## Real hardware: forwarding baseline on the J1900 / I211 bench (2026-10-02)
+
+Not a defect. Recorded so that the one number everyone remembers -- "940 Mbit/s" -- is not read
+as more than it is. Everything below was measured on the 2608 product image built by
+`close-the-loop.sh` (`i-danos_vyatta_20261001T1242`, `vyatta-dataplane` 3.14.44).
+
+**Bench.** Four identical boxes: Celeron J1900 (4 cores, 3.8 GB), four Intel I211 ports each
+(`lspci`: 8086:1539 rev 03, `igb`). One USB-serial cable, no switch, one wired NIC on the test
+host. Path under test: test host (iperf3 in a container, kernel stack) -> R1 `dp0p1s0` ->
+**R1 data plane** -> R1 `dp0p4s0` -> R3 `enp4s0` (iperf3, kernel stack). R3 was booted *live*
+and its NICs handed back to the kernel `igb` driver, so neither end is DANOS. That matters: an
+iperf3 endpoint that is itself a DANOS router terminates traffic on the punt path, which tops
+out far lower (below) and would have been measured instead of the forwarding path.
+
+**What was measured.**
+
+| Test (one direction, p1 -> p4) | Result |
+|---|---|
+| TCP, 1 stream, both directions | 934 / 941 Mbit/s, 0 retransmits |
+| TCP, 4 streams | 941 Mbit/s, 909 retransmits |
+| UDP 1470-byte, 500 / 800 / 950 Mbit/s offered | 0% / 0.023% / 0.007% loss |
+| UDP 1400-byte, unlimited, 4 streams | 953 Mbit/s, 0% loss (85 kpps) |
+| UDP 512-byte, unlimited, 4 streams | 178 kpps delivered of 190 offered, 6.2% loss |
+| UDP 128-byte, unlimited, 4 streams | 223 kpps delivered of 308 offered, 27% loss |
+| UDP 64-byte, unlimited, 4 streams | 235 kpps delivered of 356 offered, 34% loss |
+
+**What this does and does not establish.**
+
+- The 940 Mbit/s figures are a *large-packet* result. At 1500 bytes a gigabit port needs about
+  82 kpps; at 64 bytes it needs 1.488 Mpps. The measured ceiling here is roughly **0.22 Mpps in
+  one direction**, about 15% of 64-byte line rate. "Forwards at line rate" is true for
+  1400-1500 byte traffic on this hardware and false for small packets.
+- Where the small-packet loss happens is measured, not guessed: R1's ingress counters stayed at
+  `Input discarded 0` / `Input missed 0` while `dp0p4s0` `Dropped ring` rose by 2,042,202 and
+  `Dropped h/w queue` stayed 0. R1 received 9,318,580 packets, transmitted 7,271,238, and
+  dropped 2,042,202 at the ring -- the three agree. The data plane has three forwarding cores
+  (`vplsh -l -c cpu`: `forwarding_cores: e`) and every port has only RX/TX queue 0, so there is
+  no RSS spread; for this direction the receive runs on one core and the transmit on another,
+  joined by a ring that fills. **Why** that ring is the limit (core speed, ring size, per-packet
+  cost) was not profiled; the table is a result, not a diagnosis.
+- The offered rate at 64 bytes (356 kpps) was limited by the test host's iperf3, so this is the
+  behaviour at that injection rate, not proof that 0.22 Mpps is an absolute maximum.
+- The cross-check that rules out the endpoint: R1 `dp0p1s0` in-packets and `dp0p4s0`
+  out-packets differ by 50 over 3.59 million in the large-packet run (discards 0, no new
+  output drops).
+
+**The punt path is a different, much lower number, and is easy to measure by accident.**
+Traffic addressed *to* a DANOS box (an iperf3 server on R1 or R2, or an ssh session) is
+punted to the kernel. Measured: TCP 311 Mbit/s into R1, 573 Mbit/s out of it, UDP 900M offered
+-> 458 Mbit/s received. Forwarding through R1 to a DANOS endpoint gave 252 / 549 Mbit/s TCP and
+328 Mbit/s UDP, with R1's own counters showing no loss -- the endpoint was the bottleneck. A
+benchmark whose far end is a DANOS router measures the far end.
+
+**Shaping.** A 500 Mbit/s `policy qos` shaper on the egress port (`dp0p4s0`):
+UDP 300M and 450M offered, 0% loss; 600M and 950M offered, held to about 475 Mbit/s of iperf3
+payload (about 500 Mbit/s on the wire); TCP 468 Mbit/s. `qos-if:dp0p4s0` appeared as `full`,
+backend `sw-dataplane`; after removal it was absent while the class still reported
+`enumerable: true`. The first TCP run after removing the policy reached only 541 Mbit/s, and
+four runs after a 20-second wait reached 940-941 Mbit/s with no new `Dropped ring`: a transient
+of roughly ten seconds, not a residue. Changing a policy under load briefly costs throughput.
+The hardware (FAL) QoS path was not exercised; only the software one.
+
+**Corrections to what the earlier sections of this document say.**
+
+- *NIC model.* The sections above name an I210. `lspci` on the four boxes reports **I211**
+  (8086:1539). The `net_e1000_igb` PMD serves both, which is probably how the I210 came to be
+  recorded, but it is unknown whether the earlier box was a different one. An I211 port has at
+  most **two** queues; any multi-queue or RSS statement must use that, not I210's figure.
+- *Machine identity.* "`HW UUID` matches the 2105 install" was used above to show it was the same
+  physical machine. Two of the four boxes here report the **same** DMI `product_uuid`
+  (`5e24fe9c-c8d0-45bd-a79f-54ea5fbd3d97`), so on this batch that UUID is a factory default and
+  identifies nothing. The earlier claim is unproven, not disproven.
+- *The product image's login is a sandbox.* `admin` (level `admin`) has no `sudo`, `systemctl`,
+  `ip` or `vplsh`, and `systemctl is-active` there answers "Host is down" for a healthy box.
+  `set system login user <name> level superuser` plus a **fresh login** is what gives them;
+  this was already recorded (defect 14's notes) and was rediscovered here the slow way.
+  `show platform dataplane objects | grep qos` works inside the sandbox; `vplsh` does not.
+
+**Not covered.** Simultaneous multi-port load and both directions at once; any run with more
+than one queue per port (I211 caps at two); IMIX or mixed-size traffic; link flap or NIC reset
+under load; IOMMU/VFIO and Secure Boot on this hardware -- **the J1900 has no VT-d**
+(`/sys/kernel/iommu_groups` is empty, cmdline `iommu=pt`), so the `vplane-uio` IOMMU gate
+(defect 19) cannot be exercised on any of these boxes and needs a different machine.
+
+**Method note for the next person.** To use a DANOS box as a plain Linux host (live image): the
+data plane rebinds NICs to `uio_pci_generic` and `/lib/udev/rules.d/20-vyatta-net-dataplane.rules`
+-> `vyatta-udev.sh` -> `/lib/vplane/vplane-uio` re-takes any NIC 0.25 s after it is given back
+to `igb` (symptom: `igb ... removed PHC on enpNs0`, PCI device with no driver). Stop
+`vyatta-dataplane` and `vplane-controller.{socket,service}`, mask that rule with an empty file
+of the same name in `/etc/udev/rules.d` plus `udevadm control --reload`, then unbind from
+`uio_pci_generic` and bind `igb`. `dp0pNs0` left behind is a virtual device, not the NIC.
