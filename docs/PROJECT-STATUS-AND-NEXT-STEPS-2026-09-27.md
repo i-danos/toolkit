@@ -6,6 +6,11 @@ What this project is, evidenced by this week's release-lock work and by
 new investigation; it reads what those three already established and this
 week's runs against a released image, and asks what follows.
 
+**Updated 2026-10-03.** The original text below is kept as written on 2026-09-27;
+later facts are added as dated updates, in the style of the corrections already in
+section 3C. The main change is in the new "What the hardware bench changed"
+block after the overall reading, and in the updates to A, B, D and section 5.
+
 ## 1. What is actually established
 
 | Dimension | Evidenced | Gap |
@@ -25,6 +30,30 @@ cloud-init cannot start, a stopped container read as a boot failure. The
 weakest asset is hardware: all four ports of one physical NIC have run individually
 (2026-09-27), which moves it further from "unknown" but still not to "close" -- nothing
 has run under load or simultaneously.
+
+### What the hardware bench changed (2026-10-01 to 2026-10-03)
+
+Four identical boxes (Celeron J1900, four Intel **I211** ports each) became available, so
+"Hardware" is no longer one machine run port by port. What was measured, with the limits that go
+with each number (full detail in `DEFECTS.md`, sections dated 2026-10-02 and 2026-10-03):
+
+| Dimension | Now evidenced on hardware | Still open |
+|---|---|---|
+| Forwarding | One port, one direction, through the data plane: TCP 934 / 941 Mbit/s with 0 retransmits, UDP 950 Mbit/s with 0.007% loss; TCP in both directions at once 935 / 939 Mbit/s | **Small packets top out near 0.22 Mpps** one way (about 15% of 64-byte line rate), loss at the core-to-core ring, 3 forwarding cores, 1 queue per port. Two-way small-packet rate not measured (the test endpoint was the limit). No multi-queue/RSS (an I211 port has at most 2 queues), no IMIX |
+| Punt path | Traffic *to* a DANOS box measured separately: TCP 311 / 573 Mbit/s, UDP 458 Mbit/s received of 900 | A benchmark whose far end is a DANOS router measures that router, not the path under test |
+| QoS | A 500 Mbit/s shaper holds iperf3 payload to about 475 Mbit/s; the first TCP run after removing it was slow for about 10 s | Only the software path; the hardware (FAL) path was not exercised |
+| Upgrade and rollback | `add system image` of a 2608 ISO onto a 5.57 system, reboot into it, roll back by default-boot, delete it: all work; the defect 14 checksum no longer fails | Configuration is per image (rollback drops changes made since the upgrade); only a same-version image was added, so no cross-release configuration migration is shown |
+| 2105 to 2608 | `add system image` from 2105 now passes the checksum and fails at mounting the live rootfs (a deliberate compat symlink collides with the 2105 installer). A 2105 configuration loads on 2608 with no warnings and QoS, firewall, NAT, VLAN interfaces came up | **Owner decision 2026-10-02: this upgrade work is stopped.** Secrets cannot be exported from an `admin`-level 2105 account (masked); credential carry-over untested |
+| Routing protocols | OSPF (two adjacencies, equal-cost paths) and eBGP between two boxes run | Runtime state was checked only for these two boxes |
+| Fault behaviour | **A pulled cable costs 8 s to about 53 s of one-way traffic loss** with two parallel links, although OSPF and BGP reconverge in under a second. Traced to the kernel keeping the dead next hop until the neighbour entry reaches FAILED; the kernel interface never loses carrier | Why the kernel waits for FAILED is a correlation, not a derived mechanism; the data plane's own forwarding table was not observed; nothing changed (owner's rule) |
+| DPA | All ten object classes enumerate, `qos-if` and `qos-vlan` included, verified on hardware (below) | See section 3B |
+
+**Corrections to this document's own premises.** The hardware is **I211**, not I210 as the original table
+and section 3D say; both use the `igb` driver, which is probably how the model was recorded, and it is
+unknown whether the 2026-09-27 box was one of these four. "Same physical machine" was shown there by a
+matching `HW UUID`; the four boxes report the **same** DMI `product_uuid`, so that evidence does not
+identify a machine. **The J1900 has no VT-d** (`/sys/kernel/iommu_groups` is empty), so the IOMMU /
+Secure Boot gate cannot be exercised on any of these four boxes.
 
 ## 2. Structural findings worth carrying forward
 
@@ -56,7 +85,8 @@ has run under load or simultaneously.
    least four failures that read as product failures and were host issues:
    disk full twice, a tmpfs exhausted by another project, a stopped Docker
    container, and an unrelated process holding 9.7 GB of memory during a boot
-   timeout.
+   timeout. (2026-10-03: the root filesystem again reached 100% with 861 MB free; about
+   13 GB of regenerable QEMU disk images from past acceptance runs were removed, reports kept.)
 
 ## 3. Five lines of work, and where the evidence points
 
@@ -77,6 +107,13 @@ has run under load or simultaneously.
   document it as unsupported, rather than leaving it silently untested).
 - **Exit criterion:** one command, on a clean host, from an OBS revision to two
   verified images and their release directories.
+- **Update (2026-09-30):** met. `toolkit/release/close-the-loop.sh` runs OBS all-green check, an
+  immutable R2 snapshot, a containerized ISO build, QEMU acceptance, a provenance archive and the
+  release directory in one command; product and test images built from the same snapshot have an
+  identical package manifest (1522 packages in that build; the 1524 in the table above was the
+  earlier pair); wired into GitHub Actions with a self-hosted runner, manually triggered. The
+  2026-10-01 release image (`i-danos_vyatta_20261001T1242`) carries `vyatta-dataplane` 3.14.44 and
+  `vyatta-image-tools` 5.57. Not part of the exit criterion and still open: the two named gaps above.
 
 ### B. DPA: a coverage contract before any repair
 
@@ -97,6 +134,24 @@ yet:
 - **What would change this recommendation:** evidence that some class of drift
   persists under real load and causes a forwarding error, not just a
   diagnostic disagreement.
+- **Update (2026-10-02/03), coverage:** `qos-if` and `qos-vlan` previously reported "no walker", which a
+  reader cannot tell apart from "no QoS configured"; both now enumerate (`vyatta-dataplane` 3.14.44,
+  `e8d90d90`), so all ten classes are walkable and the coverage manifest says so. They report
+  *software* scheduler state (one `qos-if` per port, one `qos-vlan` per VLAN subport) and consult the
+  hardware object database only on the FAL path. Checked three ways: a unit test (and a mutation of the
+  walker that the test caught), and on hardware, where `qos-if:dp0p4s0` and `qos-vlan:dp0p4s0/10`,
+  `/20` appeared as `full` on `sw-dataplane`, removing only VLAN 20's policy removed only `/20`, and
+  removing the rest left both classes `enumerable: true` with no objects. **Untested:** the hardware
+  (FAL) path and the `no_support` mapping. Diagnostic only; no repair code, per the owner's decision.
+- **Update (2026-10-03), the trigger condition, partly:** B says repair is only justified by drift that
+  causes a forwarding error under real load. The nearest evidence so far is not about DPA: under an
+  injected link fault the *kernel* route disagreed with FRR's for 8 to 53 s (and, with an admin-down
+  injection, was sometimes missing altogether, 3 of 15 timed trials). It is a fault, not load, at the
+  FRR/kernel layer, and the data plane's own table was not observed, so it does not by itself change
+  the recommendation. It does show a limit: the data plane's route objects on `sw-dataplane` read
+  `no_support` and carry no next hop, so the object view could not have shown this disagreement.
+  Also unexplained: VLAN sub-interfaces read `no_support` in the interface class while physical ports
+  read `not_needed`.
 
 ### C. Backend contract (capability + per-object backend) -- built, and extended further
 
@@ -149,6 +204,16 @@ done and is the concrete next increment if this line continues.
   sustained throughput and IOMMU/VFIO are exactly where QEMU is least likely to
   reproduce a real failure, and they gate whether "production" is an honest
   word to use.
+- **Update (2026-10-01 to 2026-10-03):** four J1900 / I211 boxes, one serial adapter, no switch. What
+  ran, and what each result does and does not say, is in the block "What the hardware bench changed"
+  above. Of the 2026-09-27 list: *aggregate/simultaneous throughput* is partly done (both directions
+  of one port pair at once; four ports simultaneously was not), *link-flap recovery* is done for a
+  pulled cable under a light 10-packets-per-second probe and found to be a real weakness, *multi-queue/RSS*
+  is not done and an I211 caps at two queues, *offloads* untested. **Not possible on this hardware:**
+  the Secure Boot IOMMU gate (no VT-d), so item D's IOMMU/VFIO part needs a different machine, and
+  real-firmware Secure Boot was not attempted. Method notes the next person will want (live-image
+  plain-host recipe, serial prompt traps, sandbox account) are at the end of the 2026-10-02 sections of
+  `DEFECTS.md`.
 
 ### E. Feature scope — hold, do not extend
 
@@ -180,6 +245,11 @@ Each step is defined by an exit criterion, not a duration. Any timeline in
 another document (this project's own or an external assessment) is that
 document's judgment, not verified here.
 
+**Update (2026-10-03):** A is closed. B's coverage step is closed for the object classes that exist. D
+is no longer blocked on a machine, but is now blocked, for the IOMMU part, on a machine *with VT-d*. The
+fault-behaviour finding (8 to 53 s on a pulled cable) is new work that was not in this order; what to do
+about it is open (section 5).
+
 ## 5. Decisions this needs from the project owner
 
 1. **Intended use** — lab/research baseline, CPE, or a commercial release?
@@ -192,10 +262,31 @@ document's judgment, not verified here.
 4. **Repair posture** — is "diagnose first, repair off by default" acceptable
    as the working rule until B's coverage manifest exists?
 
+**Answers recorded 2026-10-01 / 2026-10-02:**
+
+1. Intended use: **commercial release.**
+2. Hardware: none at first; **superseded 2026-10-02** by four J1900 / I211 boxes (no VT-d).
+3. Secure Boot trust: **accepted**, OBS self-signed certificate plus MOK, with the expiry
+   (2028-10-29) and SBAT-revocation risk managed as a running cost.
+4. Repair posture: **accepted**, diagnose first, repair off by default; no repair or reconciliation
+   code is written until a class of drift is shown to cause a forwarding error under real load.
+5. (new) **2105 to 2608 upgrade work: stopped** (2026-10-02). The supported route off 2105 is a fresh
+   install plus configuration carry-over, with the limits in `DEFECTS.md`.
+
+**Open, needing the owner:**
+
+6. The 8 to 53 s hole when a cable is pulled between two routers with parallel links. Options a
+   person could evaluate, none applied or tested: BFD between the routers, shorter neighbour timers,
+   propagating link loss to the kernel carrier, or avoiding equal-cost groups that contain a path
+   through a port whose link is down. Under decision 4 nothing has been changed.
+7. Hardware with VT-d for the IOMMU / Secure Boot part of D, or a decision to leave that part unproven.
+
 ## Sources
 
 `ARCHITECTURE-ASSESSMENT.md`, `DPA-CAPABILITY-AND-BACKENDS.md`,
 `FRR-ROUTE-REPAIR-DECISION.md`, `DEFECTS.md` (interface-class sections, defects
 19, 21, 22, 23), this week's release directories under
 `/home/aikon/danos/releases/i-danos_2608_20260926*` and their
-`verification-summary.json`.
+`verification-summary.json`. Updates: the sections of `DEFECTS.md` headed "Real hardware" and dated
+2026-10-02 and 2026-10-03, `toolkit/vm/dpa-coverage-manifest.py`, and
+`/home/aikon/danos/releases/i-danos_vyatta_20261001T1242-amd64.hybrid`.
