@@ -2515,3 +2515,25 @@ different, injection-specific effect. Nothing was changed, per the owner's decis
 Options a person could evaluate, none applied or tested here: BFD between the routers (detects loss
 without relying on neighbour state), shorter neighbour timers, propagating link loss to the kernel
 carrier, or avoiding equal-cost groups that contain a path through a port whose link is down.
+
+
+## Real hardware: `qos-vlan` on VLAN sub-interfaces (2026-10-03)
+
+Not a defect. First check of the `qos-if` / `qos-vlan` walkers (`vyatta-dataplane` 3.14.44) against a
+VLAN sub-interface on physical hardware: R1 (J1900, I211, 2608 image `20261001T1242`), `dp0p4s0`.
+
+**Configuration.** A shaper profile at 200 Mbit/s, a `trunk` policy on the port, and one policy each on
+`vif 10` and `vif 20` (each `vif` with an address). No error on commit.
+
+**Results.** `dpa object show qos-vlan` returned `qos-vlan:dp0p4s0/10` and `qos-vlan:dp0p4s0/20`, state
+`full`, backend `sw-dataplane`; `qos-if` returned `qos-if:dp0p4s0`, `full`. Removing the policy on
+`vif 20` alone left only `/10`; removing `vif 10`'s as well left `qos-vlan` with `enumerable: true` and
+no objects while `qos-if` stayed; removing the port policy emptied both. So the class distinguishes
+"enumerable, nothing configured" from the earlier "no walker", and an object appears and disappears
+with exactly the policy it describes.
+
+**Limits.** Software scheduler state only; the hardware (FAL) path and the `no_support` mapping were not
+exercised because these boxes have no hardware QoS backend. No traffic was sent through the VLAN
+sub-interfaces, so the per-VLAN shaping itself was not measured. In the object view the sub-interfaces
+themselves read `interface  no_support  sw-dataplane` (`if:dp0p4s0.10`, `.20`), while the physical port
+reads `not_needed`; the reason was not investigated. The test configuration was removed afterwards.
