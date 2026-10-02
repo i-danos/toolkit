@@ -2211,3 +2211,65 @@ purpose. Send `\r` only. The installer did refuse the collision (`An image named
 installed ... Do you want to replace it (Yes/No)? [No]`), and answering No exited cleanly with the
 image list unchanged. Also: the reboot confirmation prompt ends `[No] ` with no colon, so a
 prompt matcher that expects `: ` never fires.
+
+
+## Real hardware: carrying a 2105 configuration onto 2608 (2026-10-02)
+
+Not a defect. First test of the path an existing 2105 user actually has, since `add system image`
+cannot cross from 2105 (defect 14): configure on 2105, bring the configuration to a 2608 system.
+R4 was installed from the official 2105 ISO (`DANOS:Shipping:2105:20210611`, Debian 10, kernel 5.4);
+R2 runs the 2608 image from the sections above.
+
+**The 2105 side.** Nine groups were committed on R4 as `admin`/level `admin`, none refused: a second
+user, time zone, ssh; interface addresses (including a VLAN `vif` and a loopback); static routes (one
+blackhole); a firewall ruleset applied inbound; source NAT masquerade; a 500 Mbit/s QoS shaper applied
+to an interface; OSPF; BGP with a neighbour and a network statement; an SNMP community. 405 lines of
+`config.boot`, most of it the default access-control rules.
+
+**Finding 1: an `admin`-level 2105 user cannot export a configuration that contains its secrets.**
+`show configuration | no-more` and the file written by `save /home/admin/mig2105.boot` both contain
+`encrypted-password "********"` for both users and `community "********"` -- three masked values in
+the saved file itself, not only on screen. `/config/config.boot` is not visible from that account at
+all (it is a sandbox: no `/config`, no `sudo`). A backup taken this way restores a configuration whose
+credentials are literally asterisks. Only the masked form was observed here; getting the real file
+needs a `superuser` login, which was not done on R4. The three values were replaced by known ones
+(`plaintext-password`) before loading, so **credential carry-over is untested**.
+
+**Finding 2: the structure carries over cleanly.** The 405-line file loaded into R2 with
+`load /home/admin/r4.boot` and **no warnings** at all (an earlier attempt printed
+`Configuration path: [admin@node:~$] is not valid`, which was stray terminal text of mine at the end
+of the captured file, not the configuration). `compare` showed the expected additions. Committed with
+`commit-confirm 5`, with three lines added to keep R2's own reachability, the running system showed:
+
+| Feature | On 2608 after the load |
+|---|---|
+| Interface addresses, multiple addresses on one port, `vif`, loopback | present and up |
+| QoS shaper | `qos-if:dp0p2s0` appears as `full`, backend `sw-dataplane` |
+| Firewall `FW-IN` inbound | `show firewall`: "Active on (dp0p2s0, in)"; the test host's ping to R2 stopped working and ssh did not, exactly as the ruleset says |
+| Source NAT rule 100 | present in `show nat source rules` |
+| Static routes, OSPF, BGP, SNMP | accepted and present in the committed configuration |
+| Hostname | changed to the 2105 one |
+
+**Not verified:** the *runtime* state of BGP, OSPF and SNMP (no `show` command for them exists in the
+2608 operational tree used here, and `vtysh` is not reachable from the sandbox), and whether the static
+routes were installed. "Accepted by the schema" is what was shown, not "running".
+
+**Finding 3: `load` replaces the whole configuration.** After the load R2's own `admin ... level
+superuser` was gone, because the 2105 file said `level admin`; the prompt changed to `admin@R4-2105`
+and the account fell back into the sandbox. Anyone migrating by loading a 2105 file loses whatever the
+target had configured for management, which is why a `commit-confirm` was used here.
+
+**Finding 4: `commit-confirm 5` rolled back by itself.** Without confirming, R2 was back on its own
+configuration (hostname `R2`, `level superuser`, no firewall or QoS, addresses restored) after about
+five minutes -- and answered ICMP again because the firewall was gone. A safety net worth using for any
+migration.
+
+**One observation not explained.** In the object view the new VLAN sub-interface was listed as
+`interface  no_support  sw-dataplane  if:dp0p3s0.100`, while the physical ports were `not_needed`.
+Whether `no_support` for a VLAN sub-interface on the software backend is intended, or a mapping fault
+in the interface walker, was not looked into.
+
+**Not covered.** A real fresh install of 2608 on R4 with the configuration restored at first boot (the
+load was done on an already-running 2608 box); `add system image` from 2105 onto 2608 (known to fail,
+defect 14, not rerun on this hardware); the credentials in Finding 1; protocol runtime state; any
+2105 feature outside the nine groups above (DHCP, VPN, VRRP, bridging, VRF, zone firewall).
