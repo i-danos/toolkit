@@ -2104,6 +2104,28 @@ four runs after a 20-second wait reached 940-941 Mbit/s with no new `Dropped rin
 of roughly ten seconds, not a residue. Changing a policy under load briefly costs throughput.
 The hardware (FAL) QoS path was not exercised; only the software one.
 
+**Both directions at once (same path, same day).** iperf3 `--bidir`, one stream each way:
+TCP 935 / 939 Mbit/s simultaneously, 0 retransmits (about 1.87 Gbit/s through R1 in total).
+UDP 1400-byte unlimited: 950 and 805 Mbit/s delivered, 0.31% / 0.2% loss. Small packets are
+where the picture changes and where it must be read carefully:
+
+| UDP unlimited, both ways | p1 -> p4 delivered (of sent) | p4 -> p1 delivered (of sent) |
+|---|---|---|
+| 512 B | 342 Mbit/s (49%) | 312 Mbit/s (99.9%) |
+| 64 B | 57 Mbit/s (56%) | 34.5 Mbit/s (100%) |
+
+The large p1 -> p4 loss is **not** attributable to R1: over this run R1 received 4,562,875
+packets on `dp0p1s0` and transmitted 4,534,913 on `dp0p4s0` (99.4%), with only 27,869 output
+drops, yet the receiving iperf3 on R3 saw about 1.7 million fewer datagrams than R1 handed to
+the wire. The shortfall is downstream of R1 -- R3's NIC/kernel receive path or its iperf3
+process, on a J1900 that is also sending in the other direction. The p4 -> p1 direction was
+offered only 67 kpps at 64 bytes because R3 could not send faster, so it never stressed R1.
+The bidirectional small-packet figures are therefore a **lower bound** on R1, limited by the
+endpoint; they do not establish R1's two-way packet rate, and the 0.22 Mpps one-way figure above
+(where R1's ring drops matched the receiver's loss to within 6%) stands as the only measured
+data-plane ceiling. Measuring R1's two-way limit needs an endpoint faster than a J1900 or
+several endpoints.
+
 **Corrections to what the earlier sections of this document say.**
 
 - *NIC model.* The sections above name an I210. `lspci` on the four boxes reports **I211**
