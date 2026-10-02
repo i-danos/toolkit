@@ -2415,3 +2415,45 @@ without a route until zebra retries, which is consistent with the 15 s, 30 s and
 
 Per the owner's decision of 2026-10-01 nothing was changed; no workaround was attempted or tested.
 Test configuration (OSPF, BGP, loopbacks, static blackholes) was removed from both routers afterwards.
+
+
+**Update: the same test with a real cable pull (2026-10-03).** The admin-down injection above is not a
+cable pull, so the test was repeated physically: OSPF area 0 over both links, eBGP over `dp0p2s0`
+(BGP is the best path, OSPF over `dp0p3s0` the backup), a 10 Hz ping from R1's loopback to R2's
+loopback, and a monitor sampling each router's kernel next hop to the peer loopback every 0.2 s. The
+`dp0p2s0` cable was pulled four times (pulled for 33 s, 41 s, 64 s, 64 s on R2's own log, then
+re-inserted and the BGP session allowed to re-establish).
+
+| Pull | Link-down logged by both routers' data plane | R1 kernel next hop moved to p3 | R2 kernel next hop moved to p3 | Ping loss (continuous) |
+|---|---|---|---|---|
+| 1 | yes, same instant | under 1 s | 33.2 s | 30.1 s |
+| 2 | yes | under 1 s | 26.3 s | 23.9 s |
+| 3 | yes | under 1 s | 26.7 s | 24.2 s |
+| 4 | yes | under 1 s | 8.3 s | 7.9 s |
+
+- **The link event is symmetric; the reaction is not.** Both data planes logged `dp0p2s0 Link down` at the
+  same moment (the spacing between pulls matches to within 0.1 s on both logs). R1 re-pointed to p3 at
+  once. R2 took 8 to 33 s. The ping that failed was R1 -> R2: the request left R1 correctly at once; the
+  reply was routed by R2, which was still pointing at the dead port. Loss ended when R2's route moved.
+- **This is a failover of 8 to 30 seconds, not sub-second**, in the case where two routers share two
+  links and one is pulled. It matches neither the BGP hold time (180 s) nor the OSPF dead interval (40 s)
+  at a single value, so it is not simply one of those timers expiring.
+- **It is R2 every time.** All three stuck instances in the admin-down runs above were also R2 (30.7 s,
+  more than 120 s, more than 15 s); R1 converged within 1.3 s in every timed trial of both kinds.
+  Whether R2 differs in a way that matters (it has a different configuration history: it took the
+  2105 `load` and the `commit-confirm` rollback, R1 did not) was not established.
+- **The mechanism seen with admin-down was absent.** zebra logged no `netlink-dp error` and no
+  `Failed to install Nexthop` on either router across the four pulls (four zebra lines each in total).
+  So the "kernel refuses a nexthop on a down device" chain is specific to the admin-down injection
+  and does not explain these delays.
+- **The kernel interface never shows the loss.** The monitor read `carrier=1` for `dp0p2s0` on both
+  routers throughout. The data plane's own `MOD link` records show the flags change from
+  `<UP,BROADCAST,RUNNING,MULTICAST,LOWER_UP>` to `<UP,BROADCAST,MULTICAST,LOWER_UP>`: only RUNNING is
+  dropped, LOWER_UP stays. Anything reading carrier rather than the RUNNING flag will not see a pull.
+- BGP dropped four times and re-established after each re-insertion on both routers.
+
+**Not established.** Why R2 is slower and why the delay varies between 8 and 33 s. No daemon debug
+output was collected during a pull (zebra, bgpd and ospfd were at default logging), so the next step
+is an instrumented pull, not more of these. The path in R2's kernel during the delay (BGP or OSPF
+route) was not recorded. Whether the same happens between two routers from different builds or on
+non-J1900 hardware was not tested. Nothing was changed, per the owner's decision of 2026-10-01.
