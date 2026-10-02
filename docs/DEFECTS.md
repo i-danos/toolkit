@@ -2155,3 +2155,59 @@ to `igb` (symptom: `igb ... removed PHC on enpNs0`, PCI device with no driver). 
 `vyatta-dataplane` and `vplane-controller.{socket,service}`, mask that rule with an empty file
 of the same name in `/etc/udev/rules.d` plus `udevadm control --reload`, then unbind from
 `uio_pci_generic` and bind `igb`. `dp0pNs0` left behind is a virtual device, not the NIC.
+
+
+## Real hardware: 2608 -> 2608 upgrade and rollback via `add system image` (2026-10-02)
+
+Not a defect. This is the first time the product's own upgrade path ran on physical hardware, and
+the first hardware confirmation of the defect 14 fix. Bench as in the forwarding section above:
+R1, a J1900 box with four I211 ports, installed from `i-danos_vyatta_20261001T1242`
+(`vyatta-image-tools` 5.57, `vyatta-dataplane` 3.14.44), console over the USB-serial adapter.
+
+**What was done.** A marker was written to the saved configuration
+(`description upg-marker-before` on `dp0p4s0`). The *same* ISO was served over plain HTTP from the
+test host and added with `add system image http://.../i-danos_vyatta_20261001T1242-amd64.hybrid.iso`,
+named `2608b`. Rebooted into it, checked, changed the marker to `upg-marker-after-2608b`, saved,
+set the default boot back with `set system image default-boot 2608`, rebooted again, checked, and
+deleted `2608b`.
+
+| Step | Result |
+|---|---|
+| ISO download | 605 MB in 23 s (about 26 MB/s) |
+| `Checking MD5 checksums of files on the ISO image...` | **OK** -- the check that failed on every 2608 ISO before 5.52 (defect 14) passes on hardware from 5.57 |
+| Installer copy (squashfs, kernel+initrd, flush, config, SSH host keys, machine-id) | `Done.`, no error |
+| `show system image` afterwards | `2608 (running image)`, `2608b (default boot)` -- the new image becomes the default boot |
+| Reboot into `2608b` | reachable again 118 s after the reboot command; `BOOT_IMAGE=/boot/2608b/vmlinuz`; `vyatta-dataplane`, `frr`, `configd` active; all four links `u/u a-1g/a-full`; `dpa object show qos-if` returns `enumerable: true`; saved config carried over (marker, `set service ssh`, `level superuser`) |
+| `set system image default-boot 2608` + reboot | back on `/boot/2608/vmlinuz` after 116 s, services active, links up |
+| Config after rollback | the **pre-upgrade** configuration: `upg-marker-before` present, `upg-marker-after-2608b` absent |
+| `delete system image 2608b` | removed after a Yes/No confirmation; only `2608` remains |
+
+**What this does and does not show.**
+
+- Upgrade, reboot into the new image, rollback by default-boot, and removal all work on this
+  hardware, and a 5.57 system can take a new 2608 image through `add system image`.
+- **Configuration is per image.** Changes made after the upgrade stay in the new image and do not
+  come back on rollback. That is the right behaviour for a rollback, and it also means a rollback
+  silently discards everything configured since the upgrade. It is worth stating in operator
+  documentation; it is not a bug.
+- The image added was a *rebuild of the same version*, so this proves the mechanics, not that a
+  change between two real releases migrates cleanly (schema changes, renamed configuration nodes).
+  No cross-release configuration migration was exercised here.
+- **Still not done: anything from 2105.** `add system image` run on an installed 2105 still fails
+  its own MD5 check on a 2608 ISO, as defect 14 records, so the route off 2105 remains a fresh
+  install plus configuration carry-over. That carry-over (which 2105 configuration loads on 2608,
+  which does not) has not been tested; it needs a 2105 box, which has not been built on this bench
+  yet.
+- Boot-time behaviour on the console: the serial line shows the login prompt but this image's
+  kernel command line has only `console=tty0`, so the boot loader menu and kernel messages are not
+  on the serial port. Choosing a non-default boot entry needs the screen and keyboard, not the
+  serial adapter.
+
+**Method trap for anyone scripting the prompts over serial.** Writing `command\r\n` sends *two*
+line terminators: `\r` runs the command and the stray `\n` is consumed by the first prompt as an
+empty answer. Here that accepted the default image name (`2608`, which collides with the running
+image) and, on the next prompt, the SSH-key default -- without any prompt having been answered on
+purpose. Send `\r` only. The installer did refuse the collision (`An image named 2608 is already
+installed ... Do you want to replace it (Yes/No)? [No]`), and answering No exited cleanly with the
+image list unchanged. Also: the reboot confirmation prompt ends `[No] ` with no colon, so a
+prompt matcher that expects `: ` never fires.
