@@ -2334,3 +2334,9 @@ now for a different reason than defect 14 states. Options: leave it and document
 configuration carry-over (see the previous section); or change how the compat link is made and test
 the 2105 route again, with a live-config regression check because that link exists to keep the console
 working.
+
+**Decision (2026-10-02, project owner): 2105 -> 2608 upgrade work is stopped.** The compat link was
+not changed and the relative-link idea was not tried. The supported route off 2105 remains a fresh
+install plus configuration carry-over, with the limits recorded in the section before this one
+(structure loads cleanly; secrets cannot be exported from an `admin`-level 2105 account;
+BGP/OSPF runtime state not verified). Reopen only if the owner asks.
