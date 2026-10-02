@@ -2340,3 +2340,78 @@ not changed and the relative-link idea was not tried. The supported route off 21
 install plus configuration carry-over, with the limits recorded in the section before this one
 (structure loads cleanly; secrets cannot be exported from an `admin`-level 2105 account;
 BGP/OSPF runtime state not verified). Reopen only if the owner asks.
+
+
+## Real hardware: OSPF and BGP between two J1900 routers, and an intermittent failover hole (2026-10-02)
+
+Not yet a filed defect: an observed, partly diagnosed behaviour, recorded with what was and was not
+established. R1 and R2 (2608, `vyatta-dataplane` 3.14.44, FRR 10.3) joined by two links,
+`dp0p2s0` (192.168.72.0/24) and `dp0p3s0` (192.168.73.0/24), loopbacks 10.255.0.1/32 and 10.255.0.2/32.
+
+**Protocols come up.** OSPF area 0 on both links and the loopbacks: two `Full` adjacencies, and each
+loopback reachable over both links as an equal-cost pair. eBGP (AS 65001 / 65002) over the `dp0p2s0`
+addresses: Established, loopbacks exchanged; eBGP (distance 20) wins over OSPF (110), so the best path
+to the peer's loopback is the single `dp0p2s0` path and OSPF's pair is the backup. This is the first
+check of *running* BGP/OSPF state on this hardware; the earlier configuration-migration section only
+showed that the configuration was accepted.
+
+Three things in the 2608 configuration that cost time and are not bugs, but are not obvious:
+- A neighbour is not active until `neighbor <ip> address-family ipv4-unicast` is set; `remote-as` alone
+  leaves `show bgp summary` saying `No BGP neighbors found`.
+- eBGP then shows `(Policy)` and exchanges nothing until a policy exists or
+  `protocols bgp <as> parameters ebgp-requires-policy disabled` is set (RFC 8212; default `enabled`).
+  `set policy route-map ...` was rejected as an invalid path in this configuration tree on these boxes
+  (`Configuration path: policy [route-map] is not valid`); the correct path was not found.
+- A `network` statement for a static *blackhole* prefix appeared in the local BGP table but was not
+  received by the peer, while the connected loopback prefix was. Not diagnosed.
+
+**The failover test.** Failure was injected with `vtysh -c 'interface dp0p2s0' -c 'shutdown'` on one
+router -- an administrative down of the kernel interface, **not a cable pull** (see the last
+paragraph). Expected: BGP drops, the route to the peer loopback falls back to OSPF over `dp0p3s0`,
+traffic continues.
+
+**What happened, in order of discovery.** A continuous ping (20 packets/s, loopback to loopback) lost
+14.85 s in one block, essentially the whole 15 s the link was down. FRR on both routers had already
+moved to `dp0p3s0` within about two seconds (BGP `Active`, OSPF best path over p3), yet the ping
+failed: on the *other* router the **kernel** route still pointed at the dead `dp0p2s0`. Polling that
+kernel next hop afterwards, 15 timed trials in total:
+
+| Trials | Kernel next hop moved to `dp0p3s0` |
+|---|---|
+| 12 of 15 | 0.2 - 1.3 s on both routers |
+| 1 | 30.7 s |
+| 1 | still not after 120 s (the failing router itself) |
+| 1 | not after 15 s (caught for diagnosis, then restored) |
+
+So 3 of 15 timed trials left a hole of at least 15 s, one of at least 120 s. It was intermittent and
+not tied to anything controlled for: neither letting the BGP session age 90 s nor the order of the
+failing router changed it reliably.
+
+**One stuck instance, caught at +15 s on R2:**
+- `ip route show 10.255.0.1/32` returned **nothing** -- not a stale route, no route at all.
+- `vtysh show ip route 10.255.0.1/32`: OSPF, best, via `192.168.73.2 dp0p3s0`, and via
+  `192.168.72.2 dp0p2s0 inactive`, entries flagged `r` (rejected, not installed).
+- zebra log, same second:
+  ```
+  netlink-dp error: Network is down, type=RTM_NEWNEXTHOP   Extended Error: Nexthop device is not up
+  netlink-dp error: Invalid argument, type=RTM_NEWNEXTHOP  Extended Error: Invalid nexthop id
+  netlink-dp error: Invalid argument, type=RTM_NEWROUTE    Extended Error: Nexthop id does not exist
+  Failed to install Nexthop (80[192.168...
+  ```
+zebra programs the kernel through nexthop objects. The equal-cost OSPF route includes a next hop on the
+interface that was just taken down; the kernel refuses that nexthop object, the next hop group and the
+route that references it follow, and the previous route has already been removed. The kernel is left
+without a route until zebra retries, which is consistent with the 15 s, 30 s and 120 s+ holes seen.
+
+**What this does not establish.**
+- Whether it happens on a **real link loss**. An admin-down makes the kernel say "Nexthop device is
+  not up". A pulled cable normally leaves the interface administratively up with no carrier, which the
+  kernel can treat differently. The honest next test is a physical cable pull, not repeated here.
+- Whether it is upstream FRR behaviour or something DANOS adds. Not compared against another build.
+- Anything about the data plane's own forwarding table. Every observation above is the kernel's and
+  FRR's. The data plane's route objects for these prefixes were `no_support` on the `sw-dataplane`
+  backend and carry no next hop, so they could not show whether the data plane agreed.
+- A cause for the *intermittency*: why one in five injections hit the refusal and the rest did not.
+
+Per the owner's decision of 2026-10-01 nothing was changed; no workaround was attempted or tested.
+Test configuration (OSPF, BGP, loopbacks, static blackholes) was removed from both routers afterwards.
