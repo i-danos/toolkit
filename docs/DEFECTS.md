@@ -2457,3 +2457,61 @@ output was collected during a pull (zebra, bgpd and ospfd were at default loggin
 is an instrumented pull, not more of these. The path in R2's kernel during the delay (BGP or OSPF
 route) was not recorded. Whether the same happens between two routers from different builds or on
 non-J1900 hardware was not tested. Nothing was changed, per the owner's decision of 2026-10-01.
+
+
+**Update: instrumented cable pull, and the cause of the 8-33 s delay (2026-10-03).** The pull test was
+repeated with zebra, bgpd and ospfd debug logging on both routers (`log file ... debugging`, runtime
+only, removed afterwards) and a monitor that also records the source protocol of the kernel route.
+Two pulls of the same cable; the failing side is again R2.
+
+**Everything above the kernel reacted at once.** At the moment of the first pull R2's log shows, in
+the same second: `Intf dp0p2s0 has gone DOWN`, `Zebra: Interface[dp0p2s0] state change to down`,
+OSPF `Full (KillNbr)` and `SPF: calculation timer delay = 500 msec`, and BGP
+`Established->Clearing`; BGP then withdrew `10.255.0.1/32` and zebra replaced the BGP route by the
+OSPF one (`Redist del: ... (bgp), new re ... (ospf)`) and sent `RTM_NEWROUTE 10.255.0.1/32` to the
+kernel twice within 1 s. No netlink error. After 18:12:58 zebra logged **nothing further** about that
+prefix until the end of the window. The kernel next hop nevertheless stayed on the dead port, and the
+moment it moved was not a zebra action (the only entries at that moment are BGP connect-retry timers).
+
+**It moved when the neighbour entry for the dead next hop reached FAILED.** R2 zebra's record of the
+kernel's neighbour state for 192.168.72.2 (`0x4` STALE, `0x10` PROBE, `0x20` FAILED), against the
+monitor's kernel route:
+
+| | Interface DOWN | STALE | PROBE | FAILED | Kernel next hop -> p3 |
+|---|---|---|---|---|---|
+| Pull 1 | 18:12:57 | 18:13:17 | 18:13:22 | 18:13:25 | 18:13:24 (+27.3 s) |
+| Pull 2 | 18:15:43 | 18:15:42 | 18:15:47 | 18:15:50 | 18:15:50 (+7.4 s) |
+
+This fits the neighbour timers on these boxes (`base_reachable_time_ms` 30000, so an entry stays
+REACHABLE for 15-45 s, then STALE; `delay_first_probe_time` 5 s; `ucast_solicit` 3 x `retrans_time_ms`
+1000 ms): in pull 2 the entry was already STALE, leaving 5 + 3 = 8 s; in pull 1 about 20 s of
+REACHABLE remained, giving 27 s. It also explains why the delay varied between 8 s and 33 s over
+the six pulls and why it was not tied to any one protocol timer. The upper bound from these timers is
+about 45 + 8 = 53 s.
+
+**Why the next hop is only dropped then is not established.** The kernel reports
+`fib_multipath_use_neigh=0` and `ignore_routes_with_linkdown=0`, both defaults, so a neighbour-state
+dependency is not what those settings would predict; the correlation above is observed in two pulls
+(and is consistent with the earlier four), not derived from kernel code. What was seen of the route:
+after the BGP route went, the kernel route was `proto ospf` and zebra encoded it with a nexthop group
+id (337, then 350 in pull 2); an earlier run showed the kernel route as an equal-cost group holding
+both `192.168.72.2 dev dp0p2s0` and `192.168.73.2 dev dp0p3s0`. That group content during these pulls
+was not captured.
+
+**One condition that lets the dead next hop stay usable.** The kernel interface never loses its link
+as far as the kernel is concerned: `dp0p2s0` stays `state UP`, `LOWER_UP`, `carrier 1` throughout
+(only the RUNNING flag disappears in the data plane's link-change message, and zebra reacts to that).
+With carrier up, the kernel has no link-down signal to mark the next hop dead, so a dead path can
+only be recognised when neighbour resolution fails. Whether the missing carrier propagation is the
+intended design of the data plane's kernel interfaces, an omission, or specific to this build was not
+investigated.
+
+**Practical reading.** With two parallel links between two DANOS routers and loopback-to-loopback
+traffic, a pulled cable costs between about 8 s and about 53 s of one-way traffic loss, depending on where
+the neighbour entry is in its aging cycle, even though OSPF and BGP both reconverge within a second.
+It is a property of how the data plane's kernel interface reports link loss and of default neighbour
+timers, not of OSPF or BGP convergence, and the earlier admin-down finding (nexthop install refused) is a
+different, injection-specific effect. Nothing was changed, per the owner's decision of 2026-10-01.
+Options a person could evaluate, none applied or tested here: BFD between the routers (detects loss
+without relying on neighbour state), shorter neighbour timers, propagating link loss to the kernel
+carrier, or avoiding equal-cost groups that contain a path through a port whose link is down.
