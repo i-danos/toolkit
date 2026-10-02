@@ -2273,3 +2273,64 @@ in the interface walker, was not looked into.
 load was done on an already-running 2608 box); `add system image` from 2105 onto 2608 (known to fail,
 defect 14, not rerun on this hardware); the credentials in Finding 1; protocol runtime state; any
 2105 feature outside the nine groups above (DHCP, VPN, VRRP, bridging, VRF, zone firewall).
+
+
+## Real hardware: `add system image` from 2105 onto a current 2608 ISO, rechecked (2026-10-02)
+
+Not a defect report yet; a finding that changes what defect 14 says. Run on R4 (official 2105,
+`DANOS:Shipping:2105:20210611`), ISO `i-danos_vyatta_20261001T1242` served over HTTP from the test
+host through R1 (so the download itself crossed a data plane).
+
+**The checksum no longer fails.** `Checking MD5 checksums of files on the ISO image...OK.` Defect 14
+and the 2026-09-27 hardware run both record that 2105 rejects every 2608 ISO on `.disk/mkisofs`.
+This ISO's `md5sum.txt` (308 lines) has no `.disk/mkisofs` entry at all, as the official 2105 ISO's
+does not -- so for ISOs built with this fix the stale line is gone *at the source*, and the old
+checking function in an installed 2105 (or a 5.51 system) has nothing to trip on. The "fix does not
+reach the systems that need it" concern in defect 14 does not apply to this build. Which change made
+the difference was not traced.
+
+**It fails later, somewhere else.** The installer proceeded through naming, saving the configuration
+and SSH keys, `Copying squashfs image...`, `Copying kernel and initrd images...`,
+`Flushing the new image to disk...`, then:
+
+```
+Error trying to mount a partition/directory.
+ERROR: Failed to mount live rootfs.
+```
+
+The image list afterwards still held only `2105.06111158`; nothing half-installed was left behind.
+
+**Cause, from the installer's own log** (`/tmp/install-*.log`, readable only after giving the account
+`level superuser`):
+
+```
+mount /dev/sda2 /tmp/vyatta-install-image.../rootfs/lib/live/mount/persistence/sda2
+mount: /run/live/persistence/sda2: /dev/sda2 already mounted on /run/live/persistence/sda2.
+```
+
+The installer mounts the persistence partition *inside* the new image's root tree at
+`.../rootfs/lib/live/mount/persistence/sda2`. In the 2608 image `/usr/lib/live/mount` is an
+**absolute symlink to `/run/live`** (`/lib` is `usr/lib`), checked directly in
+`live/filesystem.squashfs`. Resolved by the running system rather than inside the new tree, that path
+is the host's own `/run/live/persistence/sda2`, where the same partition is already mounted, so the
+mount is refused. The 2105 image has `/lib/live/mount` as a real directory, which is why the same
+code worked for 2105 images.
+
+**Where the symlink comes from.** It is deliberate: `usr/lib/live/README.danos-mount-compat`, shipped in
+the image, explains that live-boot dropped the historical `/lib/live/mount` path after buster while
+live-config still reads `/lib/live/mount/medium`, so without the link the ISO's `config.conf`,
+`user-setup.conf` and friends are silently ignored, no login account is created and the console shows a
+login prompt instead of a shell. The link fixes that, and it is also what stops the 2105 installer.
+
+**Two things this does not say.** It does not say the link is the only obstacle: the run stopped at
+this mount, and nothing after it was exercised. And "a relative link would fix it" is an inference
+from the log, not tested -- it would put the mount target inside the new tree, but the directory it
+needs would have to exist there and live-config would have to be rechecked. The 5.57 installer on a
+2608 system takes the same ISO through (the 2608 -> 2608 section above), so the problem is specific
+to the 2105-era installer's path handling.
+
+**What it leaves open (owner's call).** A 2105 user still cannot move to 2608 with `add system image`,
+now for a different reason than defect 14 states. Options: leave it and document fresh install plus
+configuration carry-over (see the previous section); or change how the compat link is made and test
+the 2105 route again, with a live-config regression check because that link exists to keep the console
+working.
