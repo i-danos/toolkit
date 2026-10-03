@@ -2413,7 +2413,7 @@ without a route until zebra retries, which is consistent with the 15 s, 30 s and
   backend and carry no next hop, so they could not show whether the data plane agreed.
 - A cause for the *intermittency*: why one in five injections hit the refusal and the rest did not.
 
-Per the owner's decision of 2026-10-01 nothing was changed; no workaround was attempted or tested.
+Nothing was changed. The owner's 2026-10-01 decision covers route repair and reconciliation code; it does not cover this finding, so a fix here is undecided, not forbidden. It was not attempted because it needs a design choice and a read of the data plane's kernel-interface code first. No workaround was attempted or tested.
 Test configuration (OSPF, BGP, loopbacks, static blackholes) was removed from both routers afterwards.
 
 
@@ -2456,7 +2456,7 @@ re-inserted and the BGP session allowed to re-establish).
 output was collected during a pull (zebra, bgpd and ospfd were at default logging), so the next step
 is an instrumented pull, not more of these. The path in R2's kernel during the delay (BGP or OSPF
 route) was not recorded. Whether the same happens between two routers from different builds or on
-non-J1900 hardware was not tested. Nothing was changed, per the owner's decision of 2026-10-01.
+non-J1900 hardware was not tested. Nothing was changed. The owner's 2026-10-01 decision covers route repair and reconciliation code; it does not cover this finding, so a fix here is undecided, not forbidden. It was not attempted because it needs a design choice and a read of the data plane's kernel-interface code first.
 
 
 **Update: instrumented cable pull, and the cause of the 8-33 s delay (2026-10-03).** The pull test was
@@ -2511,7 +2511,7 @@ traffic, a pulled cable costs between about 8 s and about 53 s of one-way traffi
 the neighbour entry is in its aging cycle, even though OSPF and BGP both reconverge within a second.
 It is a property of how the data plane's kernel interface reports link loss and of default neighbour
 timers, not of OSPF or BGP convergence, and the earlier admin-down finding (nexthop install refused) is a
-different, injection-specific effect. Nothing was changed, per the owner's decision of 2026-10-01.
+different, injection-specific effect. Nothing was changed. The owner's 2026-10-01 decision covers route repair and reconciliation code; it does not cover this finding, so a fix here is undecided, not forbidden. It was not attempted because it needs a design choice and a read of the data plane's kernel-interface code first.
 Options a person could evaluate, none applied or tested here: BFD between the routers (detects loss
 without relying on neighbour state), shorter neighbour timers, propagating link loss to the kernel
 carrier, or avoiding equal-cost groups that contain a path through a port whose link is down.
