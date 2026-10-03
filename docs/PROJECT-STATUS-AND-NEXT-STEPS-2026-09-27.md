@@ -45,7 +45,7 @@ with each number (full detail in `DEFECTS.md`, sections dated 2026-10-02 and 202
 | Upgrade and rollback | `add system image` of a 2608 ISO onto a 5.57 system, reboot into it, roll back by default-boot, delete it: all work; the defect 14 checksum no longer fails | Configuration is per image (rollback drops changes made since the upgrade); only a same-version image was added, so no cross-release configuration migration is shown |
 | 2105 to 2608 | `add system image` from 2105 now passes the checksum and fails at mounting the live rootfs (a deliberate compat symlink collides with the 2105 installer). A 2105 configuration loads on 2608 with no warnings and QoS, firewall, NAT, VLAN interfaces came up | **Owner decision 2026-10-02: this upgrade work is stopped.** Secrets cannot be exported from an `admin`-level 2105 account (masked); credential carry-over untested |
 | Routing protocols | OSPF (two adjacencies, equal-cost paths) and eBGP between two boxes run | Runtime state was checked only for these two boxes |
-| Fault behaviour | **A pulled cable costs 8 s to about 53 s of one-way traffic loss** with two parallel links, although OSPF and BGP reconverge in under a second. Traced to the kernel keeping the dead next hop until the neighbour entry reaches FAILED; the kernel interface never loses carrier | Why the kernel waits for FAILED is a correlation, not a derived mechanism; the data plane's own forwarding table was not observed; nothing changed (owner's rule) |
+| Fault behaviour | **A pulled cable costs 8 s to about 53 s of one-way traffic loss** with two parallel links, although OSPF and BGP reconverge in under a second. Traced to the kernel keeping the dead next hop until the neighbour entry reaches FAILED; the kernel interface never loses carrier | Why the kernel waits for FAILED is a correlation, not a derived mechanism; the data plane's own forwarding table was not observed; nothing changed, and not covered by decision 4, so open |
 | DPA | All ten object classes enumerate, `qos-if` and `qos-vlan` included, verified on hardware (below) | See section 3B |
 
 **Corrections to this document's own premises.** The hardware is **I211**, not I210 as the original table
@@ -278,7 +278,8 @@ about it is open (section 5).
 6. The 8 to 53 s hole when a cable is pulled between two routers with parallel links. Options a
    person could evaluate, none applied or tested: BFD between the routers, shorter neighbour timers,
    propagating link loss to the kernel carrier, or avoiding equal-cost groups that contain a path
-   through a port whose link is down. Under decision 4 nothing has been changed.
+   through a port whose link is down. Nothing has been changed. Decision 4 covers route repair and
+   reconciliation code, not this (a kernel-interface or timer change), so it is open for the owner to decide.
 7. Hardware with VT-d for the IOMMU / Secure Boot part of D, or a decision to leave that part unproven.
 
 ## Sources
