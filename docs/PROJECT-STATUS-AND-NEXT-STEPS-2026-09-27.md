@@ -45,7 +45,7 @@ with each number (full detail in `DEFECTS.md`, sections dated 2026-10-02 and 202
 | Upgrade and rollback | `add system image` of a 2608 ISO onto a 5.57 system, reboot into it, roll back by default-boot, delete it: all work; the defect 14 checksum no longer fails | Configuration is per image (rollback drops changes made since the upgrade); only a same-version image was added, so no cross-release configuration migration is shown |
 | 2105 to 2608 | `add system image` from 2105 now passes the checksum and fails at mounting the live rootfs (a deliberate compat symlink collides with the 2105 installer). A 2105 configuration loads on 2608 with no warnings and QoS, firewall, NAT, VLAN interfaces came up | **Owner decision 2026-10-02: this upgrade work is stopped.** Secrets cannot be exported from an `admin`-level 2105 account (masked); credential carry-over untested |
 | Routing protocols | OSPF (two adjacencies, equal-cost paths) and eBGP between two boxes run | Runtime state was checked only for these two boxes |
-| Fault behaviour | **A pulled cable costs 8 s to about 53 s of one-way traffic loss** with two parallel links, although OSPF and BGP reconverge in under a second. Traced to the kernel keeping the dead next hop until the neighbour entry reaches FAILED; the kernel interface never loses carrier | Why the kernel waits for FAILED is a correlation, not a derived mechanism; the data plane's own forwarding table was not observed; nothing changed, and not covered by decision 4, so open |
+| Fault behaviour | **Forwarded traffic fails over in under a second** on a pulled cable (0.8-0.9 s lost, two pulls, data plane tables on both routers moved within about a second). **Router-originated traffic** that depends on the kernel route can be lost for 8 s to at least 68 s with two parallel links, although OSPF and BGP reconverge in under a second; the kernel interface never loses carrier | Why the kernel waits is a correlation shown in two pulls and not re-confirmed (an earlier 53 s upper bound was exceeded); long-flow throughput under a pull and the exposed router-originated traffic types were not measured; nothing changed, and not covered by decision 4, so open |
 | DPA | All ten object classes enumerate, `qos-if` and `qos-vlan` included, verified on hardware (below) | See section 3B |
 
 **Corrections to this document's own premises.** The hardware is **I211**, not I210 as the original table
@@ -145,11 +145,14 @@ yet:
   (FAL) path and the `no_support` mapping. Diagnostic only; no repair code, per the owner's decision.
 - **Update (2026-10-03), the trigger condition, partly:** B says repair is only justified by drift that
   causes a forwarding error under real load. The nearest evidence so far is not about DPA: under an
-  injected link fault the *kernel* route disagreed with FRR's for 8 to 53 s (and, with an admin-down
-  injection, was sometimes missing altogether, 3 of 15 timed trials). It is a fault, not load, at the
-  FRR/kernel layer, and the data plane's own table was not observed, so it does not by itself change
-  the recommendation. It does show a limit: the data plane's route objects on `sw-dataplane` read
-  `no_support` and carry no next hop, so the object view could not have shown this disagreement.
+  injected link fault the *kernel* route disagreed with FRR's for 8 s to at least 68 s (and, with an
+  admin-down injection, was sometimes missing altogether, 3 of 15 timed trials). It is a fault, not
+  load, at the FRR/kernel layer. **The data plane's own table was then observed (transit test,
+  2026-10-03) and followed the control plane within about a second on both routers; a ping forwarded
+  through both data planes lost 0.8-0.9 s.** So the disagreement did not reach forwarded traffic in that
+  test and the condition for B is still not met. A remaining limit: the data plane's route *objects* on
+  `sw-dataplane` read `no_support` and carry no next hop, so the object view could not have shown the
+  kernel disagreement; the next-hop check had to use `vplsh route lookup`.
   Also unexplained: VLAN sub-interfaces read `no_support` in the interface class while physical ports
   read `not_needed`.
 
@@ -247,7 +250,7 @@ document's judgment, not verified here.
 
 **Update (2026-10-03):** A is closed. B's coverage step is closed for the object classes that exist. D
 is no longer blocked on a machine, but is now blocked, for the IOMMU part, on a machine *with VT-d*. The
-fault-behaviour finding (8 to 53 s on a pulled cable) is new work that was not in this order; what to do
+fault-behaviour finding (router-originated traffic 8 s to at least 68 s on a pulled cable, forwarded traffic under 1 s) is new work that was not in this order; what to do
 about it is open (section 5).
 
 ## 5. Decisions this needs from the project owner
@@ -275,7 +278,7 @@ about it is open (section 5).
 
 **Open, needing the owner:**
 
-6. The 8 to 53 s hole when a cable is pulled between two routers with parallel links. Options a
+6. The kernel-route hole (8 s to at least 68 s) when a cable is pulled between two routers with parallel links. Forwarded traffic is not affected on the evidence (under 1 s); router-originated traffic is. Options a
    person could evaluate, none applied or tested: BFD between the routers, shorter neighbour timers,
    propagating link loss to the kernel carrier, or avoiding equal-cost groups that contain a path
    through a port whose link is down. Nothing has been changed. Decision 4 covers route repair and

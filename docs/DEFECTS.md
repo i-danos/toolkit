@@ -2487,7 +2487,7 @@ REACHABLE for 15-45 s, then STALE; `delay_first_probe_time` 5 s; `ucast_solicit`
 1000 ms): in pull 2 the entry was already STALE, leaving 5 + 3 = 8 s; in pull 1 about 20 s of
 REACHABLE remained, giving 27 s. It also explains why the delay varied between 8 s and 33 s over
 the six pulls and why it was not tied to any one protocol timer. The upper bound from these timers is
-about 45 + 8 = 53 s.
+about 45 + 8 = 53 s (superseded: a later run exceeded this, see the correction at the end of this section).
 
 **Why the next hop is only dropped then is not established.** The kernel reports
 `fib_multipath_use_neigh=0` and `ignore_routes_with_linkdown=0`, both defaults, so a neighbour-state
@@ -2507,7 +2507,7 @@ intended design of the data plane's kernel interfaces, an omission, or specific 
 investigated.
 
 **Practical reading.** With two parallel links between two DANOS routers and loopback-to-loopback
-traffic, a pulled cable costs between about 8 s and about 53 s of one-way traffic loss, depending on where
+traffic, a pulled cable costs between about 8 s and about 53 s (later measured above 68 s; see the correction at the end of this section) of one-way loss of *router-originated* traffic, depending on where
 the neighbour entry is in its aging cycle, even though OSPF and BGP both reconverge within a second.
 It is a property of how the data plane's kernel interface reports link loss and of default neighbour
 timers, not of OSPF or BGP convergence, and the earlier admin-down finding (nexthop install refused) is a
@@ -2537,3 +2537,53 @@ exercised because these boxes have no hardware QoS backend. No traffic was sent 
 sub-interfaces, so the per-VLAN shaping itself was not measured. In the object view the sub-interfaces
 themselves read `interface  no_support  sw-dataplane` (`if:dp0p4s0.10`, `.20`), while the physical port
 reads `not_needed`; the reason was not investigated. The test configuration was removed afterwards.
+
+
+**Update: the same pull with traffic that goes *through* the data plane, and a correction (2026-10-03).**
+Every number above came from traffic the routers originate themselves (a ping sourced from a router's
+own loopback), which uses the **kernel** route. A router's job is mostly to forward, and forwarded
+traffic uses the **data plane's own table** (fed from zebra), which none of the above observed. This
+test measured that.
+
+Topology: test host -> R1 (`dp0p1s0`) -> R1 data plane -> `dp0p2s0` primary / `dp0p3s0` backup -> R2
+data plane -> R2 `dp0p4s0` -> R4 (a plain end host, 192.168.75.4). Both directions of the ping cross
+both data planes. OSPF over both links, eBGP over `dp0p2s0` (so p2 is primary), prefixes
+192.168.71.0/24 and 192.168.75.0/24 advertised. Each router sampled, in one loop, the kernel next
+hop (`ip route get`) and the **data plane's** next hop (`vplsh -l -c 'route lookup <addr>'`). A 10 Hz
+ping ran from the test host to R4 for 600 s; the `dp0p2s0` cable was pulled twice
+(75.7 s and 68.3 s on R1's own log), 6000 pings.
+
+| | Pull 1 | Pull 2 |
+|---|---|---|
+| **Forwarded ping loss** | **0.8 s** | **0.9 s** |
+| R1 data plane next hop -> p3 | within the sample interval of the pull | same |
+| R2 data plane next hop -> p3 | about 0.5 s after R1's | same |
+| R2 kernel next hop -> p3 | about 2 s | about 2 s |
+| **R1 kernel next hop -> p3** | **about 68 s** | **about 54 s** |
+
+- **Forwarded traffic fails over in under a second** here: the data plane tables moved on both routers
+  and the end-to-end ping lost 0.8 to 0.9 s. The 8 to 33 s holes found earlier belong to
+  *router-originated* traffic and to the kernel table, not to forwarded customer traffic. That
+  materially lowers the severity of the earlier finding.
+- **The kernel lag is real and was longer this time**, and on the other router than before (R1 here,
+  R2 earlier), so it is not tied to one box. Both R1 flips happened before the cable was re-inserted
+  (68 s of 75.7 s; 54 s of 68.3 s), so re-insertion did not cause them.
+- **Correction.** The earlier update stated an upper bound of about 53 s for the delay, derived from the
+  neighbour timers (15-45 s of REACHABLE, then 5 s, then 3 probes). **The 68 s seen here exceeds it**,
+  so that bound is not valid as stated; treat "8 s to at least 68 s" as what was observed, with no
+  established maximum. The correlation with the neighbour entry reaching FAILED, shown in two pulls
+  earlier, was **not re-checked**: this monitor's neighbour column was parsed wrongly (it read the
+  last word of `ip neigh show`, which is `zebra`, not the state), so no neighbour state was recorded.
+  The correlation therefore rests on two pulls and is not confirmed by this run.
+- Four short losses of 0.2 to 0.3 s each occurred 70 to 90 s after the second re-insertion. They were
+  not investigated.
+
+**What is exposed.** Traffic the router itself originates or terminates and that depends on the kernel
+route for a destination reached over a failed link: multihop or loopback-sourced routing sessions
+(for example iBGP between loopbacks), management sessions to the router, syslog, NTP, SNMP traps, DNS
+lookups made by the router. None of these was tested against the hole; they are the realistic
+exposure, not a measured one. Forwarded traffic is not exposed on this evidence.
+
+**Still not established.** Whether the data plane table stayed correct for longer flows than a 10 Hz
+ping (throughput under a pull was not measured), the 0.2 s losses, and anything on non-J1900
+hardware. Nothing was changed.
