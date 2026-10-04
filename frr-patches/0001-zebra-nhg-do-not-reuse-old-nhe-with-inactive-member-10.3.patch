@@ -1,0 +1,47 @@
+--- a/zebra/zebra_nhg.c	2026-10-05 01:16:45.626317520 +0800
++++ b/zebra/zebra_nhg.c	2026-10-05 01:16:45.640312158 +0800
+@@ -2952,6 +2952,24 @@
+ 			if (IS_ZEBRA_DEBUG_NHG_DETAIL)
+ 				zlog_debug("%s: %pRN Old is not active going to the next one",
+ 					   __func__, rn);
++
++			/*
++			 * If the new nexthop is not active and the old nexthop is also not active,
++			 * then we know that we can skip both the old and new nexthops.
++			 */
++			if (!CHECK_FLAG(nhop->flags, NEXTHOP_FLAG_ACTIVE) &&
++			    nexthop_same(nhop, old_nhop)) {
++				nhop = nhop->next;
++			} else {
++				/*
++				 * The old nhe carries a member that is no longer active and the
++				 * new route does not: reusing the old nhe keeps that member in the
++				 * kernel's nexthop group, so traffic hashed to it is blackholed.
++				 * Use the new nhe instead.
++				 */
++				same = false;
++				break;
++			}
+ 			old_nhop = old_nhop->next;
+ 			continue;
+ 		}
+@@ -3008,14 +3026,11 @@
+ 	if (nhop)
+ 		same = false;
+ 	else if (old_nhop) {
+-		while (old_nhop) {
+-			if (CHECK_FLAG(old_nhop->flags, NEXTHOP_FLAG_ACTIVE))
+-				break;
+-			old_nhop = old_nhop->next;
+-		}
+-
+-		if (old_nhop)
+-			same = false;
++		/*
++		 * Leftover old members, active or not: an inactive one is still a
++		 * member of the old nhe's kernel group (see above), so do not reuse it.
++		 */
++		same = false;
+ 	}
+ 
+ 	return same;
