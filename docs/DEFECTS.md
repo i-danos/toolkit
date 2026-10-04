@@ -2587,3 +2587,52 @@ exposure, not a measured one. Forwarded traffic is not exposed on this evidence.
 **Still not established.** Whether the data plane table stayed correct for longer flows than a 10 Hz
 ping (throughput under a pull was not measured), the 0.2 s losses, and anything on non-J1900
 hardware. Nothing was changed.
+
+
+**Update: a third run, with an extra BGP path, did not reproduce the kernel lag (2026-10-04).** The
+exposure test (loopback-to-loopback BGP with 3 s / 9 s timers, a router-originated TCP echo, a
+100 Mbit/s UDP stream through both data planes, and the corrected monitor) was run with three real
+pulls of the `dp0p2s0` cable (80 s out, 100 s back). It was meant to measure what the kernel-route
+hole exposes. **There was no hole to measure.**
+
+- **Kernel next hop: 0 of 3 pulls lagged.** In all three, R1's and R2's kernel and data plane next
+  hops moved to `dp0p3s0` together (188.6 s, 373.9 s, 562.6 s on the monitor clock), within the sample
+  interval (about 1-2 s). The neighbour entry for the dead next hop was still `REACHABLE` when each
+  route moved and reached `FAILED` only 36 s later (224 s) in the first pull.
+- **So the earlier correlation does not generalise.** Two pulls had shown the route moving when the
+  neighbour reached FAILED. Here the route moved first and the neighbour state is irrelevant to it.
+  The kernel lag occurred in 8 of 8 earlier pulls (4 + 2 + 2: 8-33 s, 8 s and 27 s, 68 s and 54 s on one
+  router) with one eBGP session over the link and OSPF as the backup, and in 0 of 3 here.
+- **What changed between the two configurations** (not what caused it): this run added a second,
+  loopback-sourced multihop eBGP session between the routers with OSPF advertising the loopbacks, so
+  R1 held two BGP paths to 192.168.75.0/24 (the direct one, best, and one recursive via 10.255.0.2); both
+  routers had also been rebooted about 15 minutes earlier. In the earlier runs the replacement for the
+  failed BGP route was an OSPF equal-cost route whose kernel next-hop group held the dead port as well
+  as the live one (seen in an earlier run as `nhid ... nexthop via 192.168.72.2 dev dp0p2s0 ... nexthop via
+  192.168.73.2 dev dp0p3s0`). **A hypothesis consistent with all of it:** the hole appears when the
+  route left after the failure is an equal-cost group that still contains the dead next hop, and not
+  when it is a single next hop. It is a hypothesis: the kernel route was not captured at failover in
+  either configuration in the same run, and the recovery trigger is unexplained.
+- **Router-originated traffic: nothing observed.** The loopback BGP sessions (3/9 s timers) stayed
+  `Established` through all three pulls and the TCP echo connection (router loopback to router loopback,
+  one probe every 0.2 s) logged no stall. With no kernel lag in this configuration there was nothing to
+  expose; the exposure of the earlier configuration remains unmeasured.
+- **Forwarded traffic.** A 100 Mbit/s UDP stream (1200-byte datagrams) from the test host to R4 lost
+  **no datagrams in 820 s: 0 of 8,541,655 at the receiver**, across the three pulls. R1's counters show
+  the stream really changed path: `dp0p2s0` transmitted 5,778,178 packets and `dp0p3s0` 2,730,264, the
+  second matching about 262 s of the stream (the three outages plus the time before BGP returned the route
+  to p2). **Unresolved:** the 10 Hz ping over the same path lost 0.8 s at each of the three pulls, while
+  the stream, in the same direction as the echo requests, lost nothing, and a physical pull would be
+  expected to cost at least the packets in flight. If the ping loss is real forwarding loss it is in the
+  reply direction (R4 to the test host), which this stream does not exercise; that was not tested.
+- **Ping loss with no pull.** Six further loss windows of 0.2 s to 4.5 s occurred outside the pulls,
+  including a 4.5 s one at 92.7 s with nothing disturbed, and the stream lost nothing in any of them. The
+  ping target is R4, a DANOS 2105 router terminating 100 Mbit/s of UDP on its punt path; these look like
+  the end host's ICMP handling, not forwarding. Not shown directly.
+
+**What is established now:** forwarded traffic through the data planes survives a pulled cable with no
+measurable stream loss, in two separate configurations (0.8-0.9 s of ping loss in each pull in both);
+whether the kernel route lags depends on something in the configuration. **What is not:** the cause of
+that dependence (the hypothesis above), the reply-direction loss, and the exposure of router-originated
+traffic in the configuration that does lag. A direct test would run the two configurations on the same
+boxes and capture `ip route show`, `ip nexthop` and the data plane's lookup 3 s and 15 s after each pull.
