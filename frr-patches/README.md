@@ -58,3 +58,30 @@ in the same directory, mounted at `/work`:
 It produces `frr_10.3-3+deb13u1danos1_amd64.deb`, `frr-pythontools_...`, `frr-snmp_...`. Packages built this way
 were installed on a router with plain `dpkg -i` (no forced breaks; the 10.7.1 rebuild needed `--force-breaks`
 because Debian sid's packaging declares `Breaks: systemd (<< 259)`).
+
+## Shipping it (state on 2026-10-05)
+
+The patched source package is `frr 10.3-3+deb13u1danos1` (Debian's source with this patch as a quilt patch and
+`libyang-dev (>= 2.1.128)` in Build-Depends). It is an OBS package in `home:i-danos` and builds green, in the
+**`2608-debian`** repository, not in `2608`:
+
+- OBS resolves a build dependency by name to the first repository in the path that has it, and a project's own
+  repository always comes first. DANOS's libyang builds a package named `libyang-dev` (1.0.184), so a
+  build-depends on `libyang-dev` always gets it, even with a version constraint; Debian's 3.12.2 is invisible
+  (OBS reports "nothing provides libyang-dev >= 2.1.128 (got version 1.0.184-2)"). `2608-debian` has only
+  `Debian:13` in its path. It is disabled for every package in `toolkit/obs/project-meta.xml` and enabled for
+  `frr` by `upload.sh`, which also disables `frr` in `2608` (`DEBIAN_REPO_PKGS`).
+- `close-the-loop.sh` expects `frr` to be green in `2608-debian`, fetches its binaries from there, and fails
+  if the ISO's package list does not show a `danos` frr (so the ISO cannot quietly fall back to Debian's).
+- The OBS build log shows the patch applied (`dpkg-source: info: applying danos-zebra-nhg-...patch`) and
+  `libyang-dev-3.12.2-1` used.
+
+## Keeping it
+
+- The ISO's apt preference pins everything from origin `DANOS` at priority 1000 (`config/archives/danos.pref.chroot`
+  in the build-iso tree), so a later Debian `10.3-3+deb13u2` does **not** replace this package. The flip side:
+  Debian's security updates to frr are not picked up automatically. When Debian publishes one, rebase:
+  fetch the new `.dsc`, `.debian.tar.xz`, `.orig.tar.xz`, re-apply `danos-zebra-nhg-...patch` (check that
+  `zebra_nhg_nexthop_compare()` still has the same shape), bump the version to `...danos2`, and upload.
+- If Debian moves to a newer FRR that already fixes `zebra_nhg_nexthop_compare()`, drop the patch (and
+  `frr` from `DEBIAN_REPO_PKGS`, `EXTRA_PKGS` and the allowlist) and test with the failover loop first.
