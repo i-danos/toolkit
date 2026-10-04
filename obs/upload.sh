@@ -76,6 +76,22 @@ resolve_pkg() {
   echo "$n"
 }
 
+# Packages that build in the 2608-debian repository instead of 2608 (see project-meta.xml for why).
+DEBIAN_REPO_PKGS="frr"
+
+# Package _meta, written every time and before the "identical source" skip below: the
+# build flags are part of the package, and a skipped upload must still be able to fix them.
+write_pkg_meta() {
+  local p="$1" flags=""
+  case " $DEBIAN_REPO_PKGS " in
+    *" $p "*) flags='<build><disable repository="2608"/><enable repository="2608-debian"/></build>' ;;
+  esac
+  mkdir -p "$CO"
+  printf '<package name="%s" project="%s"><title>%s</title><description/>%s</package>\n' \
+    "$p" "$PRJ" "$p" "$flags" > "$CO/.pkgmeta.xml"
+  $OSC api -X PUT "/source/$PRJ/$p/_meta" -f "$CO/.pkgmeta.xml" < /dev/null > /dev/null 2>&1
+}
+
 push_pkg() {
   local p
   p=$(resolve_pkg "$1")
@@ -100,6 +116,7 @@ push_pkg() {
     printf '  %-42s SKIP  no %s_*.dsc under dsc/\n' "$p" "$p"; return 1
   fi
   dsc="$DSC/${p}_${ver}.dsc"
+  write_pkg_meta "$p"
 
   # Resumable: skip if OBS already holds this exact source. The session cookie
   # expires after roughly 24 hours, so a batch that dies halfway through can be
@@ -132,10 +149,6 @@ push_pkg() {
   fi
 
   mkdir -p "$CO"
-  # Create the package, ignoring the error if it already exists
-  printf '<package name="%s" project="%s"><title>%s</title><description/></package>\n' \
-    "$p" "$PRJ" "$p" > "$CO/.pkgmeta.xml"
-  $OSC api -X PUT "/source/$PRJ/$p/_meta" -f "$CO/.pkgmeta.xml" < /dev/null > /dev/null 2>&1
 
   rm -rf "$CO/$p"; mkdir -p "$CO/$p"
   cp "$dsc" "$CO/$p/" || return 1

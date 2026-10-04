@@ -35,7 +35,14 @@ WORK=${WORK:-/tmp/close-the-loop}
 # Packages that are intentionally disabled in project-meta.xml, not build
 # failures. Anything blocked/broken/unresolvable/failed that is NOT in this
 # list stops the run at stage 1.
-DISABLED_ALLOWLIST="golang-dbus golang-defaults golang-golang-x-sys vplane-config-npf-alg-scripts"
+DISABLED_ALLOWLIST="golang-dbus golang-defaults golang-golang-x-sys vplane-config-npf-alg-scripts frr"
+# Packages that build in a second OBS repository, not in $REPO. OBS resolves a build dependency by
+# name to the first repository in the path that has it and a project's own repository comes first, so
+# the project's libyang-dev (DANOS's 1.0.184) hides Debian's 3.x, which FRR 10.3 needs. Such a package
+# is "disabled" in $REPO on purpose (hence frr in the allowlist above) and must be green in
+# $EXTRA_REPO. See toolkit/obs/project-meta.xml and toolkit/frr-patches/README.md.
+EXTRA_REPO=2608-debian
+EXTRA_PKGS="frr"
 
 TS=${1:-$(date -u +%Y%m%dT%H%M%SZ)}
 PREFIX="$R2_PREFIX_BASE/$TS"
@@ -101,6 +108,27 @@ succeeded_count=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['su
 echo "   $succeeded_count packages succeeded, rest disabled by design"
 echo "$manifest_json" > "$WORK/obs-manifest.json"
 
+# Green in the extra repository too. Without this the allowlist entry above would let a failed or
+# missing frr through, and the ISO would silently fall back to Debian's unpatched one.
+for pkg in $EXTRA_PKGS; do
+	code=$($OSC api "/build/$PRJ/_result?repository=$EXTRA_REPO&arch=$ARCH&package=$pkg" < /dev/null 2>/dev/null \
+		| python3 -c "
+import sys, xml.etree.ElementTree as ET
+r = ET.fromstring(sys.stdin.read()); s = r.find('.//status')
+d = s.find('details') if s is not None else None
+c = s.get('code') if s is not None else 'missing'
+print('succeeded' if c == 'succeeded' or (c == 'finished' and d is not None and d.text == 'succeeded') else c)
+") || code=unreadable
+	[ "$code" = succeeded ] || { echo "$pkg is '$code' in $EXTRA_REPO, not succeeded -- fix it before re-running." >&2; exit 1; }
+	echo "   $pkg: succeeded in $EXTRA_REPO"
+done
+python3 - "$WORK/obs-manifest.json" "$EXTRA_REPO" "$EXTRA_PKGS" <<'PYEOF2'
+import json, sys
+p, repo, pkgs = sys.argv[1:4]
+m = json.load(open(p)); m["extra_repository"] = repo; m["extra_packages"] = pkgs.split()
+json.dump(m, open(p, "w"))
+PYEOF2
+
 # ---- stage 2: sync binaries from OBS ----
 echo "-- stage 2: sync binaries (idempotent, only fetches what's missing/changed) --"
 python3 -c "import json; print('\n'.join(json.load(open('$WORK/obs-manifest.json'))['succeeded']))" \
@@ -155,6 +183,29 @@ if [ "$missing" -gt 0 ]; then
 	exit 1
 fi
 echo "   verified complete against OBS's binarylist"
+
+# The packages built in the extra repository: same fetch, same retry, same cross-check.
+for pkg in $EXTRA_PKGS; do
+	ok=false
+	for attempt in 1 2 3; do
+		if $OSC getbinaries "$PRJ" "$pkg" "$EXTRA_REPO" "$ARCH" -d "$LOCAL_REPO" < /dev/null > /dev/null 2>&1; then
+			ok=true
+			break
+		fi
+		sleep 2
+	done
+	$ok || { echo "getbinaries failed for $pkg from $EXTRA_REPO after 3 attempts" >&2; exit 1; }
+	expected=$($OSC api "/build/$PRJ/_result?package=$pkg&repository=$EXTRA_REPO&arch=$ARCH&view=binarylist" \
+		< /dev/null 2>/dev/null | grep -oE 'filename="[^"]+\.deb"' | sed 's/filename="//; s/"$//') || true
+	missing=0
+	while read -r f; do
+		[ -n "$f" ] || continue
+		[ -f "$LOCAL_REPO/$f" ] || { echo "   MISSING: $f (from $pkg in $EXTRA_REPO)" >&2; missing=$((missing + 1)); }
+	done <<< "$expected"
+	[ "$missing" -eq 0 ] || { echo "$missing file(s) of $pkg missing after sync from $EXTRA_REPO" >&2; exit 1; }
+	echo "   $pkg: fetched from $EXTRA_REPO and verified complete"
+done
+deb_count=$(find "$LOCAL_REPO" -maxdepth 1 -name '*.deb' | wc -l)
 
 # ---- stage 3: regenerate apt indices, upload immutable snapshot ----
 echo "-- stage 3: build indices, upload to a fresh R2 snapshot --"
@@ -297,6 +348,17 @@ if ! diff -u <(sort "$product_packages") <(sort "$test_packages") > "$WORK/produ
 fi
 echo "   product and test package sets are identical ($(wc -l < "$product_packages") packages)"
 
+# The ISO must carry the patched frr. apt prefers the DANOS repository (Pin-Priority 1000 on
+# o=DANOS in the build-iso config), but if the package were missing from the snapshot the ISO would
+# quietly take Debian's frr instead and look fine. Check the version the ISO actually has.
+for pkg in $EXTRA_PKGS; do
+	line=$(grep -E "^${pkg}[[:space:]]" "$product_packages" | head -1) || line=""
+	case "$line" in
+		*danos*) echo "   $pkg in the ISO: $(echo "$line" | tr '\t' ' ' | xargs)" ;;
+		*) echo "the ISO carries '$line' for $pkg, not the DANOS build -- the patch is not in the image" >&2; exit 1 ;;
+	esac
+done
+
 # ---- stage 5: QEMU boot acceptance ----
 echo "-- stage 5: QEMU boot acceptance --"
 # boot-vm.sh's live-boot mode looks for vmlinuz/initrd.img at
@@ -395,6 +457,8 @@ provenance = {
     "snapshot_timestamp": ts,
     "obs_project": "home:i-danos",
     "obs_repository": "2608",
+    "obs_extra_repository": manifest.get("extra_repository"),
+    "obs_extra_packages": manifest.get("extra_packages", []),
     "obs_architecture": "x86_64",
     "obs_state": manifest["obs_state"],
     "obs_succeeded_count": manifest["succeeded_count"],
