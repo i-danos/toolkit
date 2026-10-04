@@ -2636,3 +2636,52 @@ whether the kernel route lags depends on something in the configuration. **What 
 that dependence (the hypothesis above), the reply-direction loss, and the exposure of router-originated
 traffic in the configuration that does lag. A direct test would run the two configurations on the same
 boxes and capture `ip route show`, `ip nexthop` and the data plane's lookup 3 s and 15 s after each pull.
+
+
+**Update: A/B test, and what the stuck kernel route actually is (2026-10-04).** Same boxes, same
+topology, same traffic (forwarded ping and UDP from the test host to R4), `dp0p2s0` pulled by hand.
+After each pull a script took, at +3 s, +15 s and +40 s, from both routers: `ip -d route show` for
+the transit prefix, `ip nexthop show`, the data plane's own lookup, FRR's RIB entry and the neighbour
+entry. Two configurations:
+
+- **A:** one eBGP session over the link; OSPF over both links as the backup. (R2's leftover static route
+  for 192.168.71.0/24, which had pre-empted BGP on R2 in the previous run, was removed first.)
+- **B:** A plus a loopback-sourced multihop eBGP session (3 s / 9 s timers), so each router holds a second,
+  recursive BGP path to the far subnet.
+
+| Config | Pull | R1 kernel route after the pull | R2 kernel route after the pull | Kernel next hop moved |
+|---|---|---|---|---|
+| A | 1 | `nhid 143 proto ospf`, **group 17/25** (dead p2 and live p3) | `nhid 137 proto ospf`, **group 16/26** (dead p2 and live p3) | R1 at once; **R2 not for the whole 92 s** |
+| A | 2 | `nhid 25`, single next hop p3 | `nhid 26`, single next hop p3 | both at once |
+| B | 1, 3, 4, 5, 6 | single next hop p3, `proto bgp` at +3, +15, +40 s | same | **5 of 5 at once** |
+
+(B's second pull was a 3-second contact bounce and is not counted.)
+
+- **The stuck state is now observed, not inferred.** In pull A1 the kernel held an equal-cost group that
+  still contained the dead port's next hop, for the whole outage, on **both** routers. FRR's own RIB
+  at the same moment marked that next hop `inactive` and listed only p3 as active, and the **data
+  plane's lookup returned only p3**. So FRR and the data plane were right and the kernel group was not:
+  zebra pointed the kernel route at the pre-existing two-member group object instead of one holding
+  only live members.
+- **Why only one router looked stuck.** Both routers held the bad group in A1; the kernel picks a member
+  by flow hash, so a flow hashed to the live member looked fine (R1's did) and a flow hashed to the dead
+  one was blackholed (R2's). That is why "which router is slow" changed between runs, and why a given
+  router-originated flow is lost for the whole outage or not at all.
+- **It is intermittent inside one configuration.** A1 left the group, A2 installed a single next hop,
+  same boxes, same procedure. Earlier lagging pulls (8 of 8, plus the 1 of 2 here) all had the OSPF route
+  as the route left after the BGP route went; the 0 of 8 non-lagging pulls with the loopback session
+  (3 earlier, 5 now) had a **BGP** route (recursive via the loopback, resolved to a single next hop) take
+  over instead, and the OSPF equal-cost route was never the one installed in the kernel.
+- **Supported, still not proven:** the hole appears when the route that takes over after the failure is
+  an OSPF equal-cost group whose kernel next-hop group keeps the failed interface's member. Evidence is
+  the A1 snapshot (observed in the stuck case) and 0 of 8 against about 9 of 10 across the two
+  configurations. Not established: why zebra reuses the two-member group in some pulls and not in
+  others (likely a race between OSPF's SPF, which waits 500 ms, and the BGP withdrawal, which is
+  immediate; not shown), whether FRR upstream does the same, and any fix. The earlier "waits for the
+  neighbour to reach FAILED" correlation is withdrawn: with a single next hop installed the neighbour
+  state is irrelevant, and in the stuck case it was observed to matter only because the group still
+  held the dead member.
+- **Exposure, restated.** Only router-originated flows that hash to the dead member are affected, and
+  only while the failure lasts; forwarded traffic is unaffected because the data plane's table never held
+  the dead next hop in any pull. The router-originated exposure (iBGP over loopbacks, management
+  sessions, syslog, NTP, SNMP) was still not measured in the configuration that has the hole.
