@@ -11,7 +11,27 @@ Packages disabled here are not failures; each carries its reason in its own
 description. Most are forks Debian has since overtaken, and the official DANOS
 OBS project did not build them either.</description>
   <person userid="i-danos" role="maintainer"/>
+  <!--
+    Second repository, for packages that must build against Debian's own libraries.
+
+    OBS resolves a build dependency by NAME to the first repository in the path that has
+    that name, and a project's own repository always comes first. DANOS's libyang builds a
+    package called libyang-dev (1.0.184), so every build-depends on "libyang-dev" gets it, even
+    one that asks for ">= 2.1.128"   Debian's libyang-dev 3.x is invisible. FRR 10.3 needs the
+    3.x one. This repository's path holds only Debian:13, so nothing shadows it.
+
+    Disabled for every package by default; a package opts in with its own <build> setting
+    (upload.sh does that for frr). Only the packages that need it build here, and
+    close-the-loop.sh fetches them from this repository.
+  -->
+  <build>
+    <disable repository="2608-debian"/>
+  </build>
   <repository name="2608">
+    <path project="Debian:13" repository="standard"/>
+    <arch>x86_64</arch>
+  </repository>
+  <repository name="2608-debian">
     <path project="Debian:13" repository="standard"/>
     <arch>x86_64</arch>
   </repository>
