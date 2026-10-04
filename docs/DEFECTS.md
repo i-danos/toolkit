@@ -2810,9 +2810,8 @@ here, R2 was stuck in 2 of 5 and 2 of 6 failovers in the two snapshot runs, 2 of
 **Upstream.** FRR 10.7.1 (Debian pool) changes the first two functions: `zebra_nhg_check_valid()` now tests
 `ZEBRA_NHG_IS_SINGLETON(nhe)` (comment and code agree), and `zebra_nhg_set_valid_if_active()` adds
 `if (!ifp || !if_is_operative(ifp)) valid = false`, so a singleton on a non-operative interface is no
-longer re-validated. `zebra_nhg_rib_compare_old_nhe()` is identical to 10.3. With step 2 fixed the
-installed group would not include the dead member; **this is a reading of a source diff, not a test on
-10.7.1**, and which upstream commits did it was not looked up (GitHub was not reachable from this host).
+longer re-validated. `zebra_nhg_rib_compare_old_nhe()` is identical to 10.3. *(Superseded below: this was a reading of a source diff, and testing 10.7.1 showed it does not remove the
+symptom.)*
 
 **Not established.** What ends a stuck period after 18-62 s (not captured; the debug segments cover 15 s).
 Whether a real cable pull has the same ordering as a down taken from the peer (the debug side is the peer,
@@ -2825,3 +2824,30 @@ not cover them): carry a downstream backport of the two 10.7.1 changes into the 
 patch-maintenance cost described in `FRR-ROUTE-REPAIR-DECISION.md` section 8 applies); move to an FRR that
 contains them; or avoid the condition in configuration (a BGP path that takes over, or no equal-cost
 backup through the failing link).
+
+
+**Correction: FRR 10.7.1 does not fix it (2026-10-05).** The statement above that fixing step 2 would stop the
+dead member being installed was an inference from a source diff. It was tested: FRR 10.7.1-2 was rebuilt
+for trixie from Debian's source (Lua disabled, sphinx and `Breaks` adjusted; `libyang3` 3.12.2 and
+`libc6` 2.38 on the routers satisfy it), installed on R2 only (R1 stayed on 10.3, so this was also a mixed-version
+interop test: OSPF 2 adjacencies Full, eBGP established, DANOS CLI commits accepted, data plane lookups
+correct), and R2's failover was cycled 12 times with the same loop as before.
+
+| FRR on R2 | Failovers where the kernel kept the dead member (at +3 s and still at +15 s) |
+|---|---|
+| 10.3-3+deb13u1 | 10 of 19 over four runs |
+| 10.7.1-2 | **8 of 12** |
+
+- **No improvement.** The counts are not statistically distinguishable; if anything 10.7.1 is no better.
+- **The step-2 fix does work as far as it goes.** In a debug capture of a stuck 10.7.1 failover the line
+  `valid flag set for nh <dead singleton>` that 10.3 printed is absent, and the singleton is not `Valid` in
+  `show nexthop-group rib`.
+- **It does not matter, because the kernel group is never rewritten.** The route is still installed with
+  `nhg_id is 58` (the two-member group), no `RTM_NEWNEXTHOP` for 58 is sent at the failure, and
+  `zebra_nhg_rib_compare_old_nhe` again logs `Old is not active going to the next one` and `They are the same,
+  using the old nhg entry`. The group is already in the kernel with both members, and keeping the old nhe
+  keeps it that way. So the cause that matters is the second one (reusing an old group whose kernel
+  members include an inactive one); the first only changed how the dead member got there in 10.3.
+- **Consequence for the options above.** Upgrading to 10.7.1, or backporting its two changes to 10.3,
+  would not remove the stuck state. The remaining candidates are a change to
+  `zebra_nhg_nexthop_compare`/`zebra_nhg_rib_compare_old_nhe` or avoiding the condition in configuration.
