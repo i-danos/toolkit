@@ -2851,3 +2851,51 @@ correct), and R2's failover was cycled 12 times with the same loop as before.
 - **Consequence for the options above.** Upgrading to 10.7.1, or backporting its two changes to 10.3,
   would not remove the stuck state. The remaining candidates are a change to
   `zebra_nhg_nexthop_compare`/`zebra_nhg_rib_compare_old_nhe` or avoiding the condition in configuration.
+
+
+## The fix, validated: a small zebra patch, not an upgrade (2026-10-05)
+
+Decision taken by the owner on 2026-10-05: upgrade FRR. Testing showed the upgrade does not fix the stuck
+group (above) but a small change does, so the recommendation to the owner is a downstream patch, not a
+version change.
+
+**The change** (`toolkit/frr-patches/`, with a README, both patches and the build script): in
+`zebra_nhg_nexthop_compare()` an inactive member of the old nexthop group that the new route does not carry
+now means "not the same", so zebra uses the new nexthop group instead of reusing the old one that the kernel
+still holds with the dead member. The same applies to leftover members at the end of the comparison. The
+function differs between versions, so there is one patch for Debian `frr 10.3-3+deb13u1` and one for
+upstream 10.7.1.
+
+**Results, R2 on the physical bench, same loop each time** (R1 on 10.3; link taken down from R1; kernel route
+read 3 s and 15 s later; "stuck" means the kernel route held the dead port's next hop):
+
+| FRR on R2 | Stuck failovers |
+|---|---|
+| 10.3-3+deb13u1 (Debian) | 10 of 19 |
+| 10.7.1-2 rebuilt for trixie | 8 of 12 |
+| 10.7.1-2 + patch | **0 of 12** |
+| 10.3-3+deb13u1danos1 (10.3 + patch) | **0 of 12** |
+
+With the patch the kernel route was always a single next hop via `dp0p3s0` (one `nhid` throughout), unpatched
+runs showed the two-member group in about half the failovers. Patched 0 of 24 against unpatched 18 of 31.
+
+**What the upgrade did and did not do.** FRR 10.7.1 was rebuilt for Debian 13 from the sid source package
+(Lua disabled, sphinx version relaxed; `Breaks: systemd (<< 259)` in sid's packaging had to be forced past,
+which a proper rebuild would remove). It installed over 10.3 with only the libraries the routers already
+have (`libyang3 >= 3.12.2`, `libc6 >= 2.38`), ran with R1 on 10.3 (OSPF two adjacencies Full, eBGP established, DANOS
+CLI commits accepted, data plane lookups correct), and removed one of the two defects (the dead singleton is
+no longer re-validated). It left the stuck rate unchanged, so it is not a remedy for this problem; whether
+it brings other benefits was not examined. The 10.3 base with the patch needs no version change, keeps
+Debian's security updates, and is a smaller change to carry.
+
+**Not tested (also in the README).** The full 81-case Robot regression on a patched build; real cable pulls
+(the evidence uses a link taken down from the peer, which sees a genuine link loss); other FRR daemons;
+nexthop-group growth from the patch; whether upstream has or would accept a different fix. Nothing has
+been shipped: the patched packages are installed on R2 (10.3-3+deb13u1danos1) for testing only and are not in OBS or
+the ISO.
+
+**What shipping it would take.** An OBS (or equivalent) package that rebuilds Debian's frr 10.3-3+deb13u1 with
+the patch under a `+danos` version, a change so the ISO installs it instead of Debian's, the regression
+suite, and a plan for re-applying the patch when Debian publishes a new 10.3 security update. The patch is a
+few lines, but this is a standing downstream delta, which is the cost described in
+`FRR-ROUTE-REPAIR-DECISION.md` section 8.
