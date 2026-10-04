@@ -11,7 +11,13 @@ failed link's own address is removed by zebra and cannot be a source.
 Run hw-link-cycle.py to create the outages, then hw-exposure-analyze.py. Needs hw_ssh.py (as `jump`).
 Edit the source/destination lists and the echo target for the topology.
 """
-import jump,paramiko,sys,time,re,json
+import re
+import sys
+import time
+
+import paramiko
+
+import hw_ssh as jump
 DUR=int(sys.argv[1]) if len(sys.argv)>1 else 1700
 R1S=["10.255.0.1","192.168.71.2","192.168.73.2"]+["10.255.1.%d"%i for i in range(1,7)]
 R1D=["192.168.75.2","192.168.75.4"]

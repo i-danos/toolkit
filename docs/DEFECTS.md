@@ -2685,3 +2685,70 @@ entry. Two configurations:
   only while the failure lasts; forwarded traffic is unaffected because the data plane's table never held
   the dead next hop in any pull. The router-originated exposure (iBGP over loopbacks, management
   sessions, syslog, NTP, SNMP) was still not measured in the configuration that has the hole.
+
+
+## Real hardware: how much router-originated traffic the stuck kernel group hits (2026-10-04)
+
+Question left open above: when the kernel route is left as an equal-cost group that still contains the
+dead next hop, how much of the traffic a router *originates* is lost, and for how long? Measured with
+scripts in `toolkit/vm/` (`hw-link-cycle.py`, `hw-exposure-flows.py`, `hw-exposure-analyze.py`).
+
+**Method.** Configuration A (one eBGP session over the link, OSPF as backup; no loopback BGP path).
+`dp0p2s0` was taken down and up on R1 by the router itself (`ip link set`), five cycles of 80 s down and
+100 s up, with the router's own epoch time logged at each action. Probes ran throughout: on R1, one 5 pps
+ping per (source, destination) pair for 9 sources (three real addresses and six extra loopbacks) times
+two destinations (`192.168.75.2` on R2, `192.168.75.4` on R4); on R2, 9 sources to the test host; and
+six TCP echo connections from R1 to R4 (one probe every 0.2 s). Kernel multipath hashing here is
+`fib_multipath_hash_policy=0`, source and destination **address** only, so the address pair decides the
+member, not the ports. The failed link's own address is removed by zebra on link-down and cannot be a
+source, so it was excluded.
+
+**What this method is.** Taking the port down from the router makes the data plane bring it
+administratively down, so the NIC's link really drops and the **peer** sees a genuine link loss (the
+same `Link down` / `NO-CARRIER` as a pulled cable; an 8 s trial showed R2 holding the stuck group,
+`nhid 248` with both `dp0p2s0` and `dp0p3s0`). The router doing it sees an admin-down instead, which also
+takes its kernel interface down and lets the kernel mark next hops on it dead. **Results on R2 therefore
+match a pulled cable; results on R1's own side do not.** In the table below the two sides show identical
+loss fractions in every cycle, which says the losses on both sides are one event: R2's stuck group, hit
+by R2's own flows and by the replies to R1's flows.
+
+**Per-flow loss inside each 80 s down window** (fraction of probes lost after the first second):
+
+| Cycle | R2's kernel route 3 s after | Flows affected (R1 side / R2 side) | Loss in an affected flow | Implied stuck time |
+|---|---|---|---|---|
+| 1 | group with dead member | 4 of 18 / 4 of 9 | 41% / 40% | about 32 s |
+| 2 | **single next hop** | 0 / 0 | 0% | none |
+| 3 | group with dead member | 4 of 18 / 4 of 9 | 79% / 78% | about 62 s |
+| 4 | group with dead member | 4 of 18 / 4 of 9 | 35% / 34% | about 27 s |
+| 5 | group with dead member | 4 of 18 / 4 of 9 | 23% / 23% | about 18 s |
+
+- **The affected flows were the same every time**: on R1 the sources `10.255.0.1`, `10.255.1.1`,
+  `10.255.1.2`, `192.168.71.2` to destination `192.168.75.2`, and **none** of the 9 sources to
+  `192.168.75.4`; on R2, 4 of 9 sources (`10.255.0.2`, `10.255.2.4`, `192.168.73.3`, `192.168.75.2`).
+  The share of address pairs that hash to the dead member is about half or less (R2: 4 of 9; R1: 4 of
+  18 pairs), as two members and a hash predict, and it depends on the destination.
+- **The loss is a stuck period, not a permanent blackhole.** Within a cycle every affected flow lost the
+  same fraction, and the flows recovered part-way through the window while the kernel route still
+  listed the group at +40 s. The stuck time was 18, 27, 32 and 62 s in the four affected cycles (none in
+  one). **62 s again exceeds the 53 s the neighbour timers would allow**, so that bound stays withdrawn.
+- **Totals on R2** (the pull-faithful side): 16 of 45 flow-cycles were affected (36%); over all flow-cycles
+  the share of outage time lost was **15.6%**; one cycle in five saw no loss at all.
+- **TCP echo: 0 stalls and 0 resets** in all five cycles for all six connections. **This is not evidence
+  that TCP is safe:** all six went to the one destination, `192.168.75.4`, and no address pair to that
+  destination hashed to the dead member in any cycle. Exposure for TCP to a destination that does hash to
+  it was not measured; those flows would stall for the same 18-62 s.
+- **Forwarded traffic** was not part of this run; earlier runs showed it unaffected.
+
+**What this does and does not say.** In this configuration, router-originated traffic is exposed
+partially and intermittently: roughly four in nine address pairs to a given destination are blackholed
+for about 18-62 s in four of five cycles, and none in the fifth. A router's management sessions,
+syslog or NTP would be hit only if their (source, destination) pair hashes to the dead member, which can
+be checked from the addresses alone with `ip route get ... from ...` against the group. Not measured:
+protocols with real timers (hold times of 90-180 s would survive an 18-62 s stuck period; the 9 s hold
+time of the earlier loopback session would not), and the recovery trigger.
+
+**Method caveats.** R1-side flows reflect an admin-down on R1 as well as R2's stuck group, so no
+statement about R1's kernel under a cable pull is made from them. The cycle count is five.
+After the run the test configuration was removed from R1 and R2; R4 still carries extra static routes
+(192.168.72/73/74.0/24 and 10.255.1.0/24 via 192.168.75.2), removed from nothing because R1 no longer
+routes to it.

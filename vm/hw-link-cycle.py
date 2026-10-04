@@ -12,7 +12,11 @@ the kernel mark next hops on it dead. So results on the PEER side match a cable 
 this router's own side do not. See DEFECTS.md, "Real hardware: ... exposure".
 
 Usage: hw-link-cycle.py CYCLES DOWN_SECONDS UP_SECONDS START_DELAY_SECONDS
-import jump,time,sys
+"""
+import time
+import sys
+
+import hw_ssh as jump
 CYCLES=int(sys.argv[1]); DOWN=int(sys.argv[2]); UP=int(sys.argv[3]); DELAY=int(sys.argv[4])
 j1,r1=jump.connect('192.168.71.2'); LOG=open("ctrl.log","w",buffering=1)
 def act(cmd,label):
