@@ -2752,3 +2752,76 @@ statement about R1's kernel under a cable pull is made from them. The cycle coun
 After the run the test configuration was removed from R1 and R2; R4 still carries extra static routes
 (192.168.72/73/74.0/24 and 10.255.1.0/24 via 192.168.75.2), removed from nothing because R1 no longer
 routes to it.
+
+
+## Root cause of the stuck kernel next-hop group, from zebra's own log and source (2026-10-04)
+
+Question left open above: why does the kernel sometimes keep an equal-cost group that still holds the
+dead port's next hop? Answered by reading FRR 10.3-3+deb13u1 (the version on the routers; Debian's patches
+are security fixes and do not touch the next-hop group code) and by capturing zebra's debug log
+(`debug zebra rib detailed`, `nexthop detail`, `kernel`, `dplane detailed`, `events`) on R2 across 8 failovers
+of `dp0p2s0` taken down from R1 (`ip link set`; R2's side is the pull-faithful one). One note on a trap:
+the `frr` tree under `danos-sources/` is a 7.6-dev fork and is not what runs; the source used here is the
+Debian 10.3 orig tarball.
+
+**Observed (R2, same second, stuck failover, `nhid 473`, `group 16/26`):**
+
+1. `Intf dp0p2s0 has gone DOWN`. The BGP route to 192.168.71.0/24 is withdrawn and zebra selects the OSPF
+   route that was already in the RIB, whose next-hop group `473[16/26]` has a member `16`
+   (`192.168.72.2` via `dp0p2s0`) and a member `26` (`192.168.73.2` via `dp0p3s0`).
+2. Installing it: `zebra_nhg_install_kernel: valid flag set for nh 473[16/26]`, then
+   **`valid flag set for nh 16[192.168.72.2 if 10 vrfid 0]`** (the dead port's next hop is marked VALID
+   again), then `RTM_NEWNEXTHOP id=16`, `RTM_NEWNEXTHOP id=473`, `RTM_NEWROUTE ... nhg_id is 473`. The
+   kernel now holds a group containing the dead member.
+3. About 10 ms later ospfd's update arrives with only `192.168.73.2` (zebra creates a new next hop,
+   474, for it). `zebra_nhg_rib_compare_old_nhe` compares it with the old group: new active next hops are
+   `192.168.73.2`; old are `192.168.72.2` (not ACTIVE) and `192.168.73.2`. Log: `Old is not active going to
+   the next one` ... `New and old are same, continuing search` ... **`They are the same, using the old nhg
+   entry`**, then `nexthop_active_update: CHANGED: nhe 474 => new_nhe 473[16/26]`. The route stays on the
+   two-member group and nothing is pushed to the kernel.
+4. ospfd itself is right: `show ip ospf route` in the stuck state lists only `via 192.168.73.2, dp0p3s0`
+   and its last SPF ran at the failure. FRR's RIB entry still lists `192.168.72.2 ... inactive`, and the
+   data plane's lookup returns only p3. Only the kernel group is wrong.
+
+**Same capture, normal failover (cycle 3, `nhg_id is 26`).** The order is reversed: ospfd's single-next-hop
+route reaches zebra *before* `Intf dp0p2s0 has gone DOWN` (line 6 against line 100 of the segment), so the
+route is moved to the single next hop 26 first, the old group is released and no dead member is ever
+re-validated. The stuck cases (two of two) had `gone DOWN` first (line 8, line 9) and ospfd's update after.
+A separate snapshot run (zebra `show nexthop-group rib`, 5 failovers) agrees: the stuck state shows
+`ID 16 ... Valid, Installed`, `ID 374 ... Valid, Installed, Depends (16) (26)`; a normal one shows
+`ID 16` with no Valid/Installed flags and no group.
+
+**So the intermittency is a race** between the local interface-down event reaching zebra and the OSPF
+route update, which the peer's LSA triggers: when the interface event comes first the failure leaves
+the old group installed with the dead member; when the OSPF update comes first it does not. Over the runs
+here, 2 of 5 and 2 of 8 failovers were stuck in the two snapshot/debug runs and 4 of 5 pulled cycles in
+the exposure run.
+
+**Two defects in 10.3's `zebra_nhg.c` explain steps 2 and 3:**
+
+- `zebra_nhg_check_valid()` should clear the ACTIVE flag on a *singleton* next-hop entry (no depends, only
+  dependents) when its interface goes down. Its code tests `depends_count || dependents_count == 0`, while
+  its own comment describes the opposite, so a singleton that groups depend on keeps ACTIVE.
+  `zebra_nhg_install_kernel()` then calls `zebra_nhg_set_valid_if_active()`, which sets VALID on any singleton
+  whose next hop still carries ACTIVE, regardless of the interface state: step 2.
+- `zebra_nhg_rib_compare_old_nhe()` treats the old group as equal when its *active* next hops match the
+  new route's, ignoring that the kernel group built from it also holds the inactive member: step 3.
+
+**Upstream.** FRR 10.7.1 (Debian pool) changes the first two functions: `zebra_nhg_check_valid()` now tests
+`ZEBRA_NHG_IS_SINGLETON(nhe)` (comment and code agree), and `zebra_nhg_set_valid_if_active()` adds
+`if (!ifp || !if_is_operative(ifp)) valid = false`, so a singleton on a non-operative interface is no
+longer re-validated. `zebra_nhg_rib_compare_old_nhe()` is identical to 10.3. With step 2 fixed the
+installed group would not include the dead member; **this is a reading of a source diff, not a test on
+10.7.1**, and which upstream commits did it was not looked up (GitHub was not reachable from this host).
+
+**Not established.** What ends a stuck period after 18-62 s (not captured; the debug segments cover 15 s).
+Whether a real cable pull has the same ordering as a down taken from the peer (the debug side is the peer,
+so the signal is a real link loss, but the local-event timing was not compared). Any behaviour of 10.7.1 on
+this hardware. How this relates to the earlier "loopback BGP path avoids it" observation: with a BGP route
+taking over there is no old two-member OSPF group to reuse, consistent with step 3 but not tested.
+
+**Options, none applied or tested** (nothing was changed; the 2026-10-01 decision about repair code does
+not cover them): carry a downstream backport of the two 10.7.1 changes into the Debian 10.3 package (the
+patch-maintenance cost described in `FRR-ROUTE-REPAIR-DECISION.md` section 8 applies); move to an FRR that
+contains them; or avoid the condition in configuration (a BGP path that takes over, or no equal-cost
+backup through the failing link).
