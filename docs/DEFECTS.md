@@ -2794,8 +2794,8 @@ A separate snapshot run (zebra `show nexthop-group rib`, 5 failovers) agrees: th
 **So the intermittency is a race** between the local interface-down event reaching zebra and the OSPF
 route update, which the peer's LSA triggers: when the interface event comes first the failure leaves
 the old group installed with the dead member; when the OSPF update comes first it does not. Over the runs
-here, 2 of 5 and 2 of 8 failovers were stuck in the two snapshot/debug runs and 4 of 5 pulled cycles in
-the exposure run.
+here, R2 was stuck in 2 of 5 and 2 of 6 failovers in the two snapshot runs, 2 of 3 in the debug run and
+4 of 5 in the exposure run: 10 of 19 in all, with no pattern by cycle order.
 
 **Two defects in 10.3's `zebra_nhg.c` explain steps 2 and 3:**
 
