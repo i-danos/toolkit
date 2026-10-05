@@ -20,6 +20,11 @@
 #   run that died after the snapshot was already uploaded.
 set -Eeuo pipefail
 
+# Direct connection only (owner decision 2026-10-05). build-iso-container.sh turns on --network host
+# and passes the proxy through whenever one of these is set, so clear them here instead of relying
+# on whichever shell happens to launch the run.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
+
 OBS_DIR=${OBS_DIR:-/home/aikon/danos/.obs}
 OSC="setsid --wait $OBS_DIR/osc -A https://api.opensuse.org"
 PRJ=home:i-danos
