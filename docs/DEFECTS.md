@@ -2899,3 +2899,12 @@ the patch under a `+danos` version, a change so the ISO installs it instead of D
 suite, and a plan for re-applying the patch when Debian publishes a new 10.3 security update. The patch is a
 few lines, but this is a standing downstream delta, which is the cost described in
 `FRR-ROUTE-REPAIR-DECISION.md` section 8.
+
+### 2026-10-05: patched frr verified from the pipeline-built ISO
+
+R2 was given `i-danos_vyatta_20261005T0507-amd64.hybrid` (sha256 06c795c7...2b25, produced by
+close-the-loop.sh from R2 snapshot 20261004T235446Z) with `add system image`, then booted into it.
+The image carries `frr 10.3-3+deb13u1danos1`. With OSPF + BGP re-applied (R1/R2 as in the earlier
+A/B runs) and R1's dp0p2s0 taken down 12 times: kernel route on R2 stuck on the dead next hop in
+0 of 12 cycles at +3 s and at +15 s (unpatched Debian 10.3: 10 of 19). Not yet covered: a real cable
+pull, the Robot suite on this ISO.
