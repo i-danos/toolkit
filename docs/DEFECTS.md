@@ -2908,3 +2908,25 @@ The image carries `frr 10.3-3+deb13u1danos1`. With OSPF + BGP re-applied (R1/R2 
 A/B runs) and R1's dp0p2s0 taken down 12 times: kernel route on R2 stuck on the dead next hop in
 0 of 12 cycles at +3 s and at +15 s (unpatched Debian 10.3: 10 of 19). Not yet covered: a real cable
 pull, the Robot suite on this ISO.
+
+### 2026-10-07: Robot regression on the patched-frr test ISO, and the version-string defect it found
+
+First run on the container-built test ISO (frr 10.3-3+deb13u1danos1): 74 of 81. None of the 7 failures
+was the frr patch:
+
+- 4 (one prerequisite check each in ipsec, mpls, fw, bgp): `show version` said
+  `DANOS (Lancaster) 2608 (vyatta:Shipping:vyatta:20261006)`, the suites require `DANOS:Shipping:2608`.
+  `build-iso/auto/config` reads the release name and id from `/.build/build.dist`, which only exists inside
+  OBS; outside it every parameter fell back to the literal `vyatta`. Since the container pipeline was
+  introduced (96a954b) every container-built ISO carried that string and the name `i-danos_vyatta_*`,
+  including release `i-danos_vyatta_20261005T0507`. Fixed in a75e770 (fall back to the checkout's own
+  `build.dist`); the rebuilt ISO is `i-danos_2608_20261007T2056` and says `DANOS:Shipping:2608`.
+- 1 (dpa): the case still expected `qos-if`/`qos-vlan` to answer `no (reason)`; their walkers exist now
+  (0172b22 in tests).
+- 2 (ipsec): `ipsec_sa_packets` used stock `vymgmt.Router`, which cannot log in to a router that booted
+  with a new host key ("Could not establish connection to host"); it now uses the file's own `Router`
+  subclass (091f084 in tests).
+
+Result after the three fixes: **81 of 81** (ipsec 10, mpls 11, dpa 7, fw 16, bgp 16, rest 21), one
+topology at a time. Release `i-danos_vyatta_20261005T0507` still carries the wrong version string and
+should be rebuilt before it is handed out.
