@@ -488,6 +488,13 @@ npx wrangler r2 object put "$R2_BUCKET/$PREFIX/provenance.json" --file "$WORK/pr
 	--content-type application/json --remote > /dev/null 2>&1
 echo "   provenance archived to $R2_DOMAIN/danos-apt/$REPO/snapshots/$TS/provenance.json"
 
+# The scheduled GitHub build (build-iso/.github/workflows/build-iso.yml) has no way to list R2, so
+# the newest snapshot that passed boot acceptance is named in one small file. Written only here,
+# after stage 5, so it never points at a snapshot nobody booted.
+printf '%s\n' "$TS" > "$WORK/LATEST"
+npx wrangler r2 object put "$R2_BUCKET/danos-apt/$REPO/snapshots/LATEST" --file "$WORK/LATEST" \
+	--content-type text/plain --remote > /dev/null 2>&1
+
 # ---- stage 7: formal release assembly ----
 # mk-release.py builds the audited P0.5 release directory (sbom.json,
 # source-revision-map.json, build-inputs.json, verification-summary.json)
