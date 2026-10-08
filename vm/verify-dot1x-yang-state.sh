@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Does the YANG state container report what the dataplane actually has?
 #
 # verify-dot1x-e2e.sh proves the feature works, but it reads port state from

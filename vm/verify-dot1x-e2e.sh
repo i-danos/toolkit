@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # 802.1X end to end, through the CLI, on the image that ships it.
 #
 #   R1  supplicant     dp0s3 201.1.1.1

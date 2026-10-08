@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # One image for the three roles the Robot regression (vm/regression.sh) needs:
 #
 #   danos-robot        runs the Robot Framework suites

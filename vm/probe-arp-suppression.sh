@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # What would ARP suppression have to build, and what is already there?
 #
 # Suppression means a leaf answers an ARP for a remote host from what EVPN

@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Is symmetric IRB a dataplane feature here, or a composition of existing ones?
 #
 # EVPN-IRB-ASYMMETRIC-FIRST.md says symmetric IRB "has nothing to build on",

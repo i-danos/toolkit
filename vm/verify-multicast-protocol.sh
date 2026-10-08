@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Functional verification, second attempt. The first had two faults of its own
 # and neither was in the product:
 #

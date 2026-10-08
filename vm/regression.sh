@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # The DANOS Robot suites against one image. The suite list and the expected
 # case counts are the SUITES table below, and nothing else.
 #

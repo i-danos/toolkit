@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # What exactly does the flooded counter count?
 #
 # verify-arp-suppression.sh already showed it rises when the neighbour table

@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # P2: does an installed system survive a hard power cut during a config commit?
 #
 # The cut is SIGKILL to the qemu process, by pidfile after checking the

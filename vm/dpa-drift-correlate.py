@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 """Correlate dpa-drift-history.py's events against configd's own commit log.
 
 P1 item 3: is a persistent disagreement explained by "a configuration commit

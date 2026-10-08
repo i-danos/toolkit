@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Build and start the container environment vm/regression.sh needs.
 #
 # Before this script the environment existed only as images committed by hand

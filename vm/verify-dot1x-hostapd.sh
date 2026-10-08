@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Run 802.1X across a real dataplane link: hostapd as authenticator on R2's
 # dp0s3, wpa_supplicant as supplicant on R1's dp0s3, over the DPDK path.
 #

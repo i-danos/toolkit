@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Why did the guard for the bridge's own address not fire?
 #
 # bridge_arp_suppress() now returns early when ifa_is_local(brif, taddr) says

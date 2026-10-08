@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Prepare one booted router for the DANOS test suites.
 #
 # The suites log in as vyatta/vyatta and drive the box over SSH, the REST suite

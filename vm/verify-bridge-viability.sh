@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Does a bridge of two dataplane ports forward at all on this image?
 #
 # This is the substrate Private VLAN would sit on, and it is worth establishing

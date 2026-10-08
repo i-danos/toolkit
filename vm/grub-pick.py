@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 """Wait for GRUB's menu to appear in a UEFI VM's serial log, then pick an entry.
 
 Usage: grub-pick.py <run-dir> <entry-index> [--marker TEXT] [--wait SECONDS]

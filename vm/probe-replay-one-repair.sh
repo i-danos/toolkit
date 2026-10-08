@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # P2: can a single-route replay repair a route that is genuinely missing?
 #
 # P1 (probe-replay-one-scope.sh) established what the primitive does to a route

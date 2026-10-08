@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # What does any of this cost with a real number of routes?
 #
 # Everything measured so far used four routes, or twenty. Both numbers are

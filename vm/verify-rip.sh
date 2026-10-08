@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # End-to-end RIP over the R2-R3 link, configured only through the DANOS CLI.
 #
 #   R2  dp0s10 66.1.1.3   lo1 2.2.2.2/32

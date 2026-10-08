@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Does the EVPN configuration model actually work from the CLI?
 #
 # Everything that proved EVPN forwards was typed into vtysh. The model exists

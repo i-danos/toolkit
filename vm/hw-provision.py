@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 """First-boot provisioning of a physical DANOS box over its serial console.
 
 A freshly installed box has every dataplane port administratively down and a
