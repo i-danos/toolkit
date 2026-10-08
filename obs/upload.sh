@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Push the generated Debian source packages to home:i-danos on OBS and trigger
 # the builds.
 #

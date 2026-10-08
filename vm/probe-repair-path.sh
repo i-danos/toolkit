@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # If drift is found, what is there to do about it?
 #
 # Drift detection works. Auto Recovery needs somewhere to write, and the data

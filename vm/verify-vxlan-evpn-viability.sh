@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Is EVPN-VXLAN a plausible alternative to VPLS on this dataplane?
 #
 # The roadmap has VPLS/VPWS as the remaining L2VPN item. EVPN-VXLAN is its

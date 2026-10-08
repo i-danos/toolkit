@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
 
 ## live-build(7) - System Build Scripts
 ## Copyright (C) 2006-2015 Daniel Baumann <mail@daniel-baumann.ch>

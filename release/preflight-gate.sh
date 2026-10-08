@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Preflight for the release gate: the checks that this project's own runs have
 # gotten sideways on, reported as a named cause rather than a downstream
 # timeout that reads as a product failure.

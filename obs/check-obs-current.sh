@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Which repositories have commits that are not on OBS?
 #
 # git push and an OBS upload are separate acts, and nothing links them. Missing

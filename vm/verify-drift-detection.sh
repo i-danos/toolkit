@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does the drift comparison say something true?
 #
 # Desired is zebra's RIB; Programmed is the data plane's object view. Both are

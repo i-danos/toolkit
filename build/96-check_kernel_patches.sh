@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
 # Check that debian/patches-vyatta applies the way the build applies it.
 #
 # debian/rules.real uses `quilt push -a -q --fuzz=0`. Verifying locally with

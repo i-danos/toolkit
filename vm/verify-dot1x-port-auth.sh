@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does an unauthorised port stop forwarding, and can it still authenticate?
 #
 # Both halves matter and they pull in opposite directions. A port that blocks

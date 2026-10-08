@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Is this router's qemu process actually what its pidfile claims it is?
 #
 # The readiness gate's own vocabulary (see docs, "验收流程要求") lists nine

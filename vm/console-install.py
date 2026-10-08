@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Drive "install image" over a QEMU serial console.
 
 console.py sends a command and waits for a shell prompt. The installer is not

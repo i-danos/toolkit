@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Per-flow loss inside each outage window, from the probe logs hw-exposure-flows.py leaves.
 
 Reads flows/flow_*.txt (ping -D -O output), flows/offset (R2 clock minus R1 clock) and ctrl.log.

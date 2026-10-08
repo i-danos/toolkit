@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Give each router a fixed address on 192.168.203.0/24, as the DANOS test
 # suites hard-code.
 #

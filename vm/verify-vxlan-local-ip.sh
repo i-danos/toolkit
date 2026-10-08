@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does a tunnel's configured local-ip become the source of its packets?
 #
 # set_vxlan_params() stored s_addr = 0 unconditionally and never read

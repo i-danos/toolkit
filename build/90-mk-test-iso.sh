@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Build a test-only ISO. The single difference from the product image is a
 # preseeded dataplane exclude-interfaces entry, which leaves one NIC bound to
 # its kernel driver to serve as an out-of-band management port.

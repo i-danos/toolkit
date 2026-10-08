@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Start many router-originated probe flows with different source/destination address pairs.
 
 The kernel hashes equal-cost multipath on source and destination ADDRESS only

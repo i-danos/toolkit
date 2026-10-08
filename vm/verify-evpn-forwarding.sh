@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does a MAC programmed by EVPN forward, or only a MAC the data path learned?
 #
 # The first version of this test asked the wrong question. It killed R1's flood

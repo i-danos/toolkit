@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Symmetric IRB, configured entirely from the DANOS CLI.
 #
 # probe-symmetric-irb.sh measured the datapath with static routes.

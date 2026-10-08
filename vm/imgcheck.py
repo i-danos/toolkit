@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Runs ON an installed DANOS box, as root. Are the images on disk what the
 boot menu says they are?
 

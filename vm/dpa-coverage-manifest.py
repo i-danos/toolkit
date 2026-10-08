@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """The DPA object model's coverage, derived from source, not remembered.
 
 This project has hit the same failure twice already: a check that cannot tell

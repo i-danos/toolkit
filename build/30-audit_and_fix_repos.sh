@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Audit and Fix DANOS Repositories
 # Checks for danos/2110a tag. If missing, switches to latest tag or default branch.
 

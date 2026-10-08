@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Verify BFD, in the only way that means anything: by measuring how long a
 # failure takes to be noticed.
 #

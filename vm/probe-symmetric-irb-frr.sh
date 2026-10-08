@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Can FRR drive symmetric IRB here, or only the dataplane follow it?
 #
 # probe-symmetric-irb.sh showed the datapath working with static routes

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Rewrite Perl given/when (smartmatch) as if/elsif/else.
 
 Perl deprecated the switch feature in 5.38 and removed it in 5.42. Debian 13

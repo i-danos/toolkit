@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Drive a QEMU serial console over its unix socket.
 
 The console is the only way in before SSH is configured. Driving it through the

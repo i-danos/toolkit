@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Push the current version of a package from dsc/ to OBS, overwriting whatever
 # is there.
 #

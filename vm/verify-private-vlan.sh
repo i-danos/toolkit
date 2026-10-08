@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Private VLAN: do the port roles actually restrict forwarding?
 #
 # R2 bridges its two dataplane ports, putting R1 and R3 on one L2 segment

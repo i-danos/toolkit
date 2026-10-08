@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Forwarding tests for SSM and for IPv6, the two gaps left by
 # verify-multicast-protocol.sh. That script proves the protocols reach the
 # right state; this one proves packets cross the box.

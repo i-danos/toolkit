@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 import vymgmt, traceback
 h = vymgmt.Router("192.168.203.155", "vyatta", password="vyatta", port=22)
 try:

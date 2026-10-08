@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Pre-build checks for the DANOS ISO.
 
 Two checks, both of which fail deep inside `lb build` if skipped, with error

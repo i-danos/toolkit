@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Watch what a pulled cable does on the physical bench, one layer at a time.
 
 Samples, on each of two routers every ~0.2 s: the kernel's next hop (`ip route get`), the data

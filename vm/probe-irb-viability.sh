@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # How far is this platform from EVPN IRB, and which kind can it reach?
 #
 # Symmetric and asymmetric IRB need very different things, and the difference

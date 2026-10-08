@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does a MAC that moves to another VTEP follow?
 #
 # vxlan_newneigh()'s update branch used to take the new NUD state and leave

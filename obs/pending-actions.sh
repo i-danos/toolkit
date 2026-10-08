@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # The OBS work that piled up while the login was expired, run in one go.
 #
 # Prerequisite: a valid session cookie. First run

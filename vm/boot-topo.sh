@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Bring up a router topology for the DANOS test suites. TOPO selects which one;
 # it defaults to fw, so a suite from another family needs it set explicitly.
 #

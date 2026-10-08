@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Validate P1 DPA evidence files without external Python dependencies."""
 import json, sys
 

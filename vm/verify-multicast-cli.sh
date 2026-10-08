@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Walk every operational command the PIM/IGMP op yang defines and check two
 # separate things, because they fail differently and one masks the other:
 #

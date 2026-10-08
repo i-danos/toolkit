@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # DANOS Binary Package Build Script
 # Builds packages in dependency order using a local apt repository
 
