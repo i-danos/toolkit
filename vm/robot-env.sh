@@ -47,7 +47,13 @@ up() {
 	docker rm -f danos-robot >/dev/null 2>&1
 	docker run -d --name danos-robot --network "$NET" --ip "$ROBOT_IP" \
 		-v "$TESTS_DIR:/tests" "$IMAGE" >/dev/null || return 1
-	docker exec danos-robot robot --version
+	# Robot exits 251 after printing its version, which is success here.
+	local v rc
+	v=$(docker exec danos-robot robot --version); rc=$?
+	case $rc in
+		0|251) echo "$v" ;;
+		*) echo "robot does not run inside danos-robot (exit $rc)" >&2; return 1 ;;
+	esac
 }
 
 down() {
