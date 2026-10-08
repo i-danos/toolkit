@@ -141,6 +141,19 @@ done
 
 "$HERE/restclient.sh" down >/dev/null 2>&1 || true
 
+# Leave no topology running. The last one (bgp, four routers) used to be left up,
+# and the next regression's preflight then refused to start because QEMU
+# processes were still there. Only this script's own routers are stopped: by
+# pidfile, and only if the process is a QEMU named r1..r4.
+for d in "${OBS_DIR:-/home/aikon/danos/.obs}"/run/r[1-4]; do
+	[ -f "$d/qemu.pid" ] || continue
+	pid=$(cat "$d/qemu.pid" 2>/dev/null)
+	case "$pid" in ''|*[!0-9]*) continue ;; esac
+	if tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -qE 'qemu-system.* -name r[1-4] '; then
+		kill "$pid" 2>/dev/null || true
+	fi
+done
+
 # The verdict comes from the results on disk, not from the counters above:
 # output.xml is what each suite recorded, while the lines above are what its
 # stdout said. They should agree, and when they do not the file is right.
