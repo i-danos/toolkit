@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Asymmetric IRB, every hop, including the one the probe could not reach.
 #
 # probe-asymmetric-irb.sh measured 4 of 4 but sourced the traffic from R1's

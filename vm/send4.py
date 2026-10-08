@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 """Send IPv4 multicast from a chosen source address.
 
 Usage: send4.py <group> <source-address> <count>

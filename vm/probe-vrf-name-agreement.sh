@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Do the two sides call a non-default VRF the same thing?
 #
 # The drift comparison keys on the VRF name because the numbers turned out to

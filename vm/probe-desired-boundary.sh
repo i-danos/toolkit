@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Where is the boundary a reconciliation loop would actually work across?
 #
 # The DPA object model can now say what the data plane holds and which backend

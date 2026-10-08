@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Minimal 802.1x viability check on DANOS, before any dataplane work.
 #
 # Two questions, deliberately separated, because answering them together is how

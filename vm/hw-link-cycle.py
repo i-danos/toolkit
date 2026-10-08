@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 """Take a physical link down and up on a schedule, with exact timestamps, from the router itself.
 
 Replaces pulling a cable by hand, which is slow and, worse, unrepeatable: this runs N cycles of

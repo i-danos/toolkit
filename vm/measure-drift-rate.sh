@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # How often does drift actually happen, with nobody injecting it?
 #
 # Both candidate answers to route repair -- a downstream FRR replay primitive

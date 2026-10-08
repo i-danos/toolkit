@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 """What is the UEFI boot chain on this ISO, and who signed each link?
 
 Usage: efi-inspect.py <iso> <outdir>

@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # The rest of P0.5 item 4 on an INSTALLED image: upgrade, select the new image,
 # roll back, interface naming, cloud-init, and a boot with no network at all.
 # accept-disk-install.sh covers install, disk boot and restart; this picks up

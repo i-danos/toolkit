@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Install the ISO to a blank disk on a UEFI + Secure Boot machine, then boot the
 # installed disk. The sequence the UEFI tests all start from.
 #

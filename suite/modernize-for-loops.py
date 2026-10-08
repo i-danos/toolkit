@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 r"""Convert Robot Framework 3.x :FOR loops to the modern FOR/END form.
 
 Robot Framework 4 deprecated the old syntax and 5 removed it, so on 7.x every

@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # P2, the two cases verify-power-loss.sh left open: a power cut *during boot*
 # and a power cut *during `add system image`*.
 #

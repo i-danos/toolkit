@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # P1: what is the scope of "fpm route-replay <prefix>"?
 #
 # This does NOT test repair. It tests what the primitive does, on a route that

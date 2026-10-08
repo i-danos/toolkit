@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Check that a booted image lands a login in the vbash + sandbox workspace,
 # the way official DANOS 2105 does.
 #

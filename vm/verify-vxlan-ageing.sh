@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Do control-plane MACs survive the ageing timer, and do learned ones still go?
 #
 # vxlan_rtexpired() ages anything IFBAF_DYNAMIC that has not been used for

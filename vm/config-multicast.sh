@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # End-to-end for the second round of multicast CLI work: BSR, Auto-RP, MSDP and
 # SSM on IPv4, and PIM6 plus MLD on IPv6.
 #

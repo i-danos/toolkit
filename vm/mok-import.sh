@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Put a pending MOK enrollment request into an installed UEFI machine's NVRAM.
 #
 # What an operator does: boot the installed system with Secure Boot supported but

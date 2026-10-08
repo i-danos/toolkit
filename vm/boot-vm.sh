@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Boot a DANOS ISO under QEMU/KVM with a usable serial console.
 #
 # The ISO's isolinux default append is "boot=live components quiet splash" --

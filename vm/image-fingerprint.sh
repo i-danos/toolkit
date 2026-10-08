@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Which image are the running VMs actually booted from?
 #
 # Every result this toolkit produces is a statement about an image, and until

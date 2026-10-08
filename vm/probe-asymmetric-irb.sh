@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Does the asymmetric IRB datapath already work here?
 #
 # probe-irb-viability.sh established the building block: a bridge with an

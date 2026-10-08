@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # Does an FPM bounce blank the forwarding table?
 #
 # This question has been answered three times with three different reasons, and

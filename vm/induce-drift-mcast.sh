@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: LGPL-2.1-only
 # mroute class: pause vplaned on R2, add a new SSM join on R3 (host-side driver).
 #
 # Induces a real, persistent control-plane/data-plane disagreement by pausing
