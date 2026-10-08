@@ -7,6 +7,10 @@ plane's own next hop (`vplsh route lookup`), and the state of the neighbour entr
 next hop. In parallel a 10 Hz ping runs from this host to an end host, so the same timeline carries
 the loss a user would see.
 
+A fourth field, grp, says whether the kernel route to the destination's prefix still lists the dead
+next hop (grp=dead). `ip route get` for one destination picks a group member by hash, so on its own it
+can look healthy while the group still holds the dead member; grp does not depend on the hash.
+
 Why three views: the routing daemons, the kernel table and the data plane's table are three
 different things that can disagree. Measuring only router-originated traffic reads the kernel
 table and says nothing about forwarded traffic, which uses the data plane's (2026-10-03: the kernel
@@ -33,8 +37,8 @@ PING_TARGET = "192.168.75.4"
 # name -> reach address, destination the router forwards towards, dead next hop on the pulled link,
 # and that link's interface name on this router
 ROUTERS = {
-    "R1": dict(ip="192.168.71.2", dst="192.168.75.4", deadnh="192.168.72.3", ifc="dp0p2s0"),
-    "R2": dict(ip="192.168.73.3", dst="192.168.71.1", deadnh="192.168.72.2", ifc="dp0p2s0"),
+    "R1": dict(ip="192.168.71.2", dst="192.168.75.4", pfx="192.168.75.0/24", deadnh="192.168.72.3", ifc="dp0p2s0"),
+    "R2": dict(ip="192.168.73.3", dst="192.168.71.1", pfx="192.168.71.0/24", deadnh="192.168.72.2", ifc="dp0p2s0"),
 }
 STATES = "INCOMPLETE|REACHABLE|STALE|DELAY|PROBE|FAILED|PERMANENT|NOARP"
 
@@ -56,7 +60,8 @@ def streamer(name):
         "d=$(/opt/vyatta/bin/vplsh -l -c 'route lookup %(dst)s' 2>/dev/null "
         "| grep -o '\"ifname\":\"[a-z0-9]*\"' | sed 's/\"ifname\":\"//;s/\"//' | tr '\\n' ','); "
         "nb=$(ip neigh show %(deadnh)s dev %(ifc)s 2>/dev/null | grep -o -E '" + STATES + "' | head -1); "
-        "echo \"S kern=${k:-none} dp=${d:-none} neigh=${nb:-none}\"; sleep 0.2; done"
+        "g=$(ip route show %(pfx)s 2>/dev/null | grep -q 'via %(deadnh)s' && echo dead || echo ok); "
+        "echo \"S kern=${k:-none} dp=${d:-none} neigh=${nb:-none} grp=${g}\"; sleep 0.2; done"
     ) % c
     ch = r.get_transport().open_session()
     ch.exec_command("echo %s | sudo -S -p '' sh -c '%s'" % (ssh.PASSWORD, loop.replace("'", "'\\''")))
