@@ -108,7 +108,7 @@ check_vm() {
 	if [ "$(docker inspect -f '{{.State.Running}}' danos-robot 2>/dev/null)" = true ]; then
 		ok "container danos-robot is running"
 	else
-		no "container danos-robot is running" "docker start danos-robot; every ssh in accept-disk-install.sh/accept-lifecycle.sh/regression.sh goes through it"
+		no "container danos-robot is running" "vm/robot-env.sh up (builds it if the image is gone); every ssh in accept-disk-install.sh/accept-lifecycle.sh/regression.sh goes through it"
 	fi
 
 	stray=$(ps -eo pid,args | awk '$2 ~ /^qemu-system/ {print $1}')
