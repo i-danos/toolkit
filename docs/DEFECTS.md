@@ -2930,3 +2930,27 @@ was the frr patch:
 Result after the three fixes: **81 of 81** (ipsec 10, mpls 11, dpa 7, fw 16, bgp 16, rest 21), one
 topology at a time. Release `i-danos_vyatta_20261005T0507` still carries the wrong version string and
 should be rebuilt before it is handed out.
+
+### 2026-10-09: real cable pulls on the released image (v2608_20261008T0011)
+
+Both routers (R1, R2) were installed fresh from the published product ISO (`frr 10.3-3+deb13u1danos1`,
+`show version` = `DANOS:Shipping:2608:20261008`), OSPF and BGP as in the earlier A/B runs. R1's `dp0p2s0`
+cable was pulled by hand 8 times (about 30 to 40 s out each time, 70 s or more between pulls) while
+`hw-pull-monitor.py` sampled each router's kernel next hop, data-plane next hop and neighbour state every
+0.2 s.
+
+* On both routers, in all 8 pulls (16 observations), the kernel route to the other side moved off the
+  pulled link. Neither router's kernel route stayed on the dead next hop. Earlier unpatched runs sat on it
+  for 18 to 62 s.
+* The kernel switch happened within about 1.3 s of the router's own journal line `dp0p2s0 Link down`
+  (R1 and R2 clocks measured against the host: +42.1 s and -21.9 s; the constant residual of -1.2 to
+  -1.4 s over all 16 points is clock-offset error plus journal latency, not a delay). On one R1 pull the
+  data plane switched 0.25 s before the kernel.
+* The route is switched back to the pulled link 1 to 3 s after the cable is plugged back in.
+
+What this does not show: the monitor sampled `ip route get` for one destination per router. That picks a
+member of an ECMP group by hash, so a group that still held the dead member could look healthy for a
+destination that hashes to the live member. The earlier 0/12 `ip link down` runs checked the group
+membership directly and are the stronger evidence. `hw-pull-monitor.py` now also records `grp=dead|ok`
+(does the prefix's route still list the dead next hop); a further round of pulls with it would close
+this gap.
