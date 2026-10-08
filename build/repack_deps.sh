@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 set -e
 PACKAGES=$(dpkg-query --admindir=/tmp/squashfs_root/var/lib/dpkg -f '${Status} ${Package}\n' -W 'librte-*' | grep '^install ok installed' | cut -d ' ' -f 4)
 PACKAGES="$PACKAGES bcm-linux-bde-modules-5.4.0-trunk-vyatta-amd64"

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # EVPN-VXLAN end to end: does a MAC learned on one router reach the other's
 # forwarding table?
 #

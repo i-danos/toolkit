@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # mpls-route class: pause brokerd (default) or vplaned on R2, add a loopback on R1 (host-side driver). Needs LDP on top of OSPF.
 #
 # Induces a real, persistent control-plane/data-plane disagreement by pausing

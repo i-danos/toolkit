@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # P2: does the ISO's UEFI boot chain enforce Secure Boot, and does it boot when
 # trusted? Real OVMF firmware with Secure Boot on, not a simulation.
 #

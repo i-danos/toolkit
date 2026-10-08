@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 import paramiko
 for name, ip in [("R1","192.168.203.231"),("R2","192.168.203.232"),("R3","192.168.203.233")]:
     c = paramiko.SSHClient(); c.set_missing_host_key_policy(paramiko.AutoAddPolicy())

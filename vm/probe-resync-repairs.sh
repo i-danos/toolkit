@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does an FPM reconnect repair drift, or only reconnect?
 #
 # The previous probe showed a reconnect re-sends something -- output bytes 472

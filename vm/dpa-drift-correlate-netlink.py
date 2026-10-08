@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Correlate dpa-drift-history.py's events against the dataplane's own
 netlink route log.
 

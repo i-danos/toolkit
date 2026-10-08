@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Aggregate dpa-drift --watch JSONL without taking repair actions."""
 import json, sys
 from collections import defaultdict

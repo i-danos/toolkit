@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Boot a topology and prepare every router in it, or fail loudly.
 #
 # Booting and prepping were open-coded in every pipeline, and every copy of

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Measure what the dataplane does with EAPOL on a dataplane port.
 #
 # 802.1X frames carry ethertype 0x888E. The dispatch in

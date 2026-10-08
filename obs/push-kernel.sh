@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Upload only the kernel's .dsc and debian.tar.xz; the server reuses the
 # existing orig.
 #

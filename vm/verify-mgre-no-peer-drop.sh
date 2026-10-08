@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does the dead end NHRP registration falls into get counted, instead of being
 # silent?
 #

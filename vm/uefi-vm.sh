@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Start or stop a QEMU/OVMF machine with Secure Boot on, for the UEFI tests.
 #
 # The serial port is one chardev with two uses at once: a socket a driver can

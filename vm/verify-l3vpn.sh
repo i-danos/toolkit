@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # End-to-end MPLS L3VPN across two PEs.
 #
 #   R1 (PE1)            R2 (P)            R3 (PE2)

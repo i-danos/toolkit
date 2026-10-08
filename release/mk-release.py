@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Assemble a P0.5 "audited release candidate" directory for one built ISO.
 
 P0.5, item 1-3 and 5 from the project's own acceptance plan, in one script

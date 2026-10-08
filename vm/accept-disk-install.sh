@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # P0.5 item 4: install the product image to a disk, boot it, restart it.
 #
 # This drives boot-vm.sh rather than assembling its own QEMU command line.

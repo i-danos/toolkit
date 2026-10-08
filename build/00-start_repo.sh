@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 REPO_DIR="/build-iso/danos-build/local-repo"
 PORT=8080
 

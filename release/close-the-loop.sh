@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Close the loop the 2026-09-28 evaluation asked for:
 #
 #   OBS all-green confirmation -> immutable R2 snapshot -> containerized ISO

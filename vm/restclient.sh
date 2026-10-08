@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Stand up the REST API client host the danos_restapi suite drives the router
 # from.
 #

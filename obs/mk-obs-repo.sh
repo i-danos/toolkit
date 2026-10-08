@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Assemble a local apt repository from the packages OBS built, for the ISO build.
 #
 # The point is closed-loop verification: every DANOS package in the image comes

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 set -e
 export DEBIAN_FRONTEND=noninteractive
 echo "Acquire::Retries \"8\";" > /etc/apt/apt.conf.d/80retries; apt-get update -qq

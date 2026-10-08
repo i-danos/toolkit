@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Build the product ISO -- the image an actual deployment would install.
 #
 # Everything this project has verified so far ran on the *test* image, which

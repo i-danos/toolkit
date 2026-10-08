@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does VXLAN carry a bridge domain over an IPv6 underlay?
 #
 # The datapath always could: vxlan_output() and vxlan_send_packet() handle

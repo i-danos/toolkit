@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Where does the entry that forwards actually come from?
 #
 # verify-evpn-forwarding.sh concluded that R1 forwards by the EVPN-learned MAC.

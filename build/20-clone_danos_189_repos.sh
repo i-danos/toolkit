@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # DANOS 189 Repositories Clone Script
 # Generated from GitHub API list on 2025-11-25
 # Target: /build-iso/danos-sources

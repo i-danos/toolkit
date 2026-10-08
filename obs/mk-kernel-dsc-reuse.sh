@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Reuse the orig already on OBS and regenerate only the .dsc and debian.tar.xz.
 #
 # Why this path exists: uploading the 147 MB orig fails reproducibly. Measured,

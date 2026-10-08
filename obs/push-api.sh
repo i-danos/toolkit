@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Upload a package's source files straight through the OBS API, without an
 # osc checkout.
 #

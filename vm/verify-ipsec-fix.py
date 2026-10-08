@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Check whether configuring IPsec still crashes the dataplane.
 
 vyatta-dataplane before 3.14.27 segfaulted the moment an outbound packet hit a

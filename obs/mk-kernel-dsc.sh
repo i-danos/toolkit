@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Build the kernel source package on its own.
 #
 # The kernel cannot go through mk-dsc.sh's generic path, for two reasons:

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # How long is the hole, and does traffic actually stop in it?
 #
 # The scale probe sampled the data plane's route count across a reconnect and

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Build Debian source packages (.dsc + tarball) for OBS from a clean git export.
 #
 # Why not the working tree: 120 of the 149 repositories carry build leftovers

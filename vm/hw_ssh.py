@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 """SSH helpers for the physical DANOS bench: reach a router directly or through R1.
 
 The bench has one wired NIC on the test host, so every router except the one cabled to it is

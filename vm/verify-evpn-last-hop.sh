@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Does a MAC learned by BGP EVPN reach the dataplane's forwarding table?
 #
 # The viability run established the three pieces separately: VXLAN forwards in

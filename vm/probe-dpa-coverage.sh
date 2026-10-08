@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Read-only DPA object coverage probe for P1 drift diagnostics.
 # Usage: probe-dpa-coverage.sh [management-ip]
 set -u

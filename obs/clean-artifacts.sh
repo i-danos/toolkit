@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Drop accidentally committed build output from each repository's index.
 #
 # Where it came from: during the 2026-08-20 round of grouped commits, git add

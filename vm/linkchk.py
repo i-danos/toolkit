@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 import paramiko
 def run(ip, cmd):
     c=paramiko.SSHClient(); c.set_missing_host_key_policy(paramiko.AutoAddPolicy())

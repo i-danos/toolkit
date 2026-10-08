@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Check that every built package can be pushed, and that nothing is stranded.
 #
 # The trap this closes: a repository with no i-danos remote configured has

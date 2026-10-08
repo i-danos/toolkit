@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Route class: pause brokerd, commit a static route, watch, resume. Runs ON R2.
 #
 # Induces a real, persistent control-plane/data-plane disagreement by pausing

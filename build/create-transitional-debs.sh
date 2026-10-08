@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
 set -euo pipefail
 
 REPO_DIR=${1:-/build-iso/danos-build/local-repo}

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Sit between zebra and brokerd and lose exactly the messages you name.
 
 Why this exists: proving that a route-level repair works needs a route that is

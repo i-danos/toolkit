@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Commit .obs/fixes/<package>/*.patch into their respective repositories.
 #
 # These patches were previously applied only to the tree mk-dsc.sh exports,

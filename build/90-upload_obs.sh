@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Upload a locally built Debian source package to home:i-danos.
 #
 # vyatta-dataplane and vyatta-security-vpn are built locally rather than on OBS,

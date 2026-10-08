@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Static acceptance checks on a built ISO.
 #
 # The point of every check here is to be a discriminator: an observation that

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Commit the whole kernel change set into linux-vyatta.
 #
 # Four things have to land together (see fixes/linux-vyatta/README.md):

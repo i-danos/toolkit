@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
 """Send EAPOL-Start frames out one interface, straight down a raw socket.
 
 Usage: send-eapol.py <interface> <count> [<destination-mac>]

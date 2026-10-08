@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # What makes brokerd crash: the routes, or the session?
 #
 # Two crashes were seen first during bulk route operations, and the defect was

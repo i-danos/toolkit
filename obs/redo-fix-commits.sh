@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
 # Redo the fix commits that git add -A polluted.
 #
 # commit-fixes.sh used `git add -A`, which swept every working-tree change into
