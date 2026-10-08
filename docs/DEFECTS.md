@@ -2954,3 +2954,12 @@ destination that hashes to the live member. The earlier 0/12 `ip link down` runs
 membership directly and are the stronger evidence. `hw-pull-monitor.py` now also records `grp=dead|ok`
 (does the prefix's route still list the dead next hop); a further round of pulls with it would close
 this gap.
+
+Second round (2026-10-09, same two routers and image, `hw-pull-monitor.py` with the `grp` field): 7 more
+cable pulls on R1's `dp0p2s0`. Before a pull the route to the far side lists the next hop on the pulled link
+(`grp=dead`, as it should); after it, `grp` must turn `ok`. In all 7 pulls on both routers (14
+observations) the kernel route left the pulled link and `grp` turned `ok` within 0.5 s of the kernel next
+hop moving (0.2 to 0.5 s in every case); none stayed `dead`. On the plug-back both returned to the
+original route within a few seconds. Over both rounds that is 15 real pulls, 30 router observations, none
+stuck. With the unpatched Debian 10.3 the same bench got stuck in 10 of 19 cycles, so 0 of 15 is
+unlikely to be chance, though it is the same two boxes and one cable.
