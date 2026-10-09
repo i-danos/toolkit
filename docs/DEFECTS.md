@@ -2933,6 +2933,10 @@ should be rebuilt before it is handed out.
 
 ### 2026-10-09: real cable pulls on the released image (v2608_20261008T0011)
 
+> **Release withdrawn (2026-10-09).** The GitHub pre-release `v2608_20261008T0011` named here was deleted
+> and replaced by `v2608_20261009T1127`, which adds the BGP EVPN and multicast suites (98 of 98). The
+> measurements below were taken on the image of the withdrawn release and are kept as the record of that test.
+
 Both routers (R1, R2) were installed fresh from the published product ISO (`frr 10.3-3+deb13u1danos1`,
 `show version` = `DANOS:Shipping:2608:20261008`), OSPF and BGP as in the earlier A/B runs. R1's `dp0p2s0`
 cable was pulled by hand 8 times (about 30 to 40 s out each time, 70 s or more between pulls) while
