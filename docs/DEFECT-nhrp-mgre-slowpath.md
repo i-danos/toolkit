@@ -1,6 +1,6 @@
 # NHRP registration cannot bootstrap over multipoint GRE
 
-Status: **diagnosed, not fixed.** The fault is in the dataplane slow path, not
+Status: **diagnosed, not fixed; declared a known limitation (2026-10-09).** The fault is in the dataplane slow path, not
 in `nhrpd`. `ARCHITECTURE-ASSESSMENT.md` concluded the opposite — "blocked in
 the daemon itself" — on the strength of nhrpd having crashed once during the
 first run. That crash was real but incidental; nhrpd does its job correctly.
@@ -179,3 +179,16 @@ vtysh: interface tun0 / ip nhrp network-id 1 / ip nhrp nhs 172.30.0.1 nbma 201.1
 The tunnel address must be a host prefix; with a `/24` nhrpd refuses outright
 (`tun0: 172.30.0.2/24 is not a host prefix`). Any YANG written for this needs
 that as a `must`.
+
+## Decision: documented limitation, not a fix (2026-10-09)
+
+DMVPN is outside the supported feature set of the public test builds. Neither
+candidate fix was attempted: both change the data plane's slow path (one also
+the kernel tunnel extension), and nothing else in the shipped feature set
+depends on it. Where it is stated for users: `build-iso/docs/PUBLIC-TEST.md`,
+"Known limitations". Nothing in DANOS configures `nhrpd` and the image does
+not start it, so no user can reach the dead end by accident; mGRE tunnels
+themselves still work for static peers.
+
+To reopen: pick a candidate above, then run `vm/verify-mgre-no-peer-drop.sh`
+(it counts the dead end) and a hub-and-spoke registration as in "Reproducing".
