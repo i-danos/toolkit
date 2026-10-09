@@ -45,7 +45,9 @@ SUITES="
 ipsec ipsec IPSEC_VPN_DANOS  10
 mpls  ipsec MPLS_LDP_DANOS   11
 dpa   ipsec DPA_DANOS         7
+evpn  ipsec EVPN_DANOS        9
 fw    fw    FIREWALL_DANOS   16
+mcast fw    MULTICAST_DANOS  8
 bgp   bgp   BGP_DANOS        16
 rest  bgp   danos_restapi    21
 "
