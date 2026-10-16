@@ -68,6 +68,20 @@ if ! timeout 30 $OSC api "/source/$PRJ" < /dev/null > /dev/null 2>&1; then
 	exit 1
 fi
 
+# Stage 3 runs the index build inside $VERIFY_CONTAINER. A host reboot leaves it Exited(137), and
+# without this the run found out only after stages 1-2 (about half an hour of binary sync): the
+# docker exec failed, the script exited, and the snapshot had to be resumed by hand. It is a build
+# container this flow owns, so starting a stopped one is safe; a missing one is not, and stops here.
+if ! docker inspect "$VERIFY_CONTAINER" > /dev/null 2>&1; then
+	echo "Verify container '$VERIFY_CONTAINER' does not exist (set VERIFY_CONTAINER to another build container)." >&2
+	exit 1
+fi
+if [ "$(docker inspect -f '{{.State.Running}}' "$VERIFY_CONTAINER")" != true ]; then
+	echo "Verify container '$VERIFY_CONTAINER' is stopped (a host reboot does that); starting it."
+	docker start "$VERIFY_CONTAINER" > /dev/null \
+		|| { echo "Could not start '$VERIFY_CONTAINER'." >&2; exit 1; }
+fi
+
 # ---- stage 1: OBS all-green confirmation ----
 echo "-- stage 1: OBS all-green --"
 result_xml=$($OSC api "/build/$PRJ/_result?repository=$REPO&arch=$ARCH" < /dev/null)
