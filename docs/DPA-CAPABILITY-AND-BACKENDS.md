@@ -451,3 +451,21 @@ an event in its own right and is not removed from the history.
 reported separately from topology readiness: malformed diagnostic evidence is
 flagged, while the functional suite gate remains governed by SSH, interface,
 sudo and ISO fingerprint checks.
+
+### Next-hop comparison (2026-10-16)
+
+`vyatta-dataplane` 3.14.45 puts `nh_index` and `next_hops` (kind, via, ifname, dead,
+backup) on every route and route6 object, and `vm/dpa-drift.py` compares them with
+zebra's installed next hops for each matched key. A disagreement is reported as
+`next_hop_mismatch` (also tracked per cycle under `--watch`); a data-plane next hop
+that is dead counts as absent, which is how a link fault shows up. Routes it cannot
+compare (the management port, local routes, keys with more than one non-owned entry)
+and routes on an image that does not report next hops are counted separately, never
+folded into "no mismatch".
+
+Checked on a booted 3.14.45 image: healthy topology reports no mismatch; with `brokerd`
+stopped and a static route's next hop changed, it reports `zebra via 10.98.0.7,
+dataplane via 10.98.0.2`, and the report clears after `brokerd` resumes. The comparison
+logic was also run on synthetic cases (agree, dead ECMP path, wrong gateway, blackhole,
+IPv6 spelling, old image, management port). Diagnostic only: nothing here repairs.
+Not tested: VRFs other than default, recursive next hops, MPLS-labelled next hops.

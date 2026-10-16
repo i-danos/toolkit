@@ -2,24 +2,106 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "DANOS DPA drift diagnostic",
   "type": "object",
-  "required": ["status"],
+  "required": [
+    "status"
+  ],
   "properties": {
-    "status": {"enum": ["diagnostic", "unreadable"]},
-    "schema_version": {"const": 2},
-    "timestamp": {"type": "string", "format": "date-time"},
-    "unreadable": {"type": "array", "items": {"type": "string"}},
-    "coverage": {"type": "object"},
-    "desired": {"type": "integer", "minimum": 0},
-    "programmed": {"type": "integer", "minimum": 0},
-    "matched": {"type": "integer", "minimum": 0},
-    "desired_not_programmed": {"type": "array"},
-    "programmed_not_desired": {"type": "array"},
-    "dataplane_owned": {"type": "array"}
+    "status": {
+      "enum": [
+        "diagnostic",
+        "unreadable"
+      ]
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "coverage": {
+      "type": "object"
+    },
+    "desired": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "programmed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "matched": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "desired_not_programmed": {
+      "type": "array"
+    },
+    "programmed_not_desired": {
+      "type": "array"
+    },
+    "dataplane_owned": {
+      "type": "array"
+    },
+    "next_hop_mismatch": {
+      "type": "array",
+      "description": "Matched route/route6 keys whose next hops differ between zebra and the data plane (needs vyatta-dataplane >= 3.14.45).",
+      "items": {
+        "type": "object",
+        "required": [
+          "class",
+          "vrf",
+          "prefix",
+          "desired_next_hops",
+          "programmed_next_hops",
+          "classification"
+        ]
+      }
+    },
+    "next_hops_not_comparable": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "next_hops_not_reported": {
+      "type": "integer",
+      "minimum": 0
+    }
   },
   "allOf": [
-    {"if": {"properties": {"status": {"const": "unreadable"}}},
-     "then": {"required": ["unreadable"]}},
-    {"if": {"properties": {"status": {"const": "diagnostic"}}},
-     "then": {"required": ["schema_version", "coverage"]}}
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unreadable"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "unreadable"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "diagnostic"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "schema_version",
+          "coverage"
+        ]
+      }
+    }
   ]
 }
