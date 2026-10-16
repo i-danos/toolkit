@@ -43,6 +43,7 @@ wrong.
 """
 
 import importlib.util
+import ipaddress
 import json
 import subprocess
 import sys
@@ -213,6 +214,8 @@ def desired():
                     "scope": e.get("scope"),
                     "next_hop_group": e.get("nexthopGroup", e.get("nextHopGroup")),
                     "source": e.get("source", e.get("protocol", "?")),
+                    "next_hops": [nh for nh in e.get("nexthops", [])
+                                  if nh.get("fib")],
                 }
     return out
 
@@ -297,7 +300,10 @@ def programmed():
                  "protocol": o.get("protocol"),
                  "source": o.get("source"),
                  "next_hop_group": o.get("nexthop_group", o.get("next_hop_group")),
-                 "dependencies": o.get("dependencies", [])})
+                 "dependencies": o.get("dependencies", []),
+                 # None, not [], on an image that does not report them (before
+                 # vyatta-dataplane 3.14.45): "cannot say" is not "has none".
+                 "next_hops": o.get("next_hops")})
     return out
 
 
@@ -405,6 +411,101 @@ def coverage():
             "notes": notes, "unnoted_classes": sorted(unnoted)}
 
 
+def _addr(a):
+    """Canonical text for an address, so 2001:db8::1 and 2001:0db8::1 agree."""
+    try:
+        return str(ipaddress.ip_address(a))
+    except ValueError:
+        return a
+
+
+def zebra_hop_keys(hops):
+    """zebra's installed next hops as comparable keys, or None if one is opaque.
+
+    Gateway -> ("via", addr); directly connected -> ("dev", ifname);
+    blackhole and unreachable by name. zebra sets both "unreachable" and
+    "blackhole" on a blackhole route, so blackhole is tested first.
+    """
+    keys = set()
+    for nh in hops:
+        if nh.get("blackhole"):
+            keys.add(("blackhole",))
+        elif nh.get("unreachable") or nh.get("reject"):
+            keys.add(("unreachable",))
+        elif nh.get("ip"):
+            keys.add(("via", _addr(nh["ip"])))
+        elif nh.get("directlyConnected") and nh.get("interfaceName"):
+            keys.add(("dev", nh["interfaceName"]))
+        else:
+            return None
+    return keys
+
+
+def dataplane_hop_keys(hops):
+    """The data plane's live (not dead) next hops as keys, and the dead ones.
+
+    Returns (live, dead), or None when a hop cannot be compared: a "local"
+    route has no next hop zebra would name, and a route out of a non-data-plane
+    interface (the management port) carries no interface name on this side.
+    Those are counted as not comparable, never as a mismatch.
+    """
+    live, dead = set(), set()
+    for h in hops:
+        kind = h.get("kind")
+        if kind == "blackhole":
+            k = ("blackhole",)
+        elif kind == "unreachable":
+            k = ("unreachable",)
+        elif h.get("via"):
+            k = ("via", _addr(h["via"]))
+        elif kind == "directly connected" and h.get("ifname"):
+            k = ("dev", h["ifname"])
+        else:
+            return None
+        (dead if h.get("dead") else live).add(k)
+    return live, dead
+
+
+def compare_next_hops(d, p, matched):
+    """Matched route/route6 keys whose next hops disagree.
+
+    Returns (mismatches, not_comparable, not_reported). A key is compared only
+    when exactly one non-owned data-plane entry carries next hops and both
+    sides' hops can be expressed as keys; anything else is counted, not
+    guessed at. A dead next hop is not a live one: a route whose only live
+    path in the data plane differs from zebra's is the disagreement a link
+    fault produces, and the one this exists to show.
+    """
+    mismatches, not_comparable, not_reported = [], 0, 0
+    for k in matched:
+        if k[0] not in ("route", "route6"):
+            continue
+        entries = [e for e in p[k] if e["owned"] is not True]
+        if any(e["next_hops"] is None for e in entries):
+            not_reported += 1
+            continue
+        if len(entries) != 1:
+            not_comparable += 1
+            continue
+        want = zebra_hop_keys(d[k].get("next_hops", []))
+        have = dataplane_hop_keys(entries[0]["next_hops"])
+        if want is None or have is None or not want:
+            not_comparable += 1
+            continue
+        live, dead = have
+        if want != live:
+            fmt = lambda ks: sorted(" ".join(x) for x in ks)
+            mismatches.append({
+                "class": k[0], "vrf": k[1], "prefix": k[2],
+                "protocol": d[k]["protocol"],
+                "desired_next_hops": fmt(want),
+                "programmed_next_hops": fmt(live),
+                "programmed_dead_next_hops": fmt(dead),
+                "classification": "next_hop_mismatch",
+            })
+    return mismatches, not_comparable, not_reported
+
+
 def main():
     as_json = "--json" in sys.argv
 
@@ -448,6 +549,7 @@ def main():
     keyspace_broken = bool(d) and bool(p) and not matched
 
     cov = coverage()
+    nh_mismatch, nh_not_comparable, nh_not_reported = compare_next_hops(d, p, matched)
     result = {
         "status": "diagnostic",
         "schema_version": 2,
@@ -488,6 +590,13 @@ def main():
             for k in sorted(p) if len(p[k]) > 1
         ],
         "keyspace_mismatch": keyspace_broken,
+        # Matched routes whose next hops disagree. Counted alongside: routes
+        # whose next hops could not be compared, and routes on an image that
+        # does not report them -- so "no mismatch" is never read as "all
+        # compared".
+        "next_hop_mismatch": nh_mismatch,
+        "next_hops_not_comparable": nh_not_comparable,
+        "next_hops_not_reported": nh_not_reported,
     }
 
     if as_json:
@@ -517,13 +626,23 @@ def main():
             for e in result["dataplane_owned"]:
                 print("  dataplane-owned, not drift  %(class)s vrf:%(vrf)s/%(prefix)s"
                       % e)
+        for e in result["next_hop_mismatch"]:
+            print("  NEXT HOP MISMATCH  %s vrf:%s/%s  zebra %s  dataplane %s%s"
+                  % (e["class"], e["vrf"], e["prefix"],
+                     ", ".join(e["desired_next_hops"]) or "-",
+                     ", ".join(e["programmed_next_hops"]) or "-",
+                     ("  dead " + ", ".join(e["programmed_dead_next_hops"]))
+                     if e["programmed_dead_next_hops"] else ""))
+        if nh_not_comparable or nh_not_reported:
+            print("  next hops: %d route(s) not comparable, %d not reported by this image"
+                  % (nh_not_comparable, nh_not_reported))
         for e in result["multi_entry"]:
             print("  %d entries under one key  %s vrf:%s/%s  scopes %s"
                   % (len(e["scopes"]), e["class"], e["vrf"], e["prefix"], e["scopes"]))
 
     if keyspace_broken:
         return 3
-    return 1 if (missing or extra) else 0
+    return 1 if (missing or extra or nh_mismatch) else 0
 
 
 # Classifications that already have an explanation. An item carrying one of
@@ -621,6 +740,11 @@ def watch(interval, cycles, as_json, stale_after=3, confirm_after=3):
         extra = set(k for k in set(p) - set(d) if unowned(p, k))
         now = {("missing",) + k: classify_missing(k[0], cov) for k in missing}
         now.update({("extra",) + k: classify_extra(p, k, cov) for k in extra})
+        # A next-hop disagreement is unexplained by definition, so it counts a
+        # streak like any other residual: one cycle of it is a route in flight,
+        # stale_after + confirm_after cycles of it is not.
+        for m in compare_next_hops(d, p, sorted(set(d) & set(p)))[0]:
+            now[("next_hop", m["class"], m["vrf"], m["prefix"])] = "next_hop_mismatch"
 
         for key, classification in now.items():
             seen[key] = advance_state(seen.get(key), classification,
