@@ -44,7 +44,7 @@ MGMT_RESTORE=${MGMT_restore:-}
 SUITES="
 ipsec ipsec IPSEC_VPN_DANOS  10
 mpls  ipsec MPLS_LDP_DANOS   11
-dpa   ipsec DPA_DANOS         7
+dpa   ipsec DPA_DANOS         8
 evpn  ipsec EVPN_DANOS        9
 fw    fw    FIREWALL_DANOS   16
 mcast fw    MULTICAST_DANOS  8
