@@ -368,6 +368,16 @@ if ! diff -u <(sort "$product_packages") <(sort "$test_packages") > "$WORK/produ
 fi
 echo "   product and test package sets are identical ($(wc -l < "$product_packages") packages)"
 
+# The manifest above is what live-build says it installed. Compare what the two squashfs images
+# actually carry (name:arch + version from the dpkg database) as the final word.
+PKGSET="$(dirname "$0")/iso-pkgset.sh"
+if ! "$PKGSET" compare "$ISO" "$TEST_ISO" > "$WORK/product-test-installed-diff.txt" 2>&1; then
+	echo "installed package name+version differ between the product and test ISOs:" >&2
+	cat "$WORK/product-test-installed-diff.txt" >&2
+	exit 1
+fi
+echo "   installed package name+version identical across both squashfs images"
+
 # The ISO must carry the patched frr. apt prefers the DANOS repository (Pin-Priority 1000 on
 # o=DANOS in the build-iso config), but if the package were missing from the snapshot the ISO would
 # quietly take Debian's frr instead and look fine. Check the version the ISO actually has.

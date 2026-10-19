@@ -419,22 +419,68 @@ def _addr(a):
         return a
 
 
+def _valid_addr(a):
+    """True only for a str that parses as an IP address."""
+    if not isinstance(a, str):
+        return False
+    try:
+        ipaddress.ip_address(a)
+    except ValueError:
+        return False
+    return True
+
+
+def _name(v):
+    """True only for a non-empty str (an interface name)."""
+    return isinstance(v, str) and bool(v)
+
+
+def _flag(h, key):
+    """A JSON flag as a real bool: absent/null/false/true. Any other value
+    ("false", 1, ...) raises ValueError -- it is not read with a guessed
+    meaning."""
+    v = h.get(key)
+    if v is None or v is False:
+        return False
+    if v is True:
+        return True
+    raise ValueError(key)
+
+
 def zebra_hop_keys(hops):
     """zebra's installed next hops as comparable keys, or None if one is opaque.
 
-    Gateway -> ("via", addr); directly connected -> ("dev", ifname);
+    Gateway -> ("via", addr, ifname); directly connected -> ("dev", ifname);
     blackhole and unreachable by name. zebra sets both "unreachable" and
     "blackhole" on a blackhole route, so blackhole is tested first.
     """
+    if not isinstance(hops, list) or not all(isinstance(nh, dict) for nh in hops):
+        return None
     keys = set()
     for nh in hops:
-        if nh.get("blackhole"):
+        # A hop protected by a backup (backupIndex) can be served by the backup
+        # when it fails; the primary-only view here cannot say which one the
+        # data plane should hold, so it is not comparable.
+        if nh.get("backupIndex") or nh.get("backupNexthops"):
+            return None
+        try:
+            blackhole, unreachable = _flag(nh, "blackhole"), _flag(nh, "unreachable")
+            reject, direct = _flag(nh, "reject"), _flag(nh, "directlyConnected")
+        except ValueError:
+            return None
+        if blackhole:
             keys.add(("blackhole",))
-        elif nh.get("unreachable") or nh.get("reject"):
+        elif unreachable or reject:
             keys.add(("unreachable",))
         elif nh.get("ip"):
-            keys.add(("via", _addr(nh["ip"])))
-        elif nh.get("directlyConnected") and nh.get("interfaceName"):
+            # The same gateway address out of another interface is another
+            # path (link-local gateways repeat across interfaces), so a
+            # gateway hop without a usable address or interface cannot be
+            # compared.
+            if not _valid_addr(nh["ip"]) or not _name(nh.get("interfaceName")):
+                return None
+            keys.add(("via", _addr(nh["ip"]), nh["interfaceName"]))
+        elif direct and _name(nh.get("interfaceName")):
             keys.add(("dev", nh["interfaceName"]))
         else:
             return None
@@ -442,28 +488,44 @@ def zebra_hop_keys(hops):
 
 
 def dataplane_hop_keys(hops):
-    """The data plane's live (not dead) next hops as keys, and the dead ones.
+    """The data plane's next hops as keys: (live, dead, backup).
 
-    Returns (live, dead), or None when a hop cannot be compared: a "local"
-    route has no next hop zebra would name, and a route out of a non-data-plane
-    interface (the management port) carries no interface name on this side.
-    Those are counted as not comparable, never as a mismatch.
+    live and dead are the primary (non-backup) hops, split by the dead flag.
+    backup is the set of backup hops that are not dead: standby protection that
+    is not part of the primary path unless it was activated.
+
+    Returns None when a hop cannot be compared: a "local" route has no next hop
+    zebra would name, and a route out of a non-data-plane interface (the
+    management port) carries no interface name on this side. Those are counted
+    as not comparable, never as a mismatch.
     """
-    live, dead = set(), set()
+    if not isinstance(hops, list) or not all(isinstance(h, dict) for h in hops):
+        return None
+    live, dead, backup = set(), set(), set()
     for h in hops:
         kind = h.get("kind")
+        try:
+            is_dead, is_backup = _flag(h, "dead"), _flag(h, "backup")
+        except ValueError:
+            return None
         if kind == "blackhole":
             k = ("blackhole",)
         elif kind == "unreachable":
             k = ("unreachable",)
         elif h.get("via"):
-            k = ("via", _addr(h["via"]))
-        elif kind == "directly connected" and h.get("ifname"):
+            if not _valid_addr(h["via"]) or not _name(h.get("ifname")):
+                return None
+            k = ("via", _addr(h["via"]), h["ifname"])
+        elif kind == "directly connected" and _name(h.get("ifname")):
             k = ("dev", h["ifname"])
         else:
             return None
-        (dead if h.get("dead") else live).add(k)
-    return live, dead
+        if is_backup:
+            if not is_dead:
+                backup.add(k)
+        else:
+            (dead if is_dead else live).add(k)
+    return live, dead, backup
 
 
 def compare_next_hops(d, p, matched):
@@ -475,6 +537,13 @@ def compare_next_hops(d, p, matched):
     guessed at. A dead next hop is not a live one: a route whose only live
     path in the data plane differs from zebra's is the disagreement a link
     fault produces, and the one this exists to show.
+
+    Backup semantics: a backup hop is standby protection, not part of the
+    primary set zebra reports. Backup hops are ignored while at least one
+    primary is live. With no live primary and a backup present, whether the
+    backup was activated is unknown, so the key is not_comparable -- a
+    backup-only path is never taken to equal zebra's primary. A zebra hop that
+    names a backup (backupIndex) is not comparable either.
     """
     mismatches, not_comparable, not_reported = [], 0, 0
     for k in matched:
@@ -492,7 +561,13 @@ def compare_next_hops(d, p, matched):
         if want is None or have is None or not want:
             not_comparable += 1
             continue
-        live, dead = have
+        live, dead, backup = have
+        if not live and backup:
+            # No live primary and a backup is present: the backup may or may
+            # not have been activated, and zebra's primary set is not
+            # evidence either way. Never equate a backup-only path with it.
+            not_comparable += 1
+            continue
         if want != live:
             fmt = lambda ks: sorted(" ".join(x) for x in ks)
             mismatches.append({
@@ -501,6 +576,7 @@ def compare_next_hops(d, p, matched):
                 "desired_next_hops": fmt(want),
                 "programmed_next_hops": fmt(live),
                 "programmed_dead_next_hops": fmt(dead),
+                "programmed_backup_next_hops": fmt(backup),
                 "classification": "next_hop_mismatch",
             })
     return mismatches, not_comparable, not_reported
