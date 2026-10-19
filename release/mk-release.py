@@ -50,6 +50,14 @@ Resolution categories (P0.5 item 3's split of "unknown"):
                        package always carries "2608" regardless of what
                        debian/changelog says). Still traceable to an exact
                        commit; the version mismatch is by design, not a gap.
+                       NEVER emitted at present: no available evidence links a commit to the
+                       installed package,
+                       so such cases are version_stamp_inferred.
+    version_stamp_inferred
+                       same shape as local_git_version_stamped (one recorded
+                       commit under another version) but no evidence that the
+                       build rewrites the version; the commit is a guess and
+                       is marked verified=false.
     obs_package_revision
                        built by OBS (has a Source: entry in the repo's own
                        Packages index) but no matching .commit file for this
@@ -224,8 +232,20 @@ def strip_epoch(version):
     return version.split(":", 1)[1] if ":" in version else version
 
 
+# A static debian/rules override does not show that the older recorded commit
+# produced the installed artifact. Until real build provenance (frozen source
+# package hash, build log or attestation) is validated, nothing is confirmed.
+# Sources whose rules are known to rewrite the version are only hinted.
+VERSION_STAMP_RULES_HINT = {
+    "vyatta-version": (
+        "debian/rules override_dh_gencontrol: "
+        "dh_gencontrol -p vyatta-version -- -v$(VVERSION)"
+    ),
+}
+
+
 def resolve_source(name, version, repo_index, commit_index, baseline,
-                    commits_by_source=None):
+                    commits_by_source=None, provenance=None):
     """One installed (name, version) -> a source-revision-map entry."""
     repo_entry = repo_index.get(name)
 
@@ -248,15 +268,42 @@ def resolve_source(name, version, repo_index, commit_index, baseline,
         alt = (commits_by_source or {}).get(source)
         if alt and len(alt) == 1:
             (alt_ver, alt_sha), = alt
+            prov = (provenance or {}).get((name, version))
+            claim = None
+            if prov and prov["source_package"] == source and prov["commit"] == alt_sha \
+                    and prov["source_version"] == alt_ver:
+                # Corroborating, not proving: a trusted signer states this
+                # commit and a buildinfo agrees on Source/Version/Binary. Neither
+                # ties the commit to the built .deb, nor that .deb to the package
+                # installed in the ISO (dpkg status carries no .deb digest), so
+                # this never becomes verified.
+                claim = {
+                    "signed_by_trusted_key": True,
+                    "buildinfo_file": prov["buildinfo_file"],
+                    "buildinfo_sha256": prov["buildinfo_sha256"],
+                    "unproven_links": [
+                        "source commit -> built .deb (buildinfo records no commit)",
+                        "built .deb -> package installed in the ISO (no .deb digest in the image)",
+                    ],
+                }
+            # A single older commit is only a guess: nothing here shows that
+            # debian/rules rewrote the version. Say so instead of confirming.
             return {
-                "category": "local_git_version_stamped",
+                "category": "version_stamp_inferred",
                 "source_package": source,
                 "commit": alt_sha,
+                "verified": False,
+                **({"provenance_claim": claim} if claim else {}),
+                **({"provenance_rejected": "provenance present but does not name "
+                    "this source and commit for the installed version"}
+                   if (provenance or {}).get((name, version)) and not claim else {}),
+                **({"rules_hint": VERSION_STAMP_RULES_HINT[source]}
+                   if source in VERSION_STAMP_RULES_HINT else {}),
                 "reason": (
-                    f"installed as {version}, but the recorded commit is for "
-                    f"{source} {alt_ver} -- debian/rules stamps this "
-                    "package's version at build time, decoupled from "
-                    "debian/changelog, so the mismatch is expected"
+                    f"installed as {version}; the only recorded commit for "
+                    f"{source} is for version {alt_ver}. That this package's "
+                    "build rewrites its version is not verified -- the commit "
+                    "may not be the one that was built"
                 ),
             }
         return {
@@ -412,26 +459,24 @@ VERIFICATION_ITEMS = [
 ]
 
 
-# Rows above are written for the product image. Evidence is per ISO, so a
-# release directory for a different ISO must not inherit them: a test image has
-# its own regression and install results, and has not been through the lifecycle
-# runs at all. Anything not measured on the ISO in hand is NOT_RUN and says where
-# it was measured instead -- a PASS carried over from another image is exactly what
-# the robot_81_cases row warns against.
-PER_ISO_ROWS = {
-    "upgrade_add_image", "rollback", "cloud_init", "no_network_boot",
-    "nic_naming_stability", "add_system_image_signing_check",
-    "dpa_object_model_interface_routed_ports",
+# Everything in VERIFICATION_ITEMS marked PASS other than the rows this script
+# produces is a *historical* result recorded for particular images. Nothing here
+# binds a result to an artifact (ISO SHA256, suite commit, raw result hash), and
+# an image name is not an identity: a rebuilt ISO can reuse a name. So no
+# measured row is ever reported as current; the recorded result is kept as
+# "historical" next to a NOT_RUN status.
+SCRIPT_OUTPUT_ROWS = {
+    "obs_project_revision_frozen", "unified_release_directory",
+    "sbom_generated", "source_revision_map", "results_normalized",
 }
-PRODUCT_ISO = "i-danos_2608_20260926T0757-amd64.hybrid.iso"
-ISO_OVERRIDES = {
+HISTORICAL_OVERRIDES = {
     "i-danos_2608_20260926T0949-amd64.hybrid-test.iso": {
         "robot_81_cases": (
             "PASS",
             "81/81 on this test image (tag t557; IPSEC 10, MPLS 11, DPA 7, FIREWALL 16, BGP 16, "
             "REST 21, no case missing), vyatta-image-tools 5.57, vyatta-dataplane 3.14.42. Its "
             "installed package set (1524) is identical to the product image "
-            + PRODUCT_ISO + "'s, built from the same OBS repository. Not carried over from "
+            + "i-danos_2608_20260926T0757-amd64.hybrid.iso" + "'s, built from the same OBS repository. Not carried over from "
             "another image.",
         ),
         "disk_install_unattended": (
@@ -441,22 +486,355 @@ ISO_OVERRIDES = {
         ),
     },
 }
+HISTORICAL_IMAGE_NOTES = {
+    "i-danos_2608_20260926T0757-amd64.hybrid.iso":
+        "product image the rows above were recorded against",
+    "i-danos_2608_20260926T0949-amd64.hybrid-test.iso":
+        "test image with its own robot_81_cases and disk_install_unattended results",
+}
 
 
-def build_verification_summary(iso_name=None):
-    overrides = ISO_OVERRIDES.get(iso_name, {})
+def sha256_of(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+EVIDENCE_FORMAT = "danos-verification-evidence-v2"
+PROVENANCE_FORMAT = "danos-build-provenance-v2"
+
+
+def verify_signature(doc_path, trusted_key):
+    """(ok, reason): doc_path + '.sig' is an Ed25519 signature over doc_path by
+    the operator-supplied trusted public key (PEM). The key must not come from
+    the evidence directory; it is what makes the content someone's statement
+    rather than just a file whose hash matches itself."""
+    if not trusted_key:
+        return False, "no trusted public key given (--trusted-key): unsigned input is not evidence"
+    sig = Path(str(doc_path) + ".sig")
+    if not sig.is_file():
+        return False, f"detached signature missing: {sig.name}"
+    try:
+        r = subprocess.run(
+            ["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(trusted_key),
+             "-rawin", "-in", str(doc_path), "-sigfile", str(sig)],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, f"signature check could not run: {e}"
+    if r.returncode != 0:
+        return False, "signature does not verify against the trusted key"
+    return True, ""
+
+
+def _bound_file(base, rel, want_sha):
+    """(path|None, reason): rel exists under base (no escape) and hashes to want_sha."""
+    if not isinstance(rel, str) or not rel or not isinstance(want_sha, str) \
+            or not HEX64.match(want_sha):
+        return None, "file or sha256 missing/malformed"
+    base = Path(base).resolve()
+    path = (base / rel).resolve()
+    if base != path and base not in path.parents:
+        return None, "file path escapes the evidence directory"
+    if not path.is_file():
+        return None, f"file not found: {rel}"
+    if sha256_of(path) != want_sha:
+        return None, f"sha256 mismatch for {rel}"
+    return path, ""
+
+
+def _load_json(path):
+    try:
+        return json.loads(Path(path).read_text()), None
+    except (OSError, ValueError) as e:
+        return None, f"unreadable: {e}"
+
+
+def parse_test_results(path):
+    """Authoritative outcome of a machine-written test result, recounted from
+    the individual test cases: {"cases": {name: passed|failed|skipped}, counts}.
+
+    Understands JUnit XML (testsuite/testsuites) and Robot Framework
+    output.xml. Raises ValueError for anything malformed, ambiguous (duplicate
+    case names), or self-contradictory (suite totals that disagree with the
+    cases listed). Nothing here trusts a summary line over the cases.
+    """
+    import xml.etree.ElementTree as ET
+    raw = Path(path).read_bytes()
+    if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
+        raise ValueError("DTD/entity declarations are not accepted")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        raise ValueError(f"not well-formed XML: {e}")
+    cases = {}
+
+    def add(name, outcome):
+        if not name or name in cases:
+            raise ValueError(f"missing or duplicate test case name: {name!r}")
+        cases[name] = outcome
+
+    if root.tag in ("testsuite", "testsuites"):
+        suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+        for su in suites:
+            direct = su.findall("testcase")
+            n_fail = n_skip = 0
+            for tc in direct:
+                name = f"{tc.get('classname', '')}.{tc.get('name', '')}"
+                kids = {c.tag for c in tc}
+                if kids & {"failure", "error"}:
+                    out = "failed"; n_fail += 1
+                elif "skipped" in kids:
+                    out = "skipped"; n_skip += 1
+                else:
+                    out = "passed"
+                add(name, out)
+            for attr, got in (("tests", len(direct)),
+                              ("failures", sum(1 for t in direct if t.find("failure") is not None)),
+                              ("errors", sum(1 for t in direct if t.find("error") is not None)),
+                              ("skipped", n_skip)):
+                if su.get(attr) is not None:
+                    try:
+                        claimed = int(su.get(attr))
+                    except ValueError:
+                        raise ValueError(f"non-numeric {attr} attribute")
+                    if claimed != got:
+                        raise ValueError(
+                            f"suite {su.get('name')!r} claims {attr}={claimed} "
+                            f"but its test cases give {got}")
+    elif root.tag == "robot":
+        for t in root.iter("test"):
+            st = t.find("status")
+            if st is None or st.get("status") not in ("PASS", "FAIL", "SKIP", "NOT RUN"):
+                raise ValueError(f"robot test {t.get('name')!r} has no valid status")
+            out = {"PASS": "passed", "FAIL": "failed"}.get(st.get("status"), "skipped")
+            add(t.get("id") or t.get("name"), out)
+    else:
+        raise ValueError(f"unrecognised result format (root <{root.tag}>)")
+    counts = {"total": len(cases)}
+    for k in ("passed", "failed", "skipped"):
+        counts[k] = sum(1 for v in cases.values() if v == k)
+    return {"cases": cases, "counts": counts}
+
+
+SUITE_CONFIG_FORMAT = "danos-suite-config-v1"
+
+
+def load_suite_config(path, evidence_path=None):
+    """Load the trusted definition of what each item's suite must cover.
+
+    This is project configuration, reviewed and held by the release operator
+    (--suite-config), NOT something the evidence signer supplies: the signer
+    says what ran, the config says what had to run. Per item: min_cases (int
+    >= 1), required_cases (non-empty, unique names that must all pass) and an
+    optional suite_commit pin. The file may not live next to the evidence it
+    judges. Returns ({item: entry}, sha256, errors).
+    """
+    path = Path(path)
+    if evidence_path is not None:
+        ev_dir = Path(evidence_path).resolve().parent
+        here = path.resolve()
+        if here.parent == ev_dir or ev_dir in here.parents:
+            return {}, None, ["suite config must not be inside the evidence directory"]
+    doc, err = _load_json(path)
+    if err or not isinstance(doc, dict) or doc.get("format") != SUITE_CONFIG_FORMAT \
+            or not isinstance(doc.get("items"), dict):
+        return {}, None, [err or f"not a {SUITE_CONFIG_FORMAT} document"]
+    known = {i for _, i, st, _ in VERIFICATION_ITEMS if i not in SCRIPT_OUTPUT_ROWS}
+    items, errors = {}, []
+    for item, e in doc["items"].items():
+        req = e.get("required_cases") if isinstance(e, dict) else None
+        if item not in known:
+            errors.append(f"{item}: not a measured verification item"); continue
+        if not isinstance(req, list) or not req or not all(isinstance(c, str) and c for c in req) \
+                or len(set(req)) != len(req):
+            errors.append(f"{item}: required_cases must be a non-empty list of unique names"); continue
+        n = e.get("min_cases")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1 or n < len(req):
+            errors.append(f"{item}: min_cases must be an int >= max(1, len(required_cases))"); continue
+        pin = e.get("suite_commit")
+        if pin is not None and not (isinstance(pin, str) and HEX40.match(pin)):
+            errors.append(f"{item}: suite_commit pin is not a 40-hex commit"); continue
+        items[item] = {"min_cases": n, "required_cases": list(req), "suite_commit": pin}
+    return items, sha256_of(path), errors
+
+
+def load_evidence(path, iso_sha256, trusted_key=None, suite_config=None):
+    """Validate a signed verification-evidence file against one actual ISO.
+
+    The document must carry a valid detached signature from the trusted key.
+    For each record: the ISO digest must match, the suite commit must be
+    named, the raw result file must hash correctly AND parse as JUnit/Robot
+    output; pass/fail counts are *derived from the parsed cases*, never taken
+    from the record, and a declared status or count that contradicts them
+    rejects the record. A PASS additionally needs the item's entry in the
+    trusted suite_config (see load_suite_config): at least min_cases passing
+    cases, every required case present and passing, and the pinned suite
+    commit if the config has one. Anything the record says about required
+    cases or minimum sizes is ignored. Returns (accepted, rejected):
+    {item: record+derived}, [(item, why)].
+    """
+    accepted, rejected = {}, []
+    if not iso_sha256 or not HEX64.match(iso_sha256):
+        return accepted, [("*", "ISO sha256 not available")]
+    ok, why = verify_signature(path, trusted_key)
+    if not ok:
+        return accepted, [("*", why)]
+    doc, err = _load_json(path)
+    if err or not isinstance(doc, dict) or doc.get("format") != EVIDENCE_FORMAT \
+            or not isinstance(doc.get("records"), list):
+        return accepted, [("*", err or f"not a {EVIDENCE_FORMAT} document")]
+    known = {i for _, i, st, _ in VERIFICATION_ITEMS if i not in SCRIPT_OUTPUT_ROWS}
+    base = Path(path).parent
+    for rec in doc["records"]:
+        item = rec.get("item") if isinstance(rec, dict) else None
+
+        def reject(why):
+            rejected.append((item or "?", why))
+        if item not in known:
+            reject("unknown or non-measured item"); continue
+        if item in accepted:
+            reject("duplicate record for item"); continue
+        if rec.get("iso_sha256") != iso_sha256:
+            reject("iso_sha256 does not match this ISO"); continue
+        if not isinstance(rec.get("suite_commit"), str) or not HEX40.match(rec["suite_commit"]):
+            reject("suite_commit missing or not a 40-hex commit"); continue
+        if rec.get("status") not in ("PASS", "FAIL"):
+            reject("status must be PASS or FAIL"); continue
+        rpath, why = _bound_file(base, rec.get("result_file"), rec.get("result_sha256"))
+        if rpath is None:
+            reject(why); continue
+        try:
+            parsed = parse_test_results(rpath)
+        except (ValueError, OSError) as e:
+            reject(f"result file rejected: {e}"); continue
+        counts = parsed["counts"]
+        derived = "PASS" if counts["total"] > 0 and counts["passed"] == counts["total"] else "FAIL"
+        if rec["status"] != derived:
+            reject(f"declared {rec['status']} contradicts the parsed results ({counts})"); continue
+        if "cases" in rec and rec["cases"] != counts:
+            reject(f"declared case counts contradict the parsed results ({counts})"); continue
+        if derived == "PASS":
+            want = (suite_config or {}).get(item)
+            if want is None:
+                reject("PASS needs a trusted suite definition for this item "
+                       "(--suite-config); signer-supplied coverage is not used"); continue
+            if want["suite_commit"] and rec["suite_commit"] != want["suite_commit"]:
+                reject("suite_commit differs from the commit the suite config pins"); continue
+            if counts["passed"] < want["min_cases"]:
+                reject(f"only {counts['passed']} passing cases, {item} needs at least "
+                       f"{want['min_cases']}"); continue
+            bad = [c for c in want["required_cases"] if parsed["cases"].get(c) != "passed"]
+            if bad:
+                reject(f"required cases missing or not passing: {bad[:5]}"); continue
+        accepted[item] = {**rec, "status": derived, "cases": counts}
+    return accepted, rejected
+
+
+def parse_buildinfo(path):
+    """Source, Version and Binary fields of a Debian .buildinfo (a PGP
+    clearsign wrapper, if any, is skipped but NOT verified here)."""
+    fields = {}
+    for line in Path(path).read_text(errors="replace").splitlines():
+        m = re.match(r"^(Source|Version|Binary):\s*(.+?)\s*$", line)
+        if m and m.group(1) not in fields:
+            fields[m.group(1)] = m.group(2)
+    if not {"Source", "Version", "Binary"} <= set(fields):
+        raise ValueError("buildinfo lacks Source/Version/Binary")
+    return {"source": fields["Source"].split()[0],
+            "version": fields["Version"],
+            "binaries": set(re.split(r"[,\s]+", fields["Binary"]))}
+
+
+def load_provenance(path, iso_sha256, trusted_key=None):
+    """Validate signed build provenance: ({(name, version): entry}, rejected).
+
+    The document must be signed by the trusted build key and name the ISO's
+    digest. Each entry must also be corroborated by a hash-matching Debian
+    .buildinfo whose Source, Binary list and source Version agree with the
+    entry (so the entry cannot claim a different package or version than the
+    build record shows). This yields a *claim* only: resolve_source never marks
+    a source attribution verified from it, because the commit is the signer's
+    statement and nothing links it to the built .deb or the ISO's package.
+    """
+    out, rejected = {}, []
+    if not iso_sha256 or not HEX64.match(iso_sha256):
+        return out, [("*", "ISO sha256 not available")]
+    ok, why = verify_signature(path, trusted_key)
+    if not ok:
+        return out, [("*", why)]
+    doc, err = _load_json(path)
+    if err or not isinstance(doc, dict) or doc.get("format") != PROVENANCE_FORMAT \
+            or not isinstance(doc.get("packages"), list):
+        return out, [("*", err or f"not a {PROVENANCE_FORMAT} document")]
+    if doc.get("iso_sha256") != iso_sha256:
+        return out, [("*", "provenance iso_sha256 does not match this ISO")]
+    base = Path(path).parent
+    for e in doc["packages"]:
+        if not isinstance(e, dict):
+            rejected.append(("?", "entry is not an object")); continue
+        key = (e.get("name"), e.get("version"))
+        label = f"{key[0]} {key[1]}"
+        if not all(isinstance(k, str) and k for k in key + (
+                e.get("source_package"), e.get("source_version"))):
+            rejected.append((label, "name/version/source_package/source_version missing")); continue
+        if not isinstance(e.get("commit"), str) or not HEX40.match(e["commit"]):
+            rejected.append((label, "commit missing or not 40-hex")); continue
+        bpath, why = _bound_file(base, e.get("buildinfo_file"), e.get("buildinfo_sha256"))
+        if bpath is None:
+            rejected.append((label, why)); continue
+        try:
+            bi = parse_buildinfo(bpath)
+        except (ValueError, OSError) as ex:
+            rejected.append((label, f"buildinfo rejected: {ex}")); continue
+        if bi["source"] != e["source_package"] or bi["version"] != e["source_version"] \
+                or e["name"] not in bi["binaries"]:
+            rejected.append((label, "buildinfo Source/Version/Binary contradict the entry")); continue
+        out[key] = e
+    return out, rejected
+
+
+def build_verification_summary(iso_name=None, iso_sha256=None, evidence=None):
+    """Rows for a release. A measured row leaves NOT_RUN only through a record
+    in `evidence` (the accepted dict from load_evidence, already validated
+    against this ISO); the image name never counts as evidence."""
+    evidence = evidence or {}
     rows = []
     for phase, item, status, note in VERIFICATION_ITEMS:
-        if item in overrides:
-            status, note = overrides[item]
-        elif iso_name in ISO_OVERRIDES and item in PER_ISO_ROWS:
-            status = "NOT_RUN"
-            note = (
-                "not run on this image. Measured on the product image " + PRODUCT_ISO
-                + " (same package set); see that release's verification-summary.json. "
-                "Previous note: " + note
+        row = {"phase": phase, "item": item, "status": status, "note": note}
+        if item in evidence and item not in SCRIPT_OUTPUT_ROWS and iso_sha256:
+            rec = evidence[item]
+            c = rec["cases"]
+            row["status"] = rec["status"]
+            row["note"] = (
+                f"{c['passed']}/{c['total']} passed, {c['failed']} failed, "
+                f"{c['skipped']} skipped on ISO sha256 {iso_sha256}; suite commit "
+                f"{rec['suite_commit']}; raw result {rec['result_file']} "
+                f"sha256 {rec['result_sha256']}"
             )
-        rows.append({"phase": phase, "item": item, "status": status, "note": note})
+            rows.append(row)
+            continue
+        if status == "PASS" and item not in SCRIPT_OUTPUT_ROWS:
+            row["status"] = "NOT_RUN"
+            row["note"] = (
+                "no artifact-bound evidence for this image"
+                + (f" ({iso_name}, sha256 {iso_sha256 or 'not checked'})" if iso_name else "")
+                + "; the recorded result below is historical and inherited, not current"
+            )
+            row["historical"] = {
+                "status": status,
+                "note": note,
+                "recorded_for": sorted(HISTORICAL_IMAGE_NOTES),
+            }
+            for name, over in HISTORICAL_OVERRIDES.items():
+                if item in over:
+                    row["historical"].setdefault("per_image", {})[name] = {
+                        "status": over[item][0], "note": over[item][1]}
+        rows.append(row)
     return rows
 
 
@@ -477,6 +855,18 @@ def main():
     ap.add_argument("--obs-repo", type=Path, default=DEFAULT_OBS_REPO)
     ap.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     ap.add_argument("--sources", type=Path, default=DEFAULT_SOURCES)
+    ap.add_argument("--trusted-key", type=Path, default=None,
+                    help="PEM Ed25519 public key whose signature (<file>.sig) makes "
+                         "--evidence / --build-provenance trustworthy; kept outside them")
+    ap.add_argument("--suite-config", type=Path, default=None,
+                    help="trusted project suite definition (required cases and minimum "
+                         "counts per item); without it no PASS evidence is accepted")
+    ap.add_argument("--evidence", type=Path, default=None,
+                    help="verification-evidence JSON bound to this ISO's sha256; "
+                         "without it every measured row is NOT_RUN")
+    ap.add_argument("--build-provenance", type=Path, default=None,
+                    help="build-provenance JSON (commit + attestation hash per "
+                         "package); without it no version-stamped commit is confirmed")
     args = ap.parse_args()
 
     if not args.iso.exists():
@@ -503,12 +893,16 @@ def main():
             shutil.copy2(args.iso, dest_iso)
     (release_dir / "manifest.txt").write_text(manifest_path.read_text())
     print(f"  iso + manifest.txt")
+    iso_sha = sha256_of(dest_iso)
 
     # 2. resolve every installed package
     repo_index = parse_repo_packages(args.obs_repo / "Packages")
     commit_index = index_commit_files(args.obs_dir / "dsc")
     commits_by_source = index_commits_by_source(commit_index)
     baseline = parse_baseline(args.baseline)
+    provenance, prov_rejected = ({}, [])
+    if args.build_provenance:
+        provenance, prov_rejected = load_provenance(args.build_provenance, iso_sha, args.trusted_key)
     with tempfile.TemporaryDirectory(dir=release_dir) as tmp:
         installed = installed_from_iso(args.iso, tmp)
     listed = {n.split(":")[0]: v for n, v in parse_iso_manifest(manifest_path)}
@@ -528,7 +922,7 @@ def main():
     category_counts = {}
     for name, version in installed:
         resolved = resolve_source(name, version, repo_index, commit_index, baseline,
-                                   commits_by_source)
+                                   commits_by_source, provenance)
         category_counts[resolved["category"]] = (
             category_counts.get(resolved["category"], 0) + 1
         )
@@ -563,11 +957,22 @@ def main():
     print("  build-inputs.json")
 
     # 4. verification summary
-    summary = build_verification_summary(args.iso.name)
+    accepted, ev_rejected, suite_sha = ({}, [], None)
+    if args.evidence:
+        suites, suite_sha, suite_errors = ({}, None, ["--suite-config not given"])
+        if args.suite_config:
+            suites, suite_sha, suite_errors = load_suite_config(args.suite_config, args.evidence)
+        accepted, ev_rejected = load_evidence(args.evidence, iso_sha, args.trusted_key, suites)
+        ev_rejected += [("suite-config", e) for e in suite_errors]
+    summary = build_verification_summary(args.iso.name, iso_sha, accepted)
     not_run = sum(1 for s in summary if s["status"] == "NOT_RUN")
     (release_dir / "verification-summary.json").write_text(
         json.dumps({
             "format": "danos-p0.5-verification-summary-v1",
+            "iso_sha256": iso_sha,
+            "suite_config_sha256": suite_sha,
+            "evidence_rejected": [{"item": i, "reason": r} for i, r in ev_rejected],
+            "provenance_rejected": [{"package": i, "reason": r} for i, r in prov_rejected],
             "items": summary,
         }, indent=2)
     )
