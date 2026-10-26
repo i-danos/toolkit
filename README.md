@@ -169,6 +169,48 @@ the Robot container, interface state, and a direct vymgmt login. Reach for
 vymgmt, whose own errors say little, and a one-line login test separates a
 harness problem from a product one in seconds.
 
+### Testing configd — `vm/selftest-configd.sh`
+
+Not part of the build, and not a QEMU script; it lives here because it is the
+other thing that needs a throwaway environment with more privilege than the
+build has.
+
+configd's `server/` tests are skipped by `debian/rules` (configd commit
+`0d025e7`). They need what only an installed system provides — `/var/tmp/configd`
+and `/run/vyatta/configd` (from `debian/configd.tmpfile`), `/config` (the
+commit tests write `/config/config.boot`, hard-coded in `server/dispatcher.go`)
+and `/opt/vyatta/sbin/vyatta_current_conf_ver.pl` (exec'd by absolute path) —
+and the build user cannot create any of them. `fakeroot` does not change that:
+it fakes ownership, grants no right to create `/config`, and `dh_auto_test` does
+not run under it anyway.
+
+`selftest-configd.sh` runs the tests as root in a one-shot container instead:
+it creates those paths there, puts a stub in place of the version script, and
+runs `go test ./server/` from a copy of the source. Nothing it creates leaves
+the container, and nothing is added to any `.deb`. The exit status is that of
+`go test`; the log goes to `handoff/runs/selftest-configd-<timestamp>.log`.
+
+```sh
+REPO_DIR=<local apt repo> $T/vm/selftest-configd.sh      # serves it for the run
+APT_URL=http://172.17.0.1:8080/ $T/vm/selftest-configd.sh # or use one already up
+KEEP=1 $T/vm/selftest-configd.sh                          # keep the container
+```
+
+It needs the packaging image (`IMAGE`, default `danos-pkgbuild:2608-r3`) and an
+apt source carrying the danos `-dev` build dependencies. Last result: 234 PASS,
+0 FAIL, 4 SKIP.
+
+**It does not run `session/`**, and restoring `dh_auto_test` would not work yet
+for a separate reason: `session/component_failure_commit_test.go` imports
+`github.com/danos/godbus/dbus`. The danos fork is vendored inside the `config`
+repository (`config/vendor/github.com/danos/godbus/dbus`, installed under
+`usr/share/gocode` by `golang-github-danos-config-dev`) and Go's vendor
+directories are visible only to `github.com/danos/config/...`, so the import
+does not resolve from `configd/session`; `configd/debian/control` has no
+Build-Depends entry for it either. That package's tests therefore do not
+compile in a build environment, and restoring the test run needs that
+dependency first.
+
 ## suite/ — the Robot suites
 
 The DANOS suites were written in 2020–2021 and predate the current tooling.
