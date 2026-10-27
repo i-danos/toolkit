@@ -5,3 +5,7 @@
 # Python bytecode from running the checks in place
 __pycache__/
 *.pyc
+
+# tool caches (not source)
+.wrangler/
+release/.wrangler/
