@@ -17,17 +17,30 @@
    "expect_regex": "^configd=active acmd=active$"
   },
   {
+   "name": "root-may-configure",
+   "basis": "design + observed in the image: the shipped ACM is enabled and its only data rule allows group vyattacfg (config.boot.default:2-3,261-267; read-default allow, create/update/delete-default deny in vyatta-system-acm-configd-v1.yang); AcmAuther.AuthorizePath exempts only configd's own uid (config/auth/acm_auther.go:36-73, configd server/conn.go:164); the image's /etc/group has root only in group root. Groups come from getgrouplist(user name) (utils/os/group/lookup_unix.go), so sg/newgrp do not help. Root cannot set anything unless the guest seed adds it to vyattacfg (usermod -aG vyattacfg root) - see the README",
+   "cmd": "id -nG root",
+   "expect_exit": 0,
+   "expect_regex": "(^| )vyattacfg( |$)"
+  },
+  {
    "name": "session-setup",
    "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
-   "cmd": "SID=$$; eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "cmd": "SID=$$; ( eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession )",
    "expect_exit": 0
   },
   {
    "name": "session-live-after-session-setup",
-   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
-   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists. env VYATTA_CONFIG_SID=$SID, not a VAR=x prefix: with VYATTA_CONFIG_SID readonly bash prints 'readonly variable', still runs the command with the OLD value and returns 0 (reproduced on bash 5.2.37, R4-f6-set-rootcause-20261027.md), which passed a session that was never set up. The output must be exactly SID=<number>: no 'readonly', no 'does not exist'",
+   "cmd": "echo \"SID=$SID\"; env VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
    "expect_exit": 0,
-   "expect_regex": "^SID=[1-9][0-9]*$"
+   "expect_regex": "\\A\\s*SID=[1-9][0-9]*\\s*\\Z",
+   "expect_not_regex": [
+    "readonly",
+    "does not exist",
+    "not a valid",
+    "Must specify"
+   ]
   },
   {
    "name": "discard",
@@ -103,7 +116,7 @@
   {
    "name": "reconcile-1-clean",
    "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
-   "cmd": "cfgcli reconcile",
+   "cmd": "env VYATTA_CONFIG_SID=$SID cfgcli reconcile",
    "timeout": 120,
    "expect_exit": 0,
    "expect_regex": "No dirty components to reconcile"
@@ -111,7 +124,7 @@
   {
    "name": "reconcile-2-clean",
    "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
-   "cmd": "cfgcli reconcile",
+   "cmd": "env VYATTA_CONFIG_SID=$SID cfgcli reconcile",
    "timeout": 120,
    "expect_exit": 0,
    "expect_regex": "No dirty components to reconcile"
@@ -154,21 +167,27 @@
   },
   {
    "name": "session-after-restart",
-   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check",
-   "cmd": "SID=$((100000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "basis": "fixture fix, untested on a guest: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted. Cause (reproduced on bash 5.2): the first eval of getSessionEnv in the persistent shell makes VYATTA_CONFIG_SID readonly, so every later session was set up but the shell, and cfgcli, kept the old id. The session is now created inside a subshell and cfgcli is given the id with env. The earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while its step still passed",
+   "cmd": "SID=$((100000 + RANDOM)); ( eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession )",
    "expect_exit": 0
   },
   {
    "name": "session-live-after-session-after-restart",
-   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
-   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists. env VYATTA_CONFIG_SID=$SID, not a VAR=x prefix: with VYATTA_CONFIG_SID readonly bash prints 'readonly variable', still runs the command with the OLD value and returns 0 (reproduced on bash 5.2.37, R4-f6-set-rootcause-20261027.md), which passed a session that was never set up. The output must be exactly SID=<number>: no 'readonly', no 'does not exist'",
+   "cmd": "echo \"SID=$SID\"; env VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
    "expect_exit": 0,
-   "expect_regex": "^SID=[1-9][0-9]*$"
+   "expect_regex": "\\A\\s*SID=[1-9][0-9]*\\s*\\Z",
+   "expect_not_regex": [
+    "readonly",
+    "does not exist",
+    "not a valid",
+    "Must specify"
+   ]
   },
   {
    "name": "reconcile-clean-after-restarts",
-   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check; text from observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
-   "cmd": "cfgcli reconcile",
+   "basis": "fixture fix, untested on a guest: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted. Cause (reproduced on bash 5.2): the first eval of getSessionEnv in the persistent shell makes VYATTA_CONFIG_SID readonly, so every later session was set up but the shell, and cfgcli, kept the old id. The session is now created inside a subshell and cfgcli is given the id with env. The earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while its step still passed; text from observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "env VYATTA_CONFIG_SID=$SID cfgcli reconcile",
    "timeout": 120,
    "expect_exit": 0,
    "expect_regex": "No dirty components to reconcile"

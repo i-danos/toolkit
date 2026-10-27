@@ -527,42 +527,139 @@ class P2AndP4AssertDifferentThings(unittest.TestCase):
 
 
 class SessionCreationIsAsserted(unittest.TestCase):
-    """The first real run passed session-setup and discard (both print nothing) while $SID was empty
-    in a later step, and only set then failed. A session must be proved to exist."""
+    """The first real run passed session-setup and discard (both print nothing) while the session was not
+    what the later steps used. A session must be proved to exist, and the proof must name the session."""
+
+    OLD_FORM = 'echo "SID=$SID"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession'
 
     def live_step(self):
         raw = json.load(open(CASES / "f6.yaml"))
         return [s for s in raw["steps"] if s["name"] == "session-live-after-session-setup"][0]
 
-    def run_live(self, prelude, fake_rc):
+    def run_steps(self, prelude, steps, valid=("4242",), fake_extra="", pty=False):
+        """Run steps with a fake cli-shell-api that knows only the sessions in `valid`: in a local non-interactive
+        bash, or (pty=True) in an interactive bash behind a TCP 'serial console', which is what the fixture drives
+        on a guest."""
         with tempfile.TemporaryDirectory() as d:
             bindir = Path(d) / "bin"
             bindir.mkdir()
             api = bindir / "cli-shell-api"
-            api.write_text(f"#!/bin/sh\n[ -n \"$VYATTA_CONFIG_SID\" ] || exit 1\nexit {fake_rc}\n")
+            api.write_text("#!/bin/sh\n" + fake_extra +
+                           'for v in ' + " ".join(f"'{x}'" for x in valid) + '; do\n'
+                           '  [ "$VYATTA_CONFIG_SID" = "$v" ] && exit 0\n'
+                           'done\nexit 1\n')
             api.chmod(0o755)
-            steps = [{"name": "env", "basis": "x", "cmd": f"export PATH={bindir}:$PATH; {prelude}", "expect_exit": 0},
-                     self.live_step()]
-            p = write_case(d, steps)
-            rc, out, err = run_tool(str(p), "--exec", "local", "--junit", f"{d}/j.xml")
+            first = {"name": "env", "basis": "x", "cmd": f"export PATH={bindir}:$PATH; {prelude}", "expect_exit": 0}
+            p = write_case(d, [first] + steps)
+            if pty:
+                srv = FakeSerialServer()
+                rc, out, err = run_tool(str(p), "--console", f"127.0.0.1:{srv.port}", "--junit", f"{d}/j.xml")
+            else:
+                rc, out, err = run_tool(str(p), "--exec", "local", "--junit", f"{d}/j.xml")
             return rc
 
+    def run_live(self, prelude, **kw):
+        return self.run_steps(prelude, [self.live_step()], **kw)
+
     def test_a_real_session_passes(self):
-        self.assertEqual(self.run_live("SID=4242", 0), 0)
+        self.assertEqual(self.run_live("SID=4242"), 0)
 
     def test_an_empty_session_id_fails(self):
-        self.assertEqual(self.run_live("SID=", 0), 1)
+        self.assertEqual(self.run_live("SID="), 1)
 
     def test_configd_not_knowing_the_session_fails(self):
-        self.assertEqual(self.run_live("SID=4242", 1), 1)
+        self.assertEqual(self.run_live("SID=999"), 1)
+
+    # getSessionEnv exports VYATTA_CONFIG_SID and the shell then cannot change it; model: the OLD session 111 is
+    # valid, the NEW session 222 was never set up
+    READONLY_OLD = "export VYATTA_CONFIG_SID=111; readonly VYATTA_CONFIG_SID; SID=222"
+
+    def test_a_readonly_old_session_cannot_vouch_for_a_new_one(self):
+        for pty in (False, True):
+            self.assertEqual(self.run_live(self.READONLY_OLD, valid=("111",), pty=pty), 1,
+                             f"the live check passed a session that does not exist (pty={pty})")
+
+    def test_the_old_form_passed_that_same_situation(self):
+        # The bug this replaces, reproduced: with the variable exported AND readonly (what getSessionEnv leaves
+        # behind), `VYATTA_CONFIG_SID=$SID cmd` makes bash print 'readonly variable', run cmd with the OLD value
+        # and return its status, so the old step (exit status only) passed a session that was never set up.
+        # It happens in a non-interactive and in an interactive bash alike (a variable that is readonly but NOT
+        # exported shows nothing of this: the child sees it empty). If this test fails, the harness no longer
+        # reproduces the false pass and test_a_readonly_old_session_cannot_vouch_for_a_new_one proves nothing.
+        old = {"name": "old-form", "basis": "x", "cmd": self.OLD_FORM, "expect_exit": 0,
+               "expect_regex": "SID=[1-9][0-9]*"}
+        for pty in (False, True):
+            self.assertEqual(self.run_steps(self.READONLY_OLD, [old], valid=("111",), pty=pty), 0,
+                             f"the false pass is no longer reproduced (pty={pty})")
+
+    def test_the_new_form_works_where_the_variable_is_not_readonly_and_where_it_is(self):
+        for pty in (False, True):
+            self.assertEqual(self.run_live("export VYATTA_CONFIG_SID=111; readonly VYATTA_CONFIG_SID; SID=111",
+                                           valid=("111",), pty=pty), 0, f"pty={pty}")
+            self.assertEqual(self.run_live("SID=4242", pty=pty), 0, f"pty={pty}")
+
+    def test_output_that_complains_fails_even_when_the_exit_status_is_zero(self):
+        fake = 'echo "session $VYATTA_CONFIG_SID does not exist"\n'
+        self.assertEqual(self.run_live("SID=4242", fake_extra=fake), 1)
+        fake = 'echo "bash: VYATTA_CONFIG_SID: readonly variable" >&2\n'
+        self.assertEqual(self.run_live("SID=4242", fake_extra=fake), 1)
 
     def test_every_session_creation_in_every_case_is_followed_by_a_live_check(self):
         for f in sorted(CASES.glob("*.yaml")):
             steps = vc.load_case(f)["steps"]
             for i, st in enumerate(steps):
-                if "setupSession" in st["cmd"]:
+                if "setupSession" in st["cmd"] and st["name"] != "probe-with-a-fresh-session-id":
                     self.assertLess(i + 1, len(steps), f.name)
-                    self.assertIn("inSession", steps[i + 1]["cmd"], f"{f.name}: {st['name']}")
+                    self.assertIn("env VYATTA_CONFIG_SID=$SID cli-shell-api inSession", steps[i + 1]["cmd"],
+                                  f"{f.name}: {st['name']}")
+
+    def test_no_case_uses_the_prefix_form_that_passes_a_readonly_variable(self):
+        for f in sorted(CASES.glob("*.yaml")):
+            for st in vc.load_case(f)["steps"]:
+                self.assertIsNone(re.search(r"(?<!env )VYATTA_CONFIG_SID=\S+ (cli-shell-api|cfgcli|vcli)", st["cmd"]),
+                                  f"{f.name}: {st['name']}: {st['cmd']}")
+
+    def test_getSessionEnv_is_only_ever_evaluated_in_a_subshell(self):
+        # evaluated in the persistent shell it makes VYATTA_CONFIG_SID readonly there, and every later session
+        # (and cfgcli, which reads that variable) keeps using the first one
+        n = 0
+        for f in sorted(CASES.glob("*.yaml")):
+            for st in vc.load_case(f)["steps"]:
+                if "getSessionEnv" in st["cmd"]:
+                    n += 1
+                    self.assertRegex(st["cmd"], r'\(\s*eval "\$\(cli-shell-api getSessionEnv', f"{f.name}: {st['name']}")
+        self.assertGreater(n, 5)
+
+    def test_cfgcli_is_always_told_the_session_it_runs_in(self):
+        n = 0
+        for f in sorted(CASES.glob("*.yaml")):
+            for st in vc.load_case(f)["steps"]:
+                for m in re.finditer(r"cfgcli reconcile", st["cmd"]):
+                    n += 1
+                    self.assertIn("env VYATTA_CONFIG_SID=$SID cfgcli reconcile", st["cmd"], f"{f.name}: {st['name']}")
+        self.assertGreater(n, 3)
+
+    def test_cases_that_configure_as_root_first_check_root_may(self):
+        for name in ("f6", "item12", "p2p4"):
+            steps = vc.load_case(CASES / f"{name}.yaml")["steps"]
+            names = [s["name"] for s in steps]
+            self.assertIn("root-may-configure", names, name)
+            self.assertLess(names.index("root-may-configure"), min(i for i, s in enumerate(steps) if "vcli" in s["cmd"]), name)
+            st = steps[names.index("root-may-configure")]
+            self.assertTrue(st["basis"].startswith("design"), "the reason is derived from code and the image, not from a run")
+            self.assertTrue(st["expect_regex"][0].search("root vyattacfg"))
+            self.assertFalse(st["expect_regex"][0].search("root vyattacfg2 sudo"))
+            self.assertFalse(st["expect_regex"][0].search("root"))
+
+    def test_the_fresh_session_probe_proves_the_session_before_it_sets(self):
+        st = [s for s in json.load(open(CASES / "f6-diagnose.yaml"))["steps"] if s["name"] == "probe-with-a-fresh-session-id"][0]
+        cmd = st["cmd"]
+        self.assertIn("( eval", cmd)                                  # created in a subshell
+        self.assertLess(cmd.index("inSession"), cmd.index("vcli -s $SID2"))
+        self.assertEqual(cmd.count("&&"), 3)                          # create && inSession && echo && set: any failure stops it
+        self.assertIn("does not exist", st["expect_not_regex"])
+        self.assertIn("readonly", st["expect_not_regex"])
+        self.assertIn("authorization failed", st["expect_not_regex"])
 
     def test_no_case_derives_a_session_id_from_a_subshell(self):
         # SID=$(sh -c ...) left $SID empty on the real image while its step still passed

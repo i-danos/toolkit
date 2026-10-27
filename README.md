@@ -268,23 +268,83 @@ setting the hash directly and bypassing PAM, from `bootcmd`:
 hostname: danos-ci-test
 bootcmd:
   - [ sh, -c, "usermod -p '<output of: openssl passwd -6 yourpassword>' root" ]
+  - [ sh, -c, "usermod -aG vyattacfg root" ]
 ```
 
 (`$` in the hash needs the quoting shown.) Setting the password from `runcmd` after
 `configd` is active would also avoid the race but has not been tried. The seed file
-used for that boot is not kept in the repository.
+used for that boot is not kept in the repository. The second line is explained next.
 
-**When `set` is refused but `show` works.** `show` runs through `cli-shell-api`;
-`set` runs through `cfgcli` and configd (`vcli -c` is `bash -c`, `set` is the function
-`cmd_helper` -> `cfgcli -print`, see `vyatta-cfg/functions/script-wrapper`), and the first
-real run of `f6` was refused there with `Configuration path: [] is not valid ... authorization
-failed` although the session id was fine. `cases/f6-diagnose.yaml` runs that same
-`cfgcli -print set` under one varied condition at a time (the console shell as it is, a
-clean environment, no controlling terminal, a fresh session id) and records the shell's
-identity, environment and terminal. Run it first on the next guest:
+**Root must be allowed to write: put it in `vyattacfg`.** On the first real runs `show`
+worked and every `set` was refused with
+
+```
+Configuration path: [] is not valid
+Access to the requested protocol operation or data model is denied because authorization failed.
+Set failed
+```
+
+The first line is not about the path. It is how `formatMultilineSetWarnings` prints any
+access-denied error that carries no path (`configd/common/cli_format.go:53-54,210-233`:
+`errpath("")` is `[]`); the client sent the right path (`cfgcli/runfns.go:618-633`;
+`VYATTA_EDIT_LEVEL=/` adds nothing, `pathutil.Makepath` drops empty elements). What refused
+the set is the access control module (ACM). The image ships it enabled with a single
+data rule, `rule 9999 { action allow; group vyattacfg; operation "*"; path "*" }`
+(`/opt/vyatta/etc/config.boot.default`), and `read-default` allow, `create`/`update`/
+`delete-default` deny (`vyatta-system-acm-configd-v1.yang`). `AcmAuther.AuthorizePath`
+(`config/auth/acm_auther.go:36-73`) lets through only the configd service's own uid
+(`configd/server/conn.go:164`) or a matching rule; root is not special, and the groups are
+those of `getgrouplist(<user name>)` (`utils/os/group/lookup_unix.go`), so they come
+from `/etc/group` and not from the calling process: `sg vyattacfg` changes nothing. In the
+image `/etc/group` has root only in group `root`. So as root `show` works and `set` is
+refused, by design. Three different checks return this same text
+(`server/dispatcher.go:666-669`, `session/session_internal.go:241-247`,
+`session/sessionmgr.go:64`), but only the data check can apply to root here.
+
+The cases that configure as root therefore start with `root-may-configure`
+(`id -nG root` must list `vyattacfg`), which makes a seed without the group fail at once
+with the reason, instead of four confusing `set` failures. Adding root to `vyattacfg` makes
+the guest more permissive than a stock one; that is the price of driving the CLI from the
+root console, and it is also why the result is evidence about the product's commit path,
+not about who may configure.
+
+One thing this does not explain, and the reason `handoff/tasks/R4-r3-probe.sh` exists:
+`set` as root succeeded from cloud-init on the same image, early in boot. The ACM
+only enforces once configd has loaded an enabled authdb (`config/auth/auth.go:201-208,
+306-310,571-596`: a missing `configruleset.txt` means an empty, disabled authdb that allows
+everything, and the file is reloaded when it changes). The image ships no such file, so
+early `set`s are not denied. Whether that is the whole difference is for the probe to say:
+it records the file, the process start times and the group membership, and runs the same
+`set` as root before joining `vyattacfg`, after joining it, and after leaving it.
+
+`cases/f6-diagnose.yaml` runs the same `cfgcli -print set` that failed under one varied
+condition at a time (as it was, a clean environment, no controlling terminal, a fresh
+session) and records group membership and the ACM files. On a stock guest every probe
+fails alike; with root in `vyattacfg` they should all pass.
+
+**The session and `VYATTA_CONFIG_SID`.** `eval "$(cli-shell-api getSessionEnv $SID)"`
+exports `VYATTA_CONFIG_SID` and makes it readonly. Done in the persistent console shell, the
+first session locks the variable: a second `eval` is refused, the shell (and `cfgcli`, which
+reads the variable) keep using the first session, and the new one is set up but never used.
+The cases now create every session inside a subshell (`( eval ...; cli-shell-api
+setupSession )`), so nothing is locked, and give `cfgcli` its session explicitly with
+`env VYATTA_CONFIG_SID=$SID`. This is also what the earlier 'cfgcli kept a dead session'
+trouble in the P2/P4 capture was.
+
+For the same reason the liveness check is `env VYATTA_CONFIG_SID=$SID cli-shell-api
+inSession`, never `VYATTA_CONFIG_SID=$SID cli-shell-api inSession`. With the variable
+exported and readonly, the prefix form makes bash print `readonly variable`, run the command
+with the OLD value, and return its status: a session that was never set up passed (the real
+guest's `session-live-after-session-setup` printed exactly that and passed). The step now
+requires the output to be exactly `SID=<number>`, with no `readonly` and no `does not
+exist`, as well as exit status 0. Unit tests reproduce the false pass of the old form (in a
+non-interactive and in an interactive bash) and show the new form fails the same situation.
+
+Run the probe, then the diagnostic case, then `f6`:
 
 ```sh
 T=build-iso/danos-sources/toolkit/vm
+bash handoff/tasks/R4-r3-probe.sh        # on the guest console; changes root's groups and restores them
 $T/verify-case.py $T/cases/f6-diagnose.yaml --console 127.0.0.1:4475 --user root \
     --password '<from the seed>' --junit out/f6-diagnose.junit.xml --transcript out/f6-diagnose.raw
 $T/verify-case.py $T/cases/f6.yaml --console 127.0.0.1:4475 --user root \
@@ -292,9 +352,8 @@ $T/verify-case.py $T/cases/f6.yaml --console 127.0.0.1:4475 --user root \
     --iso <the ISO under test> --allow-dirty --transcript out/f6.raw
 ```
 
-Every step that creates a session is now followed by `session-live-*`, which needs
-`$SID` to be a number and `cli-shell-api inSession` to exit 0: `setupSession` and `discard`
-print nothing, so passing them proved no session existed.
+Every step that creates a session is followed by `session-live-*`: `setupSession` and
+`discard` print nothing, so passing them proved no session existed.
 
 ```sh
 T=build-iso/danos-sources/toolkit
