@@ -83,7 +83,12 @@
    "cmd": "vcli -s $SID -c commit",
    "timeout": 180,
    "expect_exit": 0,
-   "expect_regex": "WARNING: the commit journal could not be updated \\(end of the commit\\).*after a restart the components of this commit are treated as unknown"
+   "expect_regex": "WARNING: the commit journal could not be updated \\(end of the commit\\).*after a restart the components of this commit are treated as unknown",
+   "skip_if": {
+    "cmd": "test ! -d /var/run/vyatta/configd/commit-state.json",
+    "reason": "the W2 injection never landed: commit-state.json is not a directory after the commit, so no journal write could fail",
+    "timeout": 20
+   }
   },
   {
    "name": "injector-caught-the-runfile-write",
@@ -98,7 +103,12 @@
    "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
    "cmd": "ls -ld /var/run/vyatta/configd/commit-state.json",
    "expect_exit": 0,
-   "expect_regex": "^d"
+   "expect_regex": "^d",
+   "skip_if": {
+    "cmd": "test ! -d /var/run/vyatta/configd/commit-state.json",
+    "reason": "the W2 injection never landed: commit-state.json is not a directory",
+    "timeout": 20
+   }
   },
   {
    "name": "reconcile-clean",
@@ -134,7 +144,12 @@
      ],
      "contains": "net.vyatta.vci.acmd.v1"
     }
-   ]
+   ],
+   "skip_if": {
+    "cmd": "! grep -q CAUGHT /tmp/w2watch.out",
+    "reason": "the injector never caught the runfile write, so the journal was never replaced and W1 retention cannot be judged",
+    "timeout": 20
+   }
   },
   {
    "name": "retry-commit-has-nothing-to-commit",

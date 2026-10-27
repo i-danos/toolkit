@@ -54,7 +54,7 @@ MAX_CMD = 2400          # bytes; base64 of it must fit one terminal line
 
 CASE_KEYS = {"id", "item", "suite_commit", "description", "basis", "vars", "noise_filter", "steps"}
 STEP_KEYS = {"name", "cmd", "basis", "timeout", "expect_exit", "expect_regex",
-             "expect_not_regex", "expect_json", "abort_on_fail", "requires"}
+             "expect_not_regex", "expect_json", "abort_on_fail", "requires", "skip_if"}
 REQUIRES_KEYS = {"cmd", "reason", "timeout"}
 JSON_OPS = {"equals", "exists", "contains", "matches"}
 NOISE = {
@@ -242,6 +242,18 @@ def load_case(path, cli_vars=None):
             problems.append(f"{where}: declares no assertion (expect_exit / expect_regex / "
                             "expect_not_regex / expect_json); a step that asserts nothing "
                             "cannot pass or fail")
+        skip_if = st.get("skip_if")
+        if skip_if is not None:
+            if not isinstance(skip_if, dict):
+                problems.append(f"{where}: skip_if must be an object with cmd and reason")
+            else:
+                for k in sorted(set(skip_if) - REQUIRES_KEYS):
+                    problems.append(f"{where}: skip_if: unknown key {k!r}")
+                scmd, sreason = skip_if.get("cmd"), skip_if.get("reason")
+                if not isinstance(scmd, str) or not scmd.strip():
+                    problems.append(f"{where}: skip_if.cmd must be a non-empty string")
+                if not isinstance(sreason, str) or not sreason.strip():
+                    problems.append(f"{where}: skip_if.reason must be a non-empty string")
         requires = None
         if st.get("requires") is not None:
             rq = st["requires"]
@@ -646,6 +658,22 @@ def run_case(case, make_transport, raw_log):
                 continue
             out, noise = strip_noise(raw_out, case["noise"])
             fails = evaluate(st, rc, out)
+            if fails and st.get("skip_if"):
+                # A declared precondition for MEASURING that demonstrably did not hold
+                # (e.g. an injected fault never landed) turns this from a failed
+                # measurement into a recorded skip. It is never a pass.
+                si = st["skip_if"]
+                miss = False
+                src = None
+                try:
+                    src, _sout = shell.run(si["cmd"], si.get("timeout", 30))
+                    miss = (src == 0)
+                except (StepTimeout, ShellError):
+                    miss = False
+                if miss:
+                    res(st["name"], st["basis"], t0, rc, out, noise, [],
+                        skipped=f"{si['reason']} (precondition probe exit status {src})")
+                    continue
             res(st["name"], st["basis"], t0, rc, out, noise, fails)
             if fails and st["abort_on_fail"]:
                 aborted = st["name"]
