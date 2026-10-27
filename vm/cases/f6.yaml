@@ -1,0 +1,177 @@
+{
+ "id": "f6-rule-without-action",
+ "item": "a02_f6_rule_without_action",
+ "suite_commit": "auto",
+ "description": "A02 stage 3-H on the real image: rules without action / notification-name commit, read back, and reconcile clean. Needs a root shell on the guest.",
+ "basis": [
+  "real output: handoff/verify/R3-f6-20261026.md and evidence/f6-20261026/f6-transcript.txt (ISO i-danos_2608_20261026T0452)",
+  "journal fields: A02-PHASE3-DESIGN.md 6.1 (commit-state.json: commit, dispatch, dirty)",
+  "steps marked 'design' or 'fixture fix' were never observed and may legitimately fail"
+ ],
+ "steps": [
+  {
+   "name": "services-active",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "for i in $(seq 1 60); do systemctl is-active --quiet configd && systemctl is-active --quiet acmd && break; sleep 5; done; echo \"configd=$(systemctl is-active configd) acmd=$(systemctl is-active acmd)\"",
+   "timeout": 330,
+   "expect_regex": "^configd=active acmd=active$"
+  },
+  {
+   "name": "session-setup",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "SID=$$; eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-setup",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "discard",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "vcli -s $SID -c discard",
+   "expect_exit": 0
+  },
+  {
+   "name": "set-rule-path",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 1 path /system/login\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "set-rule-operation",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 1 operation read\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "set-rpc-rule-group",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm rpc-ruleset rule 1 group vyattacfg\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "set-notification-rule-group",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm notification-ruleset rule 1 group vyattacfg\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "candidate-has-the-tested-shape",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "vcli -s $SID -c show | sed -n \"/acm {/,\\$p\"",
+   "expect_exit": 0,
+   "expect_regex": [
+    "\\t\\truleset \\{\\n\\t\\t\\trule 1 \\{\\n\\t\\t\\t\\toperation read\\n\\t\\t\\t\\tpath /system/login\\n\\t\\t\\t\\}",
+    "\\t\\tnotification-ruleset \\{\\n\\t\\t\\trule 1 \\{\\n\\t\\t\\t\\tgroup vyattacfg\\n\\t\\t\\t\\}\\n\\t\\t\\}"
+   ]
+  },
+  {
+   "name": "commit-succeeds",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "vcli -s $SID -c commit",
+   "timeout": 180,
+   "expect_exit": 0,
+   "expect_not_regex": [
+    "Not reconciled",
+    "read-back mismatch"
+   ]
+  },
+  {
+   "name": "journal-clean-after-commit",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit"
+     ],
+     "equals": null
+    },
+    {
+     "path": [
+      "dirty"
+     ],
+     "equals": {}
+    }
+   ]
+  },
+  {
+   "name": "reconcile-1-clean",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "cfgcli reconcile",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "No dirty components to reconcile"
+  },
+  {
+   "name": "reconcile-2-clean",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "cfgcli reconcile",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "No dirty components to reconcile"
+  },
+  {
+   "name": "acmd-restart-active",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "systemctl restart acmd; sleep 8; systemctl is-active acmd",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "^active$"
+  },
+  {
+   "name": "configd-restart-active",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "systemctl restart configd; sleep 60; systemctl is-active configd",
+   "timeout": 240,
+   "expect_exit": 0,
+   "expect_regex": "^active$"
+  },
+  {
+   "name": "journal-clean-after-restarts",
+   "basis": "observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit"
+     ],
+     "equals": null
+    },
+    {
+     "path": [
+      "dirty"
+     ],
+     "equals": {}
+    }
+   ]
+  },
+  {
+   "name": "session-after-restart",
+   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check",
+   "cmd": "SID=$((100000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-after-restart",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "reconcile-clean-after-restarts",
+   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check; text from observed: handoff/verify/R3-f6-20261026.md, evidence/f6-20261026/f6-transcript.txt",
+   "cmd": "cfgcli reconcile",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "No dirty components to reconcile"
+  }
+ ]
+}

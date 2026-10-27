@@ -211,6 +211,166 @@ Build-Depends entry for it either. That package's tests therefore do not
 compile in a build environment, and restoring the test run needs that
 dependency first.
 
+### Assertion cases — `vm/verify-case.py`
+
+`mk-release.py` accepts a result only if it parses as JUnit/Robot and the pass
+count derives from the parsed cases; a serial transcript is not evidence.
+`verify-case.py` turns a real run on a booted guest into that JUnit file.
+
+A case (`vm/cases/<id>.yaml`) is a list of steps. Each step runs a command in a
+persistent root shell and **asserts on what was measured**:
+
+| key | meaning |
+|---|---|
+| `expect_exit` | the exit status equals this number exactly |
+| `expect_regex` | every regex matches the output (`re.search`, multi-line) |
+| `expect_not_regex` | no regex matches |
+| `expect_json` | the output is exactly one JSON document (e.g. `cat commit-state.json`); each entry gives a `path` (list of keys / indexes) and one of `equals` (type-strict: `true` is not `1`), `exists`, `contains`, `matches` |
+
+A step passes only if every assertion it declares holds. Rejected before
+anything runs: a case with no steps, a step with no assertion, an unknown key (a
+typo would silently weaken the case), a missing `basis` (case level and per
+step: where the expected value comes from, `observed:<document>` or
+`design:<reference>`), a bad regex, an unknown `{{variable}}`. A rejected case
+still writes a JUnit with one failing testcase, so a stale passing file cannot
+be mistaken for this run. Timeouts, a refused connection, a failed login, a lost
+console and steps that could not run are all FAIL, never skipped.
+Steps whose `basis` says "not yet observed" were derived from the design and may
+legitimately fail the first time a real image runs them.
+
+Exit status: 0 every step passed, 1 a step failed, 2 invalid case or invocation.
+The first testcase of every run is `console-sync`, a nonce round trip, so a dead
+console cannot yield an empty pass.
+
+**Running against a guest.** The guest must be started from a NoCloud seed
+(`-drive file=seed.iso,media=cdrom` with volume label `cidata`) that creates the
+account the fixture logs in with: the live image has no account that works for
+this otherwise (`tmpuser` runs in a restricted CLI sandbox). The serial port must be
+reachable over TCP (`qemu ... -serial tcp:127.0.0.1:4460,server,nowait`). The
+cases need root (`systemctl`, `/var/run/vyatta/configd`), so the seed must give
+root a password or an autologin console. Booting under TCG takes minutes; the fixture
+does not boot anything, the caller guarantees the guest is up. The login
+handshake is `console.py`'s own.
+
+**Giving root a password: do not use cloud-init's `chpasswd` or `users:`.** On this
+image the password change is wired to configd (`/opt/vyatta/sbin/vyatta-update-password`
+calls `configd.Client()` from PAM), and cloud-init changes passwords in its `init`
+stage, about 70 s into a TCG boot, before configd is running. The result is
+`chpasswd: (user root) pam_chauthtok() failed`, the `users-groups` module fails, and the
+first login is `Login incorrect`
+(`handoff/verify/r4-r1c-hermes/boot-chpasswd-fail.log`; the fixture reported that as a
+failed run with a failing JUnit, not a pass). What worked (same directory,
+`boot-usermod-hash.log`: no password failure, root logged in on the serial console) is
+setting the hash directly and bypassing PAM, from `bootcmd`:
+
+```yaml
+#cloud-config
+hostname: danos-ci-test
+bootcmd:
+  - [ sh, -c, "usermod -p '<output of: openssl passwd -6 yourpassword>' root" ]
+```
+
+(`$` in the hash needs the quoting shown.) Setting the password from `runcmd` after
+`configd` is active would also avoid the race but has not been tried. The seed file
+used for that boot is not kept in the repository.
+
+**When `set` is refused but `show` works.** `show` runs through `cli-shell-api`;
+`set` runs through `cfgcli` and configd (`vcli -c` is `bash -c`, `set` is the function
+`cmd_helper` -> `cfgcli -print`, see `vyatta-cfg/functions/script-wrapper`), and the first
+real run of `f6` was refused there with `Configuration path: [] is not valid ... authorization
+failed` although the session id was fine. `cases/f6-diagnose.yaml` runs that same
+`cfgcli -print set` under one varied condition at a time (the console shell as it is, a
+clean environment, no controlling terminal, a fresh session id) and records the shell's
+identity, environment and terminal. Run it first on the next guest:
+
+```sh
+T=build-iso/danos-sources/toolkit/vm
+$T/verify-case.py $T/cases/f6-diagnose.yaml --console 127.0.0.1:4475 --user root \
+    --password '<from the seed>' --junit out/f6-diagnose.junit.xml --transcript out/f6-diagnose.raw
+$T/verify-case.py $T/cases/f6.yaml --console 127.0.0.1:4475 --user root \
+    --password '<from the seed>' --junit out/f6.junit.xml --evidence out/f6.ev.json \
+    --iso <the ISO under test> --allow-dirty --transcript out/f6.raw
+```
+
+Every step that creates a session is now followed by `session-live-*`, which needs
+`$SID` to be a number and `cli-shell-api inSession` to exit 0: `setupSession` and `discard`
+print nothing, so passing them proved no session existed.
+
+```sh
+T=build-iso/danos-sources/toolkit
+$T/vm/verify-case.py $T/vm/cases/f6.yaml --console 127.0.0.1:4460 --user root --password '<from the seed>' \
+    --junit out/f6.junit.xml --evidence out/evidence.json --iso <the ISO under test> --transcript out/f6.raw
+$T/vm/verify-case.py $T/vm/cases/selfcheck.yaml --exec local --junit /tmp/s.xml        # must exit 1
+$T/vm/verify-case.py $T/vm/cases/selfcheck-pass.yaml --exec local --junit /tmp/p.xml   # must exit 0
+$T/vm/verify-case.py $T/vm/cases/p2p4.yaml --validate                                  # check a case, run nothing
+```
+
+`--exec local` runs the same steps in a local bash through the same protocol and
+the same assertion code; it exists for the self-checks and the unit tests. The
+protocol lines the fixture types for a step contain no `?`, Tab or `!` (the vyatta
+CLI shell binds `?` and Tab to completion/help, and `!` is history expansion): the
+command travels as base64 and the exit status is read with `${PIPESTATUS[0]}`. The
+login handshake is `console.py`'s: it types a bare CR, the user name, the password,
+and `id -un` / `exit` when it finds a shell already open; `--user` and `--password` are
+refused (exit 2) if they contain `?`, `!`, Tab or any control character, since
+`console.py` sends them verbatim. Console noise (kernel `[ 12.3]` lines, systemd `[ OK ]`
+status lines) is stripped from the output before matching and counted in the
+JUnit; `--transcript` keeps the raw bytes.
+
+`--evidence` writes a `danos-verification-evidence-v2` record whose
+`result_sha256` binds the JUnit file (which must live inside the evidence file's
+directory) and whose status is recounted from it. It also names the fixture that
+produced it: `tool_sha256` (this file), `console_py_sha256`, and the repository's
+`tool_commit` / `tool_dirty`. A case file that changes while it is running gets no
+evidence at all (exit 2). The document is **unsigned**:
+sign it with the release key before `mk-release.py` will look at it.
+`suite_commit` is `auto` (HEAD of the repository holding the case file); a case
+file with uncommitted changes is refused unless `--allow-dirty`, which is recorded
+as `suite_dirty`. `--emit-suite-config` writes the `danos-suite-config-v1` entry
+that makes every step of the case required.
+
+The case files are `.yaml` but written as JSON text, which is valid YAML: PyYAML
+is not installed on the build hosts, and a hand-written YAML parser inside an
+assertion tool is a way to weaken a case by mis-parsing it. With PyYAML present a
+case may use YAML syntax too.
+
+The items named by the cases (`a02_f6_rule_without_action`,
+`a02_item12_w2_journal_write_failure`, `a02_p2p4_seam_crash_journal`) are **not yet
+rows of `VERIFICATION_ITEMS`**, so `mk-release.py` rejects their evidence as an
+unknown item until they are added there, with a suite-config entry.
+
+**P2 and P4 cannot be told apart from the journal.** At both seams `commit-state.json`
+shows the same thing (`commit.state` applying, acmd `may_have_been_sent` true,
+`settled` false), so `cases/p2p4.yaml` reads acmd's own state, which differs: at P2
+the call has not been sent, so `acmd.conf` does not hold the new rule and none of the
+three files acmd's `Set()` writes (`acmd.conf`, `configruleset.txt`, `vci-local.conf`)
+is newer than a reference time; at P4 the rule is present, all three are newer, and the
+acmd process is not stopped. A `Set()` that stopped half way (P3) leaves some files
+old and is rejected as P4; the unit tests run these two steps against fake acmd files
+in each state. Reading the hook's FIFO is *not* used to prove "configd is parked
+here": the hook releases as soon as anything opens the FIFO for reading, so doing it
+would release the seam before the kill.
+
+`python3 -m unittest test_verify_case` (in `vm/`) checks: the planted failures of
+`selfcheck` are reported, a timeout / exit-status mismatch / failed regex / bad
+JSON field is FAIL, a refused connection or a wrong password is FAIL, invalid
+cases are rejected, the console protocol against a pty-backed shell with echo,
+noise and a login prompt, that nothing typed contains `?`, Tab or `!`, that the
+evidence record's fields are complete and its hash is that of the real file, and
+that the expectations in `f6`, `item12` and `p2p4` still match the recorded real
+transcripts under `handoff/verify/evidence/` (a missing transcript directory is a
+**failure**, not a skip; `VC_EVIDENCE_DIR` points the tests at it). What is **not**
+covered: a run against a real guest, and `p2p4`'s design-derived steps, including every
+acmd-side step above, which were never observed on a real image.
+
+Known limitations, accepted: the nonce in `console-sync` is a synchronisation mark, not
+authentication, so a console that is actively forging the markers is trusted; regexes
+search the whole output and may match part of it, so cases anchor them (`^...$`);
+`suite_dirty` covers the case file, while the fixture itself is identified by
+`tool_sha256`; the JUnit file is hashed right after it is written and is not watched
+afterwards; an evidence record from a run against a guest that was not booted from the
+ISO named by `--iso` is not detected (the caller guarantees it).
+
 ## suite/ — the Robot suites
 
 The DANOS suites were written in 2020–2021 and predate the current tooling.

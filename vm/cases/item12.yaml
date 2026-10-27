@@ -1,0 +1,132 @@
+{
+ "id": "item12-w2-write-failure",
+ "item": "a02_item12_w2_journal_write_failure",
+ "suite_commit": "auto",
+ "description": "A02 item 12: the end-of-commit (W2) journal write fails and the failure is reported, not silent. The injector replaces the journal by a directory the instant the runfile is rewritten. Needs a root shell and python3 on the guest.",
+ "basis": [
+  "real output: handoff/verify/R3-item12-20261026.md and evidence/item12-20261026/i12-transcript.txt (ISO i-danos_2608_20261026T0452)",
+  "warning text: configd session/commitmgr_journal.go:142",
+  "journal fields: A02-PHASE3-DESIGN.md 6.1"
+ ],
+ "steps": [
+  {
+   "name": "services-active",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "for i in $(seq 1 60); do systemctl is-active --quiet configd && systemctl is-active --quiet acmd && break; sleep 5; done; echo \"configd=$(systemctl is-active configd) acmd=$(systemctl is-active acmd)\"",
+   "timeout": 330,
+   "expect_regex": "^configd=active acmd=active$"
+  },
+  {
+   "name": "install-injector",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "cat > /root/w2watch.py <<'PY'\nimport os, time, sys\nJ = '/var/run/vyatta/configd/commit-state.json'\nR = '/var/run/vyatta/configd/running.config'\nBAK = '/var/run/vyatta/configd/commit-state.json.bak'\ntry:\n    last = os.stat(R).st_mtime_ns\nexcept FileNotFoundError:\n    last = None\ndeadline = time.time() + 300\nwhile time.time() < deadline:\n    try:\n        st = os.stat(R)\n    except FileNotFoundError:\n        time.sleep(0.0005); continue\n    if last is None:\n        last = st.st_mtime_ns\n    elif st.st_mtime_ns != last:\n        try:\n            os.rename(J, BAK)\n            os.mkdir(J)\n            print(\"W2WATCH: CAUGHT runfile write, journal replaced by dir at %s\" % time.strftime(\"%H:%M:%S\"))\n        except Exception as e:\n            print(\"W2WATCH: failed to inject: %r\" % (e,))\n        sys.exit(0)\n    time.sleep(0.0005)\nprint(\"W2WATCH: no runfile write within deadline\")\nPY\npython3 -m py_compile /root/w2watch.py && echo INJECTOR_COMPILES",
+   "expect_exit": 0,
+   "expect_regex": "^INJECTOR_COMPILES$"
+  },
+  {
+   "name": "start-injector",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "python3 /root/w2watch.py > /tmp/w2watch.out 2>&1 & sleep 1; kill -0 $! && echo INJECTOR_RUNNING",
+   "expect_exit": 0,
+   "expect_regex": "^INJECTOR_RUNNING$"
+  },
+  {
+   "name": "session-setup",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "SID=$$; eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-setup",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "discard",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "vcli -s $SID -c discard",
+   "expect_exit": 0
+  },
+  {
+   "name": "set-rule-path",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 2 path /system/login\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "set-rule-operation",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 2 operation read\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "commit-reports-the-journal-failure",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "vcli -s $SID -c commit",
+   "timeout": 180,
+   "expect_exit": 0,
+   "expect_regex": "WARNING: the commit journal could not be updated \\(end of the commit\\).*after a restart the components of this commit are treated as unknown"
+  },
+  {
+   "name": "injector-caught-the-runfile-write",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "for i in $(seq 1 100); do grep -q \"CAUGHT\" /tmp/w2watch.out && break; sleep 0.3; done; cat /tmp/w2watch.out",
+   "timeout": 90,
+   "expect_exit": 0,
+   "expect_regex": "^W2WATCH: CAUGHT runfile write, journal replaced by dir"
+  },
+  {
+   "name": "journal-path-is-a-directory",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "ls -ld /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_regex": "^d"
+  },
+  {
+   "name": "reconcile-clean",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "cfgcli reconcile",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "No dirty components to reconcile"
+  },
+  {
+   "name": "restore-journal",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "rmdir /var/run/vyatta/configd/commit-state.json && mv /var/run/vyatta/configd/commit-state.json.bak /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0
+  },
+  {
+   "name": "w1-intent-record-survived",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit",
+      "state"
+     ],
+     "equals": "persisting"
+    },
+    {
+     "path": [
+      "commit",
+      "todo"
+     ],
+     "contains": "net.vyatta.vci.acmd.v1"
+    }
+   ]
+  },
+  {
+   "name": "retry-commit-has-nothing-to-commit",
+   "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
+   "cmd": "vcli -s $SID -c commit",
+   "timeout": 120,
+   "expect_exit": 1,
+   "expect_regex": "No configuration changes to commit"
+  }
+ ]
+}
