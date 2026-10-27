@@ -18,12 +18,12 @@
   },
   {
    "name": "execution-context",
-   "basis": "design + orchestrator evidence (R4-r6 brief and A/B run, not in the recorded transcripts) - the P2/P4 captures and the orchestrator's A/B run executed in cloud-init's runcmd as root, where set was accepted without any group change (SET_BEFORE_RC=0). A set from the serial-console login was refused in an earlier run; why the two contexts differ is NOT explained. The case therefore pins the context it was written for: root, run from cloud-final.service",
+   "basis": "measured on the guest: runcmd runs under cloud-init-main.service (cgroup 0::/system.slice/cloud-init-main.service), not cloud-final; asserts root + any cloud-init stage, the context the A/B run used.",
    "cmd": "echo \"uid=$(id -u)\"; cat /proc/$$/cgroup",
    "expect_exit": 0,
    "expect_regex": [
     "^uid=0$",
-    "cloud-final\\.service"
+    "cloud-init[^\\n]*\\.service"
    ]
   },
   {
