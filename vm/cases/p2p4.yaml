@@ -1,0 +1,541 @@
+{
+ "id": "p2p4-seam-crash",
+ "item": "a02_p2p4_seam_crash_journal",
+ "suite_commit": "auto",
+ "description": "A02 crash points P2 (record durable, not sent) and P4 (replied, not settled) on the real image, using the default-off hooks in configd 2.12.2danos6. The journal fields are common to both seams, so they cannot tell P2 from P4; what does is acmd's own state, read from the files its Set() writes (acmd.conf, configruleset.txt, vci-local.conf) and its process state: at P2 none of them has changed and rule N is absent, at P4 all three are newer than a reference time, rule N is present and acmd is not stopped. Nothing is read from journald (it core-dumps under TCG). Why not the FIFO: the hook releases as soon as anything opens the FIFO for reading, so reading it to prove 'configd is parked here' would release the seam before the kill. Remaining limit: P3 (acmd stuck inside Set) and P4 differ only by acmd having finished, which is inferred from the files and process state, not seen directly. Needs a root shell on the guest.",
+ "vars": {
+  "acmd_conf": "/opt/vyatta/etc/acmd.conf",
+  "configruleset": "/opt/vyatta/etc/configruleset.txt",
+  "policy_file": "/usr/share/dbus-1/vci-local.conf",
+  "ref_p2": "/tmp/vc-ref-p2",
+  "ref_p4": "/tmp/vc-ref-p4"
+ },
+ "basis": [
+  "real output: handoff/verify/R3-p2p4-capture-20261026.md; evidence/p2p4-20261026/p2-transcript.txt, p4-transcript.txt (ISO i-danos_2608_20261026T2243, configd 2.12.2danos6)",
+  "hook design: assessment-2026-10-18/P2P4-HOOK-DESIGN.md; journal fields: A02-PHASE3-DESIGN.md 6.1, 6.4",
+  "acmd-side evidence: config/auth/acmd/vci-component.go:52-73 (order of the file writes in Set), vci-acm-v1.go:60 (rules serialise as \"tagnode\":N)",
+  "steps whose basis starts 'design' or 'fixture fix' were never observed: the capture could not reach the reconcile verdicts (session id problem) and the acmd-side file/process evidence was not collected; they may legitimately fail here"
+ ],
+ "steps": [
+  {
+   "name": "services-active",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "for i in $(seq 1 60); do systemctl is-active --quiet configd && systemctl is-active --quiet acmd && break; sleep 5; done; echo \"configd=$(systemctl is-active configd) acmd=$(systemctl is-active acmd)\"",
+   "timeout": 330,
+   "expect_regex": "^configd=active acmd=active$"
+  },
+  {
+   "name": "install-hook-switch",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "mkdir -p /etc/danos/test-hooks /etc/systemd/system/configd.service.d && chmod 755 /etc/danos/test-hooks && rm -f /etc/danos/test-hooks/p2.fifo /etc/danos/test-hooks/p4.fifo && mkfifo -m 0622 /etc/danos/test-hooks/p2.fifo /etc/danos/test-hooks/p4.fifo && printf \"[Service]\\nEnvironment=DANOS_TEST_HOOKS=1\\n\" > /etc/systemd/system/configd.service.d/danos-test-hooks.conf && systemctl daemon-reload && systemctl restart configd && sleep 25 && systemctl is-active configd",
+   "timeout": 240,
+   "expect_exit": 0,
+   "expect_regex": "^active$"
+  },
+  {
+   "name": "hook-switch-is-in-configd-environment",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "PID=$(systemctl show -p MainPID --value configd); echo \"env_has_hook=$(tr '\\0' '\\n' < /proc/$PID/environ | grep -c DANOS_TEST_HOOKS)\"",
+   "expect_exit": 0,
+   "expect_regex": "^env_has_hook=1$"
+  },
+  {
+   "name": "arm-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "printf \"component=net.vyatta.vci.acmd.v1\\nkind=forward\\nfifo=/etc/danos/test-hooks/p2.fifo\\ntimeout=15s\\n\" > /etc/danos/test-hooks/pause-p2 && chmod 644 /etc/danos/test-hooks/pause-p2",
+   "expect_exit": 0
+  },
+  {
+   "name": "capture-configd-pid-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "PID=$(systemctl show -p MainPID --value configd); echo PID=$PID",
+   "expect_exit": 0,
+   "expect_regex": "^PID=[1-9][0-9]*$"
+  },
+  {
+   "name": "session-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "SID=$$; eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-p2",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "set-rule-path-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 3 path /system/login\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "set-rule-operation-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 3 operation read\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "mark-time-p2",
+   "basis": "fixture: a reference time strictly before the commit starts",
+   "cmd": "sleep 1; touch {{ref_p2}}; echo MARKED",
+   "expect_exit": 0,
+   "expect_regex": "^MARKED$"
+  },
+  {
+   "name": "acmd-baseline-p2",
+   "basis": "fixture precondition: this rule number is new, so acmd cannot already hold it",
+   "cmd": "n=$(grep -cE '\"tagnode\":[[:space:]]*3[,}]' {{acmd_conf}} 2>/dev/null); echo \"TAGNODE3_COUNT=${n:-0}\"",
+   "expect_exit": 0,
+   "expect_regex": "^TAGNODE3_COUNT=0$"
+  },
+  {
+   "name": "background-commit-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "( vcli -s $SID -c commit > /tmp/p2-commit.txt 2>&1; echo \"BG_COMMIT_RC=$?\" >> /tmp/p2-commit.txt ) & echo started",
+   "expect_exit": 0,
+   "expect_regex": "^started$"
+  },
+  {
+   "name": "seam-hit-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "hit=0; for i in $(seq 1 150); do if grep -q '\"settled\":false' /var/run/vyatta/configd/commit-state.json 2>/dev/null; then hit=1; break; fi; sleep 0.2; done; echo \"SEAM_HIT=$hit\"",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "^SEAM_HIT=1$"
+  },
+  {
+   "name": "journal-at-the-seam-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit",
+      "state"
+     ],
+     "equals": "applying"
+    },
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "may_have_been_sent"
+     ],
+     "equals": true
+    },
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "settled"
+     ],
+     "equals": false
+    }
+   ]
+  },
+  {
+   "name": "acmd-has-not-received-the-set-p2",
+   "basis": "design (not yet observed on a real image): acmd Set() writes acmd.conf, configruleset.txt and vci-local.conf in that order before it answers (config/auth/acmd/vci-component.go:52-73); at P2 the call has not been sent",
+   "cmd": "n=$(grep -cE '\"tagnode\":[[:space:]]*3[,}]' {{acmd_conf}} 2>/dev/null); echo \"TAGNODE3_COUNT=${n:-0}\"; for f in {{acmd_conf}} {{configruleset}} {{policy_file}}; do if [ \"$f\" -nt {{ref_p2}} ]; then echo \"NEWER $f\"; else echo \"OLD $f\"; fi; done",
+   "expect_exit": 0,
+   "expect_regex": [
+    "^TAGNODE3_COUNT=0$",
+    "^OLD {{re:acmd_conf}}$",
+    "^OLD {{re:configruleset}}$",
+    "^OLD {{re:policy_file}}$"
+   ],
+   "expect_not_regex": "^NEWER"
+  },
+  {
+   "name": "commit-is-still-blocked-p2",
+   "basis": "design: the seam holds the commit inside BeforeDispatch (P2) or AfterDispatch (P4) until the FIFO is read or the 15 s timeout passes",
+   "cmd": "cat /tmp/p2-commit.txt; kill -0 $(jobs -p | head -1) 2>/dev/null && echo COMMIT_STILL_RUNNING",
+   "expect_exit": 0,
+   "expect_not_regex": "BG_COMMIT_RC=",
+   "expect_regex": "^COMMIT_STILL_RUNNING$"
+  },
+  {
+   "name": "kill-9-configd-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "kill -9 $PID; echo KILLED",
+   "expect_exit": 0,
+   "expect_regex": "^KILLED$"
+  },
+  {
+   "name": "configd-back-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "sleep 8; rm -f /etc/danos/test-hooks/pause-p2; systemctl restart configd; sleep 85; systemctl is-active configd",
+   "timeout": 300,
+   "expect_exit": 0,
+   "expect_regex": "^active$"
+  },
+  {
+   "name": "journal-after-restart-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit"
+     ],
+     "equals": null
+    },
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "may_have_been_sent"
+     ],
+     "equals": true
+    },
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "settled"
+     ],
+     "equals": false
+    }
+   ]
+  },
+  {
+   "name": "session-after-restart-p2",
+   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check",
+   "cmd": "SID=$((100000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-after-restart-p2",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "reconcile-refuses-unfenced-acmd-p2",
+   "basis": "design (not yet observed on a real image): A02-PHASE3-DESIGN.md 6.4 fence gate, commitmgr_reconcile.go (commitmgr_reconcile.go:74)",
+   "cmd": "cfgcli reconcile",
+   "timeout": 120,
+   "expect_regex": "Not reconciled: net\\.vyatta\\.vci\\.acmd\\.v1 \\(not fenced: it may still be executing an earlier Set; restart its service\\)"
+  },
+  {
+   "name": "commit-changing-acmd-is-refused-before-send-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 4 path /system/login\"; vcli -s $SID -c \"set system acm ruleset rule 4 operation read\"; vcli -s $SID -c commit",
+   "timeout": 180,
+   "expect_exit": 1,
+   "expect_regex": [
+    "component net\\.vyatta\\.vci\\.acmd\\.v1 may still be executing an earlier Set and is not fenced",
+    "nothing was sent and no hook or script ran"
+   ]
+  },
+  {
+   "name": "acmd-restart-p2",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P2), evidence/p2p4-20261026/p2-transcript.txt",
+   "cmd": "systemctl restart acmd; sleep 15; systemctl is-active acmd",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "^active$"
+  },
+  {
+   "name": "session-after-acmd-restart-p2",
+   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check",
+   "cmd": "SID=$((100000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-after-acmd-restart-p2",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "reconcile-after-acmd-restart-p2",
+   "basis": "design (not yet observed on a real image): A02-PHASE3-DESIGN.md 6.4 fence gate, commitmgr_reconcile.go (commitmgr_reconcile.go:109)",
+   "cmd": "cfgcli reconcile",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "Reconciled: net\\.vyatta\\.vci\\.acmd\\.v1"
+  },
+  {
+   "name": "arm-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "printf \"component=net.vyatta.vci.acmd.v1\\nkind=forward\\nfifo=/etc/danos/test-hooks/p4.fifo\\ntimeout=15s\\n\" > /etc/danos/test-hooks/pause-p4 && chmod 644 /etc/danos/test-hooks/pause-p4",
+   "expect_exit": 0
+  },
+  {
+   "name": "acmd-record-settled-before-p4",
+   "basis": "fixture precondition: the P4 poll looks for an unsettled acmd record, so none may be left over from the P2 half (design: a successful reconcile settles the record)",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "settled"
+     ],
+     "equals": true
+    }
+   ]
+  },
+  {
+   "name": "capture-configd-pid-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "PID=$(systemctl show -p MainPID --value configd); echo PID=$PID",
+   "expect_exit": 0,
+   "expect_regex": "^PID=[1-9][0-9]*$"
+  },
+  {
+   "name": "session-p4",
+   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check",
+   "cmd": "SID=$((100000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-p4",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "set-rule-path-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 5 path /system/login\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "set-rule-operation-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 5 operation read\"",
+   "expect_exit": 0
+  },
+  {
+   "name": "mark-time-p4",
+   "basis": "fixture: a reference time strictly before the commit starts",
+   "cmd": "sleep 1; touch {{ref_p4}}; echo MARKED",
+   "expect_exit": 0,
+   "expect_regex": "^MARKED$"
+  },
+  {
+   "name": "acmd-baseline-p4",
+   "basis": "fixture precondition: this rule number is new, so acmd cannot already hold it",
+   "cmd": "n=$(grep -cE '\"tagnode\":[[:space:]]*5[,}]' {{acmd_conf}} 2>/dev/null); echo \"TAGNODE5_COUNT=${n:-0}\"",
+   "expect_exit": 0,
+   "expect_regex": "^TAGNODE5_COUNT=0$"
+  },
+  {
+   "name": "background-commit-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "( vcli -s $SID -c commit > /tmp/p4-commit.txt 2>&1; echo \"BG_COMMIT_RC=$?\" >> /tmp/p4-commit.txt ) & echo started",
+   "expect_exit": 0,
+   "expect_regex": "^started$"
+  },
+  {
+   "name": "seam-hit-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "hit=0; for i in $(seq 1 150); do if grep -q '\"settled\":false' /var/run/vyatta/configd/commit-state.json 2>/dev/null; then hit=1; break; fi; sleep 0.2; done; echo \"SEAM_HIT=$hit\"",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "^SEAM_HIT=1$"
+  },
+  {
+   "name": "journal-at-the-seam-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit",
+      "state"
+     ],
+     "equals": "applying"
+    },
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "may_have_been_sent"
+     ],
+     "equals": true
+    },
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "settled"
+     ],
+     "equals": false
+    }
+   ]
+  },
+  {
+   "name": "acmd-has-applied-the-set-p4",
+   "basis": "design (not yet observed on a real image): acmd Set() writes acmd.conf, configruleset.txt and vci-local.conf in that order before it answers (config/auth/acmd/vci-component.go:52-73); at P4 the call was delivered and has returned",
+   "cmd": "n=$(grep -cE '\"tagnode\":[[:space:]]*5[,}]' {{acmd_conf}} 2>/dev/null); echo \"TAGNODE5_COUNT=${n:-0}\"; for f in {{acmd_conf}} {{configruleset}} {{policy_file}}; do if [ \"$f\" -nt {{ref_p4}} ]; then echo \"NEWER $f\"; else echo \"OLD $f\"; fi; done",
+   "expect_exit": 0,
+   "expect_regex": [
+    "^TAGNODE5_COUNT=[1-9][0-9]*$",
+    "^NEWER {{re:acmd_conf}}$",
+    "^NEWER {{re:configruleset}}$",
+    "^NEWER {{re:policy_file}}$"
+   ],
+   "expect_not_regex": "^OLD"
+  },
+  {
+   "name": "acmd-is-idle-not-stopped-p4",
+   "basis": "design: a handler stuck inside Set (P3) would leave acmd stopped or busy; P4 means it already answered. Not observed on a real image",
+   "cmd": "st=$(ps -o stat= -p $(systemctl show -p MainPID --value acmd) | tr -d \" \" | cut -c1); echo \"ACMD_STATE=$st\"",
+   "expect_exit": 0,
+   "expect_regex": "^ACMD_STATE=[SR]$"
+  },
+  {
+   "name": "commit-is-still-blocked-p4",
+   "basis": "design: the seam holds the commit inside BeforeDispatch (P2) or AfterDispatch (P4) until the FIFO is read or the 15 s timeout passes",
+   "cmd": "cat /tmp/p4-commit.txt; kill -0 $(jobs -p | head -1) 2>/dev/null && echo COMMIT_STILL_RUNNING",
+   "expect_exit": 0,
+   "expect_not_regex": "BG_COMMIT_RC=",
+   "expect_regex": "^COMMIT_STILL_RUNNING$"
+  },
+  {
+   "name": "kill-9-configd-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "kill -9 $PID; echo KILLED",
+   "expect_exit": 0,
+   "expect_regex": "^KILLED$"
+  },
+  {
+   "name": "configd-back-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "sleep 8; rm -f /etc/danos/test-hooks/pause-p4; systemctl restart configd; sleep 85; systemctl is-active configd",
+   "timeout": 300,
+   "expect_exit": 0,
+   "expect_regex": "^active$"
+  },
+  {
+   "name": "journal-after-restart-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit"
+     ],
+     "equals": null
+    },
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "may_have_been_sent"
+     ],
+     "equals": true
+    },
+    {
+     "path": [
+      "dispatch",
+      "net.vyatta.vci.acmd.v1",
+      "settled"
+     ],
+     "equals": false
+    }
+   ]
+  },
+  {
+   "name": "session-after-restart-p4",
+   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check",
+   "cmd": "SID=$((100000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-after-restart-p4",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "reconcile-refuses-unfenced-acmd-p4",
+   "basis": "design (not yet observed on a real image): A02-PHASE3-DESIGN.md 6.4 fence gate, commitmgr_reconcile.go (commitmgr_reconcile.go:74)",
+   "cmd": "cfgcli reconcile",
+   "timeout": 120,
+   "expect_regex": "Not reconciled: net\\.vyatta\\.vci\\.acmd\\.v1 \\(not fenced: it may still be executing an earlier Set; restart its service\\)"
+  },
+  {
+   "name": "commit-changing-acmd-is-refused-before-send-p4",
+   "basis": "design (not yet observed on a real image): A02-PHASE3-DESIGN.md 6.4 fence gate, commitmgr_reconcile.go (the same fence gate applies after P4; the P4 capture never reached a second commit)",
+   "cmd": "vcli -s $SID -c \"set system acm ruleset rule 6 path /system/login\"; vcli -s $SID -c \"set system acm ruleset rule 6 operation read\"; vcli -s $SID -c commit",
+   "timeout": 180,
+   "expect_exit": 1,
+   "expect_regex": [
+    "component net\\.vyatta\\.vci\\.acmd\\.v1 may still be executing an earlier Set and is not fenced",
+    "nothing was sent and no hook or script ran"
+   ]
+  },
+  {
+   "name": "acmd-restart-p4",
+   "basis": "observed: handoff/verify/R3-p2p4-capture-20261026.md (P4), evidence/p2p4-20261026/p4-transcript.txt",
+   "cmd": "systemctl restart acmd; sleep 15; systemctl is-active acmd",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "^active$"
+  },
+  {
+   "name": "session-after-acmd-restart-p4",
+   "basis": "fixture fix, untested: R3-p2p4-capture-20261026.md found cfgcli kept a dead session id after configd restarted; use a fresh session id. The first real run (R4-r1c) showed the earlier SID=$(sh -c ...) form left $SID empty ('Must specify session ID') while the step still passed, hence RANDOM and the live check",
+   "cmd": "SID=$((100000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-after-acmd-restart-p4",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "reconcile-after-acmd-restart-p4",
+   "basis": "design (not yet observed on a real image): A02-PHASE3-DESIGN.md 6.4 fence gate, commitmgr_reconcile.go (commitmgr_reconcile.go:109)",
+   "cmd": "cfgcli reconcile",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": "Reconciled: net\\.vyatta\\.vci\\.acmd\\.v1"
+  },
+  {
+   "name": "acmd-converged-to-running-after-reconcile-p4",
+   "basis": "design (not yet observed): reconcile re-applies the RUNNING configuration to the fenced component (A02-PHASE3-DESIGN.md 7); the P4 commit never reached the runfile, so the rule the delivered Set added must be gone",
+   "cmd": "n=$(grep -cE '\"tagnode\":[[:space:]]*5[,}]' {{acmd_conf}} 2>/dev/null); echo \"TAGNODE5_COUNT=${n:-0}\"",
+   "expect_exit": 0,
+   "expect_regex": "^TAGNODE5_COUNT=0$"
+  },
+  {
+   "name": "journal-clean-at-the-end",
+   "basis": "design (not yet observed on a real image): A02-PHASE3-DESIGN.md 6.4 fence gate, commitmgr_reconcile.go",
+   "cmd": "cat /var/run/vyatta/configd/commit-state.json",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit"
+     ],
+     "equals": null
+    },
+    {
+     "path": [
+      "dirty"
+     ],
+     "equals": {}
+    }
+   ]
+  }
+ ]
+}

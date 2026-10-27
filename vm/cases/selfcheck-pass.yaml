@@ -1,0 +1,85 @@
+{
+ "id": "selfcheck-pass",
+ "item": "fixture_selfcheck",
+ "suite_commit": "auto",
+ "description": "Every step is true by construction. Expected: exit 0, 7 testcases, 0 failures. Together with selfcheck it shows PASS and FAIL both come from the measured output.",
+ "basis": [
+  "fixture self-test: each step's expectation is satisfied by the command it runs"
+ ],
+ "steps": [
+  {
+   "name": "regex-and-exit",
+   "basis": "fixture",
+   "cmd": "echo hello; echo world",
+   "expect_exit": 0,
+   "expect_regex": [
+    "^hello$",
+    "^world$"
+   ],
+   "expect_not_regex": "^nope$"
+  },
+  {
+   "name": "nonzero-exit-is-asserted-exactly",
+   "basis": "fixture: expect_exit is equality, not 'non-zero'",
+   "cmd": "sh -c 'exit 3'",
+   "expect_exit": 3
+  },
+  {
+   "name": "shell-state-persists",
+   "basis": "fixture",
+   "cmd": "SID=4242",
+   "expect_exit": 0
+  },
+  {
+   "name": "shell-state-is-visible",
+   "basis": "fixture",
+   "cmd": "echo sid=$SID",
+   "expect_regex": "^sid=4242$"
+  },
+  {
+   "name": "json-fields",
+   "basis": "fixture",
+   "cmd": "printf '{\"commit\": null, \"dirty\": {}, \"todo\": [\"a\", \"b\"], \"state\": \"persisting\"}'",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "commit"
+     ],
+     "equals": null
+    },
+    {
+     "path": [
+      "dirty"
+     ],
+     "equals": {}
+    },
+    {
+     "path": [
+      "todo"
+     ],
+     "contains": "b"
+    },
+    {
+     "path": [
+      "state"
+     ],
+     "matches": "^pers"
+    },
+    {
+     "path": [
+      "nope"
+     ],
+     "exists": false
+    }
+   ]
+  },
+  {
+   "name": "question-mark-and-bang-survive-transport",
+   "basis": "fixture: nothing typed on the wire may be ? Tab or !, yet the command may contain them",
+   "cmd": "echo 'is it? yes!'",
+   "expect_exit": 0,
+   "expect_regex": "^is it\\? yes!$"
+  }
+ ]
+}

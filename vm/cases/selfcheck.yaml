@@ -1,0 +1,52 @@
+{
+ "id": "selfcheck",
+ "item": "fixture_selfcheck",
+ "suite_commit": "auto",
+ "description": "Proves the fixture can FAIL. Expected: exit 1, 6 testcases, exactly 4 failures (the must-fail-* steps). If this ever exits 0 the fixture is broken.",
+ "basis": [
+  "fixture self-test: every must-fail step asserts something that is false by construction"
+ ],
+ "steps": [
+  {
+   "name": "passes-for-real",
+   "basis": "fixture: really prints hello and exits 0",
+   "cmd": "echo hello",
+   "expect_exit": 0,
+   "expect_regex": "^hello$"
+  },
+  {
+   "name": "must-fail-regex-never-appears",
+   "basis": "fixture: asserts a string that cannot be in the output",
+   "cmd": "echo hello",
+   "expect_exit": 0,
+   "expect_regex": "THIS_STRING_NEVER_APPEARS_42"
+  },
+  {
+   "name": "must-fail-wrong-exit-status",
+   "basis": "fixture: false exits 1, the step expects 0",
+   "cmd": "false",
+   "expect_exit": 0
+  },
+  {
+   "name": "must-fail-timeout",
+   "basis": "fixture: sleeps longer than its timeout; a timeout is a failure",
+   "cmd": "sleep 30; echo done",
+   "timeout": 2,
+   "expect_regex": "^done$"
+  },
+  {
+   "name": "must-fail-json-field",
+   "basis": "fixture: the field is applying, the step expects persisting",
+   "cmd": "printf '{\"state\": \"applying\", \"n\": 1}'",
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "state"
+     ],
+     "equals": "persisting"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,112 @@
+{
+ "id": "f6-diagnose",
+ "item": "fixture_diagnose",
+ "suite_commit": "auto",
+ "description": "Why did f6's set steps fail on the first real run? show (cli-shell-api) worked, set (cfgcli -> configd) was refused with an access-denied error. Each probe runs the SAME cfgcli -print set the failing step ran, under one varied condition; the first four steps only record the context. Compare which probes pass and fail. Needs a root shell; changes nothing (cfgcli -print only prints).",
+ "basis": [
+  "handoff/verify/r4-r1c-hermes/f6-real.junit.xml: session-setup and discard passed, `vcli -s $SID -c show` worked, the four set steps failed",
+  "vyatta-cfg/scripts/vcli runs `bash -c` after setup_env; vyatta-cfg/functions/script-wrapper: set -> cmd_helper -> `cfgcli -print`; configd/cmd/cfgcli/main.go dials configd with $VYATTA_CONFIG_SID",
+  "configd/server/conn.go:168 treats uid 0 as superuser, so root being refused is the thing to explain"
+ ],
+ "steps": [
+  {
+   "name": "identity-is-root",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
+   "cmd": "id; grep -E '^(Uid|Gid|Groups):' /proc/$$/status",
+   "expect_exit": 0,
+   "expect_regex": "^uid=0\\(root\\) gid=0\\(root\\)"
+  },
+  {
+   "name": "environment-of-the-console-shell",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
+   "cmd": "env | grep -E '^(HOME|LOGNAME|SHELL|TERM|USER|PATH|VYATTA[A-Z_]*)=' | sort",
+   "expect_exit": 0,
+   "expect_regex": "^HOME="
+  },
+  {
+   "name": "controlling-terminal",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
+   "cmd": "tty; ps -o pid,ppid,tty,stat,args -p $$",
+   "expect_exit": 0,
+   "expect_regex": "^/dev/ttyS0$"
+  },
+  {
+   "name": "services-active",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
+   "cmd": "for i in $(seq 1 60); do systemctl is-active --quiet configd && systemctl is-active --quiet acmd && break; sleep 5; done; echo \"configd=$(systemctl is-active configd) acmd=$(systemctl is-active acmd)\"",
+   "timeout": 330,
+   "expect_regex": "^configd=active acmd=active$"
+  },
+  {
+   "name": "session-setup",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
+   "cmd": "SID=$$; eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "expect_exit": 0
+  },
+  {
+   "name": "session-live-after-session-setup",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "probe-as-the-failing-step-ran-it",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
+   "cmd": "vcli -s $SID -c \"cfgcli -print set system acm ruleset rule 1 path /system/login\"",
+   "expect_exit": 0,
+   "expect_not_regex": [
+    "authorization failed",
+    "is not valid",
+    "Set failed"
+   ]
+  },
+  {
+   "name": "probe-clean-environment",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'; differs from the failing step only in the environment variables",
+   "cmd": "env -i HOME=/root PATH=/usr/sbin:/usr/bin:/sbin:/bin vcli -s $SID -c \"cfgcli -print set system acm ruleset rule 1 path /system/login\"",
+   "expect_exit": 0,
+   "expect_not_regex": [
+    "authorization failed",
+    "is not valid",
+    "Set failed"
+   ]
+  },
+  {
+   "name": "probe-without-a-controlling-terminal",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'; differs only in having no controlling terminal (cloud-init, where R3's f6 worked, has none)",
+   "cmd": "setsid -w vcli -s $SID -c \"cfgcli -print set system acm ruleset rule 1 path /system/login\" < /dev/null",
+   "expect_exit": 0,
+   "expect_not_regex": [
+    "authorization failed",
+    "is not valid",
+    "Set failed"
+   ]
+  },
+  {
+   "name": "probe-with-a-fresh-session-id",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'; differs only in the session id (not the login shell's pid)",
+   "cmd": "SID2=$((200000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID2)\"; cli-shell-api setupSession; vcli -s $SID2 -c \"cfgcli -print set system acm ruleset rule 1 path /system/login\"",
+   "expect_exit": 0,
+   "expect_not_regex": [
+    "authorization failed",
+    "is not valid",
+    "Set failed"
+   ]
+  },
+  {
+   "name": "session-live-after-probe-with-a-fresh-session-id",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
+   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "expect_exit": 0,
+   "expect_regex": "^SID=[1-9][0-9]*$"
+  },
+  {
+   "name": "probe-the-read-path-for-contrast",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'; cli-shell-api showConfig worked in the real run",
+   "cmd": "vcli -s $SID -c \"show system acm\" | head -3",
+   "expect_exit": 0,
+   "expect_regex": "acm"
+  }
+ ]
+}
