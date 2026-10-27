@@ -17,6 +17,13 @@
    "expect_regex": "^configd=active acmd=active$"
   },
   {
+   "name": "root-may-configure",
+   "basis": "design + observed in the image: the shipped ACM is enabled and its only data rule allows group vyattacfg (config.boot.default:2-3,261-267; read-default allow, create/update/delete-default deny in vyatta-system-acm-configd-v1.yang); AcmAuther.AuthorizePath exempts only configd's own uid (config/auth/acm_auther.go:36-73, configd server/conn.go:164); the image's /etc/group has root only in group root. Groups come from getgrouplist(user name) (utils/os/group/lookup_unix.go), so sg/newgrp do not help. Root cannot set anything unless the guest seed adds it to vyattacfg (usermod -aG vyattacfg root) - see the README",
+   "cmd": "id -nG root",
+   "expect_exit": 0,
+   "expect_regex": "(^| )vyattacfg( |$)"
+  },
+  {
    "name": "install-injector",
    "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
    "cmd": "cat > /root/w2watch.py <<'PY'\nimport os, time, sys\nJ = '/var/run/vyatta/configd/commit-state.json'\nR = '/var/run/vyatta/configd/running.config'\nBAK = '/var/run/vyatta/configd/commit-state.json.bak'\ntry:\n    last = os.stat(R).st_mtime_ns\nexcept FileNotFoundError:\n    last = None\ndeadline = time.time() + 300\nwhile time.time() < deadline:\n    try:\n        st = os.stat(R)\n    except FileNotFoundError:\n        time.sleep(0.0005); continue\n    if last is None:\n        last = st.st_mtime_ns\n    elif st.st_mtime_ns != last:\n        try:\n            os.rename(J, BAK)\n            os.mkdir(J)\n            print(\"W2WATCH: CAUGHT runfile write, journal replaced by dir at %s\" % time.strftime(\"%H:%M:%S\"))\n        except Exception as e:\n            print(\"W2WATCH: failed to inject: %r\" % (e,))\n        sys.exit(0)\n    time.sleep(0.0005)\nprint(\"W2WATCH: no runfile write within deadline\")\nPY\npython3 -m py_compile /root/w2watch.py && echo INJECTOR_COMPILES",
@@ -33,15 +40,21 @@
   {
    "name": "session-setup",
    "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
-   "cmd": "SID=$$; eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "cmd": "SID=$$; ( eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession )",
    "expect_exit": 0
   },
   {
    "name": "session-live-after-session-setup",
-   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
-   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists. env VYATTA_CONFIG_SID=$SID, not a VAR=x prefix: with VYATTA_CONFIG_SID readonly bash prints 'readonly variable', still runs the command with the OLD value and returns 0 (reproduced on bash 5.2.37, R4-f6-set-rootcause-20261027.md), which passed a session that was never set up. The output must be exactly SID=<number>: no 'readonly', no 'does not exist'",
+   "cmd": "echo \"SID=$SID\"; env VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
    "expect_exit": 0,
-   "expect_regex": "^SID=[1-9][0-9]*$"
+   "expect_regex": "\\A\\s*SID=[1-9][0-9]*\\s*\\Z",
+   "expect_not_regex": [
+    "readonly",
+    "does not exist",
+    "not a valid",
+    "Must specify"
+   ]
   },
   {
    "name": "discard",
@@ -87,7 +100,7 @@
   {
    "name": "reconcile-clean",
    "basis": "observed: handoff/verify/R3-item12-20261026.md, evidence/item12-20261026/i12-transcript.txt",
-   "cmd": "cfgcli reconcile",
+   "cmd": "env VYATTA_CONFIG_SID=$SID cfgcli reconcile",
    "timeout": 120,
    "expect_exit": 0,
    "expect_regex": "No dirty components to reconcile"

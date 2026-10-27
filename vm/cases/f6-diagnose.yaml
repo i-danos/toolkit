@@ -2,13 +2,27 @@
  "id": "f6-diagnose",
  "item": "fixture_diagnose",
  "suite_commit": "auto",
- "description": "Why did f6's set steps fail on the first real run? show (cli-shell-api) worked, set (cfgcli -> configd) was refused with an access-denied error. Each probe runs the SAME cfgcli -print set the failing step ran, under one varied condition; the first four steps only record the context. Compare which probes pass and fail. Needs a root shell; changes nothing (cfgcli -print only prints).",
+ "description": "Why was set refused on the first real runs while show worked. Answer found in the source (R4-r3): the text 'Configuration path: [] is not valid' is just how an access-denied error with no path is formatted; the refusal is the ACM, which allows writes only to group vyattacfg, and root is not in it. root-is-in-vyattacfg and acm-files record exactly that. The probes then run the SAME cfgcli -print set the failing step ran under one varied condition each; on a guest where root is in vyattacfg they should all pass, on a stock guest they all fail alike (which is the point). Needs a root shell; changes nothing (cfgcli -print only prints).",
  "basis": [
   "handoff/verify/r4-r1c-hermes/f6-real.junit.xml: session-setup and discard passed, `vcli -s $SID -c show` worked, the four set steps failed",
   "vyatta-cfg/scripts/vcli runs `bash -c` after setup_env; vyatta-cfg/functions/script-wrapper: set -> cmd_helper -> `cfgcli -print`; configd/cmd/cfgcli/main.go dials configd with $VYATTA_CONFIG_SID",
   "configd/server/conn.go:168 treats uid 0 as superuser, so root being refused is the thing to explain"
  ],
  "steps": [
+  {
+   "name": "root-is-in-vyattacfg",
+   "basis": "design + observed in the image: the shipped ACM is enabled and its only data rule allows group vyattacfg (config.boot.default:2-3,261-267; read-default allow, create/update/delete-default deny in vyatta-system-acm-configd-v1.yang); AcmAuther.AuthorizePath exempts only configd's own uid (config/auth/acm_auther.go:36-73, configd server/conn.go:164); the image's /etc/group has root only in group root. Groups come from getgrouplist(user name) (utils/os/group/lookup_unix.go), so sg/newgrp do not help. Root cannot set anything unless the guest seed adds it to vyattacfg (usermod -aG vyattacfg root) - see the README",
+   "cmd": "id -nG root; getent group vyattacfg",
+   "expect_exit": 0,
+   "expect_regex": "(^| )vyattacfg( |$)"
+  },
+  {
+   "name": "acm-files",
+   "basis": "design: configd loads the authdb from configruleset.txt at start and again on every change to it; with the file missing or unreadable it starts with an empty, disabled authdb (config/auth/auth.go:201-208,306-310,571-596), which allows everything. The image ships no such file",
+   "cmd": "ls -l --time-style=full-iso /opt/vyatta/etc/configruleset.txt /opt/vyatta/etc/acmd.conf; head -c 300 /opt/vyatta/etc/configruleset.txt",
+   "expect_exit": 0,
+   "expect_regex": "configruleset\\.txt"
+  },
   {
    "name": "identity-is-root",
    "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
@@ -40,15 +54,21 @@
   {
    "name": "session-setup",
    "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
-   "cmd": "SID=$$; eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession",
+   "cmd": "SID=$$; ( eval \"$(cli-shell-api getSessionEnv $SID)\"; cli-shell-api setupSession )",
    "expect_exit": 0
   },
   {
    "name": "session-live-after-session-setup",
-   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
-   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists. env VYATTA_CONFIG_SID=$SID, not a VAR=x prefix: with VYATTA_CONFIG_SID readonly bash prints 'readonly variable', still runs the command with the OLD value and returns 0 (reproduced on bash 5.2.37, R4-f6-set-rootcause-20261027.md), which passed a session that was never set up. The output must be exactly SID=<number>: no 'readonly', no 'does not exist'",
+   "cmd": "echo \"SID=$SID\"; env VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
    "expect_exit": 0,
-   "expect_regex": "^SID=[1-9][0-9]*$"
+   "expect_regex": "\\A\\s*SID=[1-9][0-9]*\\s*\\Z",
+   "expect_not_regex": [
+    "readonly",
+    "does not exist",
+    "not a valid",
+    "Must specify"
+   ]
   },
   {
    "name": "probe-as-the-failing-step-ran-it",
@@ -85,21 +105,30 @@
   },
   {
    "name": "probe-with-a-fresh-session-id",
-   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'; differs only in the session id (not the login shell's pid)",
-   "cmd": "SID2=$((200000 + RANDOM)); eval \"$(cli-shell-api getSessionEnv $SID2)\"; cli-shell-api setupSession; vcli -s $SID2 -c \"cfgcli -print set system acm ruleset rule 1 path /system/login\"",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'; differs only in the session id. The first version evaluated getSessionEnv in the persistent shell, where VYATTA_CONFIG_SID is already readonly, so SID2 was never set up and the step reported 'session 225411 does not exist': an invalid probe. It now creates the session in a subshell, requires inSession to confirm it, and only then runs set",
+   "cmd": "SID2=$((200000 + RANDOM)); ( eval \"$(cli-shell-api getSessionEnv $SID2)\"; cli-shell-api setupSession ) && env VYATTA_CONFIG_SID=$SID2 cli-shell-api inSession && echo \"SID2=$SID2\" && vcli -s $SID2 -c \"cfgcli -print set system acm ruleset rule 1 path /system/login\"",
    "expect_exit": 0,
+   "expect_regex": "^SID2=[1-9][0-9]*$",
    "expect_not_regex": [
     "authorization failed",
     "is not valid",
-    "Set failed"
+    "Set failed",
+    "does not exist",
+    "readonly"
    ]
   },
   {
    "name": "session-live-after-probe-with-a-fresh-session-id",
-   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists; the first real run (R4-r1c) passed them with set then failing",
-   "cmd": "echo \"SID=$SID\"; VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
+   "basis": "design (not yet observed): cli-shell-api inSession exits non-zero unless configd reports the session to exist (vyatta-cfg src/cli_shell_api.cpp:250-255). setupSession and discard print nothing, so on their own they prove no session exists. env VYATTA_CONFIG_SID=$SID, not a VAR=x prefix: with VYATTA_CONFIG_SID readonly bash prints 'readonly variable', still runs the command with the OLD value and returns 0 (reproduced on bash 5.2.37, R4-f6-set-rootcause-20261027.md), which passed a session that was never set up. The output must be exactly SID=<number>: no 'readonly', no 'does not exist'",
+   "cmd": "echo \"SID=$SID\"; env VYATTA_CONFIG_SID=$SID cli-shell-api inSession",
    "expect_exit": 0,
-   "expect_regex": "^SID=[1-9][0-9]*$"
+   "expect_regex": "\\A\\s*SID=[1-9][0-9]*\\s*\\Z",
+   "expect_not_regex": [
+    "readonly",
+    "does not exist",
+    "not a valid",
+    "Must specify"
+   ]
   },
   {
    "name": "probe-the-read-path-for-contrast",
