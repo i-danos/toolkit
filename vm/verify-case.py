@@ -729,7 +729,12 @@ def sha256_file(p):
 
 
 def git(cwd, *args):
-    r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    """Run git, or report it as unavailable. A guest image has no git at all; the
+    caller must then record provenance as unknown rather than crash."""
+    try:
+        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    except (FileNotFoundError, OSError):
+        return 127, ""
     return r.returncode, r.stdout.strip()
 
 
