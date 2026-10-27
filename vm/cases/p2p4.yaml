@@ -426,12 +426,12 @@
   },
   {
    "name": "journal-startup-reconcile-acmd-reconciled-p2",
-   "basis": "measured on ISO 20261027T0908: the startup reconcile logs a line only for components it has to handle ('Not reconciled: net.vyatta.vci.vrrp.v1 (read-back verify_error)' was the only line, and acmd was absent from dirty). acmd counts as reconciled when it is not listed under dirty.",
+   "basis": "measured twice on ISO 20261027T0908: run A logged 'Not reconciled: net.vyatta.vci.vrrp.v1 (read-back verify_error)' with acmd absent; run B logged 'startup reconcile: No dirty components to reconcile'. Both mean acmd is not left dirty; the step fails only if acmd is named as not reconciled.",
    "cmd": "journalctl -u configd --no-pager -o cat --since \"$(cat /tmp/restart2-p2)\" | grep \"startup reconcile\"",
    "timeout": 60,
    "expect_exit": 0,
    "expect_regex": [
-    "\"dirty\":\\{[^}]*\\}"
+    "startup reconcile: (No dirty components to reconcile|Reconciled: [^\\n]*acmd)"
    ],
    "requires": {
     "cmd": "timeout 20 journalctl -u configd --no-pager -n 1 -q -o cat | grep -q .",
@@ -439,7 +439,7 @@
     "timeout": 30
    },
    "expect_not_regex": [
-    "\"net\\.vyatta\\.vci\\.acmd\\.v1\":\\{\"class\""
+    "Not reconciled: [^\\n]*acmd"
    ]
   },
   {
@@ -863,12 +863,12 @@
   },
   {
    "name": "journal-startup-reconcile-acmd-reconciled-p4",
-   "basis": "measured on ISO 20261027T0908: the startup reconcile logs a line only for components it has to handle ('Not reconciled: net.vyatta.vci.vrrp.v1 (read-back verify_error)' was the only line, and acmd was absent from dirty). acmd counts as reconciled when it is not listed under dirty.",
+   "basis": "measured twice on ISO 20261027T0908: run A logged 'Not reconciled: net.vyatta.vci.vrrp.v1 (read-back verify_error)' with acmd absent; run B logged 'startup reconcile: No dirty components to reconcile'. Both mean acmd is not left dirty; the step fails only if acmd is named as not reconciled.",
    "cmd": "journalctl -u configd --no-pager -o cat --since \"$(cat /tmp/restart2-p4)\" | grep \"startup reconcile\"",
    "timeout": 60,
    "expect_exit": 0,
    "expect_regex": [
-    "\"dirty\":\\{[^}]*\\}"
+    "startup reconcile: (No dirty components to reconcile|Reconciled: [^\\n]*acmd)"
    ],
    "requires": {
     "cmd": "timeout 20 journalctl -u configd --no-pager -n 1 -q -o cat | grep -q .",
@@ -876,7 +876,7 @@
     "timeout": 30
    },
    "expect_not_regex": [
-    "\"net\\.vyatta\\.vci\\.acmd\\.v1\":\\{\"class\""
+    "Not reconciled: [^\\n]*acmd"
    ]
   },
   {
