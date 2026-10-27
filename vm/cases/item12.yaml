@@ -17,11 +17,14 @@
    "expect_regex": "^configd=active acmd=active$"
   },
   {
-   "name": "root-may-configure",
-   "basis": "design + observed in the image: the shipped ACM is enabled and its only data rule allows group vyattacfg (config.boot.default:2-3,261-267; read-default allow, create/update/delete-default deny in vyatta-system-acm-configd-v1.yang); AcmAuther.AuthorizePath exempts only configd's own uid (config/auth/acm_auther.go:36-73, configd server/conn.go:164); the image's /etc/group has root only in group root. Groups come from getgrouplist(user name) (utils/os/group/lookup_unix.go), so sg/newgrp do not help. Root cannot set anything unless the guest seed adds it to vyattacfg (usermod -aG vyattacfg root) - see the README",
-   "cmd": "id -nG root",
+   "name": "execution-context",
+   "basis": "design + orchestrator evidence (R4-r6 brief and A/B run, not in the recorded transcripts) - the P2/P4 captures and the orchestrator's A/B run executed in cloud-init's runcmd as root, where set was accepted without any group change (SET_BEFORE_RC=0). A set from the serial-console login was refused in an earlier run; why the two contexts differ is NOT explained. The case therefore pins the context it was written for: root, run from cloud-final.service",
+   "cmd": "echo \"uid=$(id -u)\"; cat /proc/$$/cgroup",
    "expect_exit": 0,
-   "expect_regex": "(^| )vyattacfg( |$)"
+   "expect_regex": [
+    "^uid=0$",
+    "cloud-final\\.service"
+   ]
   },
   {
    "name": "install-injector",

@@ -242,85 +242,106 @@ Exit status: 0 every step passed, 1 a step failed, 2 invalid case or invocation.
 The first testcase of every run is `console-sync`, a nonce round trip, so a dead
 console cannot yield an empty pass.
 
-**Running against a guest.** The guest must be started from a NoCloud seed
-(`-drive file=seed.iso,media=cdrom` with volume label `cidata`) that creates the
-account the fixture logs in with: the live image has no account that works for
-this otherwise (`tmpuser` runs in a restricted CLI sandbox). The serial port must be
-reachable over TCP (`qemu ... -serial tcp:127.0.0.1:4460,server,nowait`). The
-cases need root (`systemctl`, `/var/run/vyatta/configd`), so the seed must give
-root a password or an autologin console. Booting under TCG takes minutes; the fixture
-does not boot anything, the caller guarantees the guest is up. The login
+**Three ways to run a case — and why acceptance runs only in the guest's cloud-init.**
+
+| how | where the runner runs | use it for |
+|---|---|---|
+| `--exec local` on the host | host bash | `selfcheck`, `selfcheck-pass` and the unit tests only. The guest cases need `systemctl`, configd and `/var/run/vyatta`; on a host they measure nothing |
+| `--console HOST:PORT --user root` | host; commands typed into the serial login shell | **diagnosis**: `f6-diagnose`, looking around, anything that does not pin an execution context |
+| `--exec local` **inside the guest**, started by cloud-init (`vm/make-guest-seed.sh`) | guest, as root, from `cloud-final.service` | **acceptance** of `f6`, `item12`, `p2p4` |
+
+Acceptance can only be the third, because the cases pin their execution context: the
+`execution-context` step requires uid 0 and a cgroup containing `cloud-final.service`. It is
+not relaxed to "uid 0" on purpose: every `set` that has been accepted so far was run from
+cloud-init (`SET_BEFORE_RC=0`, `handoff/verify/R4-set-context-ab-20261027.md`), the one from the
+serial login was refused and the reason is not established, so the context is a variable that
+must stay fixed, not hidden. A serial login shell runs in `serial-getty@ttyS0.service`.
+**Running `f6` or `p2p4` with `--console` therefore fails at `execution-context`, before the
+first `set`. That is the design, not a bug.**
+
+`vm/make-guest-seed.sh CASE.yaml OUT.iso [--var K=V]` builds the seed. It embeds the unmodified
+`verify-case.py`, `console.py` and the case into `/vm`, and cloud-init's `runcmd` runs the runner
+with `--exec local`. It validates the case first (an invalid case builds no seed), refuses to
+overwrite, and prints the sha256 of runner, console and case plus the decoded manifest of what
+the guest will write. In the guest, the serial port carries `VC-SEED-SHA256 runner=… console=…
+case=…` (what actually ran), the runner's own PASS/FAIL/SKIP lines, `VC-SEED-RC=<n>` and the
+JUnit as gzip+base64 between `JUNIT_BEGIN` and `JUNIT_END` with its sha256 and size. Extract with
+the one-liner in the script header and compare the hash; no evidence document is written in the
+guest (no ISO hash, no repository there). The seed does not depend on the ISO under test. The
+serial port is then only a one-way log, so QEMU's `-serial` can go to a file.
+
+**Running against a guest with `--console`** (diagnosis). The serial port must be reachable over
+TCP (`qemu ... -serial tcp:127.0.0.1:4460,server,nowait`). The cases need root (`systemctl`,
+`/var/run/vyatta/configd`). The live image does ship an official account (`tmpuser`, level
+admin, from `config.boot.default`; `handoff/verify/CORRECTION-live-account-20261027.md`), but
+its shell is a restricted `vbash-sandbox` (no `sudo`, no `systemctl`), so root-level cases still
+need a root shell: a root login on the console, with a password set as below. Booting under TCG
+takes minutes; the fixture boots nothing, the caller guarantees the guest is up. The login
 handshake is `console.py`'s own.
 
-**Giving root a password: do not use cloud-init's `chpasswd` or `users:`.** On this
-image the password change is wired to configd (`/opt/vyatta/sbin/vyatta-update-password`
-calls `configd.Client()` from PAM), and cloud-init changes passwords in its `init`
-stage, about 70 s into a TCG boot, before configd is running. The result is
-`chpasswd: (user root) pam_chauthtok() failed`, the `users-groups` module fails, and the
-first login is `Login incorrect`
-(`handoff/verify/r4-r1c-hermes/boot-chpasswd-fail.log`; the fixture reported that as a
-failed run with a failing JUnit, not a pass). What worked (same directory,
-`boot-usermod-hash.log`: no password failure, root logged in on the serial console) is
-setting the hash directly and bypassing PAM, from `bootcmd`:
+**Giving root a password: do not use cloud-init's `chpasswd` or `users:`.** On this image the
+password change is wired to configd (`vyatta-update-password` calls `configd.Client()` from PAM)
+and cloud-init changes passwords in its `init` stage, before configd runs: `chpasswd: (user root)
+pam_chauthtok() failed`, then `Login incorrect`
+(`handoff/verify/r4-r1c-hermes/boot-chpasswd-fail.log`). What worked (`boot-usermod-hash.log`) is
+setting the hash directly, bypassing PAM, from `bootcmd`:
 
 ```yaml
 #cloud-config
 hostname: danos-ci-test
 bootcmd:
   - [ sh, -c, "usermod -p '<output of: openssl passwd -6 yourpassword>' root" ]
-  - [ sh, -c, "usermod -aG vyattacfg root" ]
 ```
 
-(`$` in the hash needs the quoting shown.) Setting the password from `runcmd` after
-`configd` is active would also avoid the race but has not been tried. The seed file
-used for that boot is not kept in the repository. The second line is explained next.
+(`$` in the hash needs the quoting shown.) The seed file used for that boot is not kept here.
 
-**Root must be allowed to write: put it in `vyattacfg`.** On the first real runs `show`
-worked and every `set` was refused with
+**Authorization is not the premise of the cases any more.** An earlier version of this section
+(and of the R4-r3 report) said root cannot `set` unless it is in `vyattacfg` and made a
+`root-may-configure` step check that. That is withdrawn as a general statement: the
+orchestrator observed `set` accepted by root from cloud-init's `runcmd` with no group change
+(`SET_BEFORE_RC=0`). What is established:
 
-```
-Configuration path: [] is not valid
-Access to the requested protocol operation or data model is denied because authorization failed.
-Set failed
-```
+- The text `Configuration path: [] is not valid ... authorization failed ... Set failed` is how
+  `formatMultilineSetWarnings` prints any access-denied error that has no path
+  (`configd/common/cli_format.go:53-54,210-233`); the request path was right.
+- The ACM data (`config/auth/acm_auther.go:36-73`; shipped rule allows group `vyattacfg`;
+  create/update/delete default deny) does explain a refusal for a caller that is not in
+  `vyattacfg`, and a `set` from the serial-console login **was** refused, then accepted after
+  joining the group and refused again after leaving it (`r43.out.raw`).
+- **Why the cloud-init context is accepted without the group is not explained.** The cases do
+  not depend on an answer: they pin the context they are written for and fail, with the
+  server's own text, if `set` is refused.
 
-The first line is not about the path. It is how `formatMultilineSetWarnings` prints any
-access-denied error that carries no path (`configd/common/cli_format.go:53-54,210-233`:
-`errpath("")` is `[]`); the client sent the right path (`cfgcli/runfns.go:618-633`;
-`VYATTA_EDIT_LEVEL=/` adds nothing, `pathutil.Makepath` drops empty elements). What refused
-the set is the access control module (ACM). The image ships it enabled with a single
-data rule, `rule 9999 { action allow; group vyattacfg; operation "*"; path "*" }`
-(`/opt/vyatta/etc/config.boot.default`), and `read-default` allow, `create`/`update`/
-`delete-default` deny (`vyatta-system-acm-configd-v1.yang`). `AcmAuther.AuthorizePath`
-(`config/auth/acm_auther.go:36-73`) lets through only the configd service's own uid
-(`configd/server/conn.go:164`) or a matching rule; root is not special, and the groups are
-those of `getgrouplist(<user name>)` (`utils/os/group/lookup_unix.go`), so they come
-from `/etc/group` and not from the calling process: `sg vyattacfg` changes nothing. In the
-image `/etc/group` has root only in group `root`. So as root `show` works and `set` is
-refused, by design. Three different checks return this same text
-(`server/dispatcher.go:666-669`, `session/session_internal.go:241-247`,
-`session/sessionmgr.go:64`), but only the data check can apply to root here.
+`cases/f6-diagnose.yaml` runs the same `cfgcli -print set` under one varied condition at a time
+(as it was, a clean environment, no controlling terminal, a fresh session) and records the ACM
+files; a difference between the probes is the finding.
 
-The cases that configure as root therefore start with `root-may-configure`
-(`id -nG root` must list `vyattacfg`), which makes a seed without the group fail at once
-with the reason, instead of four confusing `set` failures. Adding root to `vyattacfg` makes
-the guest more permissive than a stock one; that is the price of driving the CLI from the
-root console, and it is also why the result is evidence about the product's commit path,
-not about who may configure.
+**Session lifecycle.** A configd session is held in memory: after `systemctl restart configd`
+every earlier session id is gone (`session N does not exist`). The cases therefore:
 
-One thing this does not explain, and the reason `handoff/tasks/R4-r3-probe.sh` exists:
-`set` as root succeeded from cloud-init on the same image, early in boot. The ACM
-only enforces once configd has loaded an enabled authdb (`config/auth/auth.go:201-208,
-306-310,571-596`: a missing `configruleset.txt` means an empty, disabled authdb that allows
-everything, and the file is reloaded when it changes). The image ships no such file, so
-early `set`s are not denied. Whether that is the whole difference is for the probe to say:
-it records the file, the process start times and the group membership, and runs the same
-`set` as root before joining `vyattacfg`, after joining it, and after leaving it.
+1. create the session (new SID, `getSessionEnv`, `setupSession`) and assert
+   `cli-shell-api inSession` returns 0 right after (`session-live-after-*`);
+2. rebuild the session after **every** configd restart or kill and assert it again;
+3. assert the current session is usable (`session-usable-before-*`) before any step that
+   uses it (`set`, `commit`, `reconcile`) when it was not just asserted. A stale session is
+   therefore a FAIL at that step, not a confusing one later. (Note f6's first recorded failures
+   printed `authorization failed`, not `session does not exist`, so a stale session does not by
+   itself explain them.)
 
-`cases/f6-diagnose.yaml` runs the same `cfgcli -print set` that failed under one varied
-condition at a time (as it was, a clean environment, no controlling terminal, a fresh
-session) and records group membership and the ACM files. On a stock guest every probe
-fails alike; with root in `vyattacfg` they should all pass.
+**Skipped steps.** A step may declare `requires: {cmd, reason, timeout}`. A probe that fails
+means the thing cannot be measured here (e.g. journald is unusable): the step is recorded
+**SKIPPED** (JUnit `<skipped>`), never PASS. The other steps are still judged. The run exits 3
+if nothing failed but something was skipped (1 if anything failed), and the evidence status is
+FAIL, because `mk-release.py` derives PASS only when every case passed. A probe that cannot run
+because the console is lost is a failure.
+
+**Suite config.** `verify-case.py cases/f6.yaml cases/item12.yaml cases/p2p4.yaml
+--validate --emit-suite-config suite.json` writes `danos-suite-config-v1` (item ->
+`min_cases`, `required_cases`) for `mk-release.py --suite-config`. Keep it out of the evidence
+directory.
+
+**Runner semantics.** Each step's stdout and stderr are merged (`eval ... 2>&1`), regexes are
+compiled multi-line, so `\A...\Z` anchor the whole output.
 
 **The session and `VYATTA_CONFIG_SID`.** `eval "$(cli-shell-api getSessionEnv $SID)"`
 exports `VYATTA_CONFIG_SID` and makes it readonly. Done in the persistent console shell, the
@@ -340,11 +361,10 @@ requires the output to be exactly `SID=<number>`, with no `readonly` and no `doe
 exist`, as well as exit status 0. Unit tests reproduce the false pass of the old form (in a
 non-interactive and in an interactive bash) and show the new form fails the same situation.
 
-Run the probe, then the diagnostic case, then `f6`:
+Run the diagnostic case, then `f6`:
 
 ```sh
 T=build-iso/danos-sources/toolkit/vm
-bash handoff/tasks/R4-r3-probe.sh        # on the guest console; changes root's groups and restores them
 $T/verify-case.py $T/cases/f6-diagnose.yaml --console 127.0.0.1:4475 --user root \
     --password '<from the seed>' --junit out/f6-diagnose.junit.xml --transcript out/f6-diagnose.raw
 $T/verify-case.py $T/cases/f6.yaml --console 127.0.0.1:4475 --user root \
