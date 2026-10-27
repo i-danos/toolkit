@@ -444,7 +444,7 @@ class P2AndP4AssertDifferentThings(unittest.TestCase):
     two apart (they are the same), so the case reads acmd's own state. Prove the two steps
     discriminate by running them against fake acmd files."""
 
-    P2, P4 = "acmd-has-not-received-the-set-p2", "acmd-has-applied-the-set-p4"
+    P2, P4 = "snap-acmd-has-not-received-the-set-p2", "snap-acmd-applied-exactly-the-rule-p4"
 
     @classmethod
     def raw(cls):
@@ -453,61 +453,53 @@ class P2AndP4AssertDifferentThings(unittest.TestCase):
     def step(self, name):
         return [s for s in self.raw()["steps"] if s["name"] == name][0]
 
-    def verdict(self, step_name, d, files, rule_in_conf, ref_age):
-        """Run one real step of p2p4.yaml in a directory laid out like the guest."""
+    def verdict(self, step_name, d, ages, rule_in_conf):
+        """Run one real step of p2p4.yaml against a snapshot directory laid out as seam-snap.sh leaves it.
+        ages: {file: 'NEWER'|'OLD'}; rule_in_conf: tagnode present in the copied rules (0 = none)."""
         d = Path(d)
-        ref = d / "ref"
-        ref.write_text("")
-        os.utime(ref, (1000, 1000))
-        paths = {"acmd_conf": d / "acmd.conf", "configruleset": d / "configruleset.txt",
-                 "policy_file": d / "vci-local.conf"}
-        for key, path in paths.items():
-            if files.get(key, True):                      # file exists
-                path.write_text('{"x":1}' if key != "acmd_conf" or not rule_in_conf else
-                                '{"rule":[{"tagnode":%d,"path":"/system/login"}]}' % rule_in_conf)
-                t = 2000 if ref_age.get(key) == "newer" else 500
-                os.utime(path, (t, t))
+        seam = "P2" if step_name.endswith("p2") else "P4"
+        snap = d / ("snap-" + seam)
+        snap.mkdir()
+        paths = {"acmd_conf": "/opt/vyatta/etc/acmd.conf", "configruleset": "/opt/vyatta/etc/configruleset.txt",
+                 "policy_file": "/usr/share/dbus-1/vci-local.conf"}
+        (snap / "ages").write_text("".join(f"{ages.get(k, 'OLD')} {v}\n" for k, v in paths.items()))
+        (snap / "rules").write_text('{"tagnode": %d, "path": "/system/login", "operation": "read"}\n' % rule_in_conf if rule_in_conf else "")
         st = self.step(step_name)
         case = {"id": "disc", "item": "t_item", "suite_commit": "0" * 40, "basis": "unit test",
-                "vars": {**{k: str(v) for k, v in paths.items()}, "ref_p2": str(ref), "ref_p4": str(ref)},
-                "steps": [st]}
+                "vars": {**paths, "snap_root": str(d)}, "steps": [st]}
         cp = d / "disc.json"
         cp.write_text(json.dumps(case))
         rc, out, err = run_tool(str(cp), "--exec", "local", "--junit", f"{d}/j.xml")
         self.assertIn(rc, (0, 1), out + err)
         return rc == 0
 
+    ALL_OLD = {"acmd_conf": "OLD", "configruleset": "OLD", "policy_file": "OLD"}
+    ALL_NEW = {"acmd_conf": "NEWER", "configruleset": "NEWER", "policy_file": "NEWER"}
+
     def test_p2_like_state_passes_the_p2_step_and_fails_the_p4_step(self):
         with tempfile.TemporaryDirectory() as d:
-            age = {"acmd_conf": "older", "configruleset": "older", "policy_file": "older"}
-            self.assertTrue(self.verdict(self.P2, d, {}, 0, age))
+            self.assertTrue(self.verdict(self.P2, d, self.ALL_OLD, 0))
         with tempfile.TemporaryDirectory() as d:
-            self.assertFalse(self.verdict(self.P4, d, {}, 0, age))
+            self.assertFalse(self.verdict(self.P4, d, self.ALL_OLD, 0))
 
     def test_p4_like_state_passes_the_p4_step_and_fails_the_p2_step(self):
-        age = {"acmd_conf": "newer", "configruleset": "newer", "policy_file": "newer"}
         with tempfile.TemporaryDirectory() as d:
-            self.assertTrue(self.verdict(self.P4, d, {}, 5, age))
+            self.assertTrue(self.verdict(self.P4, d, self.ALL_NEW, 5))
         with tempfile.TemporaryDirectory() as d:
-            self.assertFalse(self.verdict(self.P2, d, {}, 5, age))
+            self.assertFalse(self.verdict(self.P2, d, self.ALL_NEW, 5))
 
     def test_a_half_finished_set_is_not_p4(self):
-        # acmd.conf was rewritten and holds the rule, but the later files were not: acmd stopped
-        # inside Set(), which is P3, not P4
-        age = {"acmd_conf": "newer", "configruleset": "older", "policy_file": "older"}
+        # acmd.conf was rewritten and holds the rule, but the later files were not: acmd stopped inside Set(), P3 not P4
         with tempfile.TemporaryDirectory() as d:
-            self.assertFalse(self.verdict(self.P4, d, {}, 5, age))
+            self.assertFalse(self.verdict(self.P4, d, {"acmd_conf": "NEWER", "configruleset": "OLD", "policy_file": "OLD"}, 5))
 
     def test_the_rule_must_be_in_the_config_not_just_the_files_touched(self):
-        age = {"acmd_conf": "newer", "configruleset": "newer", "policy_file": "newer"}
         with tempfile.TemporaryDirectory() as d:
-            self.assertFalse(self.verdict(self.P4, d, {}, 0, age))          # touched, but no rule 5
+            self.assertFalse(self.verdict(self.P4, d, self.ALL_NEW, 0))          # touched, but no rule 5
 
-    def test_a_fresh_guest_without_the_files_is_consistent_with_p2_only(self):
+    def test_a_wrong_rule_number_is_not_the_rule(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertTrue(self.verdict(self.P2, d, {"acmd_conf": False, "configruleset": False, "policy_file": False}, 0, {}))
-        with tempfile.TemporaryDirectory() as d:
-            self.assertFalse(self.verdict(self.P4, d, {"acmd_conf": False, "configruleset": False, "policy_file": False}, 0, {}))
+            self.assertFalse(self.verdict(self.P4, d, self.ALL_NEW, 7))
 
     def test_the_two_halves_do_not_share_their_distinguishing_assertions(self):
         a, b = self.step(self.P2), self.step(self.P4)
@@ -516,14 +508,40 @@ class P2AndP4AssertDifferentThings(unittest.TestCase):
         self.assertIn("pause-p2", self.step("arm-p2")["cmd"])
         self.assertIn("pause-p4", self.step("arm-p4")["cmd"])
         self.assertNotIn("p4", self.step("arm-p2")["cmd"].replace("pause-p2", ""))
-        self.assertTrue(any(s["name"] == "acmd-is-idle-not-stopped-p4" for s in self.raw()["steps"]))
-        self.assertTrue(any(s["name"] == "acmd-converged-to-running-after-reconcile-p4" for s in self.raw()["steps"]))
 
     def test_every_step_of_the_p2_and_p4_halves_says_what_it_rests_on(self):
         for s in self.raw()["steps"]:
             self.assertTrue(s["basis"].strip(), s["name"])
-            if s["name"].startswith(("acmd-has-", "acmd-is-", "acmd-converged", "acmd-baseline")):
-                self.assertTrue(s["basis"].startswith(("design", "fixture")), s["name"])
+
+    # ---- the seam marker file: field match / mismatch (call_err is what tells P2 from P4)
+    def marker_verdict(self, step_name, marker_text):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            seam = "P2" if step_name.endswith("p2") else "P4"
+            snap = d / ("snap-" + seam)
+            snap.mkdir()
+            (snap / "marker").write_text(marker_text)
+            case = {"id": "disc", "item": "t_item", "suite_commit": "0" * 40, "basis": "unit test",
+                    "vars": {"snap_root": str(d), "state_dir": str(d), "comp": "net.vyatta.vci.acmd.v1"},
+                    "steps": [{**self.step(step_name), "cmd": "PID=4242; " + self.step(step_name)["cmd"]}]}
+            cp = d / "m.json"
+            cp.write_text(json.dumps(case))
+            rc, out, err = run_tool(str(cp), "--exec", "local", "--junit", f"{d}/j.xml")
+            self.assertIn(rc, (0, 1), out + err)
+            return rc == 0
+
+    MARK = ("seam=%s\ncomponent=net.vyatta.vci.acmd.v1\nkind=forward\nseq=3\npid=4242\ncall_err=%s\nat=2026-10-27T09:12:44Z\n")
+
+    def test_marker_fields_match(self):
+        self.assertTrue(self.marker_verdict("snap-seam-marker-p2", self.MARK % ("P2", "not_sent")))
+        self.assertTrue(self.marker_verdict("snap-seam-marker-p4", self.MARK % ("P4", "<nil>")))
+
+    def test_marker_fields_mismatch(self):
+        self.assertFalse(self.marker_verdict("snap-seam-marker-p2", self.MARK % ("P2", "<nil>")))      # P4's reply at P2
+        self.assertFalse(self.marker_verdict("snap-seam-marker-p4", self.MARK % ("P4", "not_sent")))
+        self.assertFalse(self.marker_verdict("snap-seam-marker-p4", self.MARK % ("P2", "<nil>")))      # wrong seam
+        self.assertFalse(self.marker_verdict("snap-seam-marker-p2", (self.MARK % ("P2", "not_sent")).replace("pid=4242", "pid=999")))
+        self.assertFalse(self.marker_verdict("snap-seam-marker-p2", (self.MARK % ("P2", "not_sent")).replace("acmd.v1", "frr.v1")))
 
 
 class SessionCreationIsAsserted(unittest.TestCase):
@@ -639,17 +657,55 @@ class SessionCreationIsAsserted(unittest.TestCase):
                     self.assertIn("env VYATTA_CONFIG_SID=$SID cfgcli reconcile", st["cmd"], f"{f.name}: {st['name']}")
         self.assertGreater(n, 3)
 
-    def test_cases_that_configure_as_root_first_check_root_may(self):
+    def test_the_acm_group_premise_is_gone(self):
+        for f in sorted(CASES.glob("*.yaml")):
+            text = f.read_text()
+            self.assertNotIn("root-may-configure", text, f.name)
+            self.assertNotIn("usermod", text, f.name)
+
+    def test_cases_that_configure_pin_the_execution_context(self):
         for name in ("f6", "item12", "p2p4"):
-            steps = vc.load_case(CASES / f"{name}.yaml")["steps"]
-            names = [s["name"] for s in steps]
-            self.assertIn("root-may-configure", names, name)
-            self.assertLess(names.index("root-may-configure"), min(i for i, s in enumerate(steps) if "vcli" in s["cmd"]), name)
-            st = steps[names.index("root-may-configure")]
-            self.assertTrue(st["basis"].startswith("design"), "the reason is derived from code and the image, not from a run")
-            self.assertTrue(st["expect_regex"][0].search("root vyattacfg"))
-            self.assertFalse(st["expect_regex"][0].search("root vyattacfg2 sudo"))
-            self.assertFalse(st["expect_regex"][0].search("root"))
+            names = [s["name"] for s in vc.load_case(CASES / f"{name}.yaml")["steps"]]
+            self.assertIn("execution-context", names, name)
+
+    def test_every_session_user_is_preceded_by_a_live_assertion_since_the_last_restart(self):
+        """Stale session -> the guard step is what fails. Structural proof over all shipped cases."""
+        n = 0
+        for f in sorted(CASES.glob("*.yaml")):
+            valid = False
+            for st in vc.load_case(f)["steps"]:
+                c = st["cmd"]
+                if ("vcli" in c or "cfgcli" in c) and ("$SID" in c) and "setupSession" not in c and "inSession" not in c:
+                    n += 1
+                    self.assertTrue(valid, f"{f.name}: {st['name']} uses $SID with no live-session assertion since the last configd restart")
+                if "inSession" in c:
+                    valid = True
+                if "restart configd" in c or "kill -9" in c or "seam-snap.sh" in c:
+                    valid = False
+        self.assertGreater(n, 10)
+
+    def test_stale_session_is_a_fail(self):
+        """Run the real guard step against a fake cli-shell-api that, like a restarted configd, does not know the session."""
+        guard = [s for s in vc.load_case(CASES / "f6.yaml")["steps"] if s["name"].startswith("session-live-after-")][0]
+        for known, want in ((False, 1), (True, 0)):
+            with tempfile.TemporaryDirectory() as d:
+                d = Path(d)
+                api = d / "cli-shell-api"
+                api.write_text("#!/bin/bash\n" + ("exit 0\n" if known else 'echo "session $VYATTA_CONFIG_SID does not exist" >&2; exit 1\n'))
+                api.chmod(0o755)
+                case = {"id": "stale", "item": "t_item", "suite_commit": "0" * 40, "basis": "unit test",
+                        "steps": [{"name": "setsid", "cmd": "SID=123456", "basis": "t", "expect_exit": 0},
+                                  {**{k: guard[k] for k in ("name", "cmd", "basis")},
+                                   "expect_exit": 0, "expect_regex": guard["expect_regex"][0].pattern,
+                                   "expect_not_regex": [r.pattern for r in guard["expect_not_regex"]]}]}
+                cp = d / "c.json"
+                cp.write_text(json.dumps(case))
+                env = {**os.environ, "PATH": f"{d}:{os.environ['PATH']}"}
+                r = subprocess.run([sys.executable, str(TOOL), str(cp), "--exec", "local", "--junit", f"{d}/j.xml"],
+                                   capture_output=True, text=True, env=env)
+                self.assertEqual(r.returncode, want, r.stdout + r.stderr)
+                if not known:
+                    self.assertIn("FAIL  stale.session-live-after", r.stdout)
 
     def test_the_fresh_session_probe_proves_the_session_before_it_sets(self):
         st = [s for s in json.load(open(CASES / "f6-diagnose.yaml"))["steps"] if s["name"] == "probe-with-a-fresh-session-id"][0]
@@ -675,6 +731,295 @@ class SessionCreationIsAsserted(unittest.TestCase):
         for s in probes:
             self.assertIn("cfgcli -print set system acm ruleset rule 1 path /system/login", s["cmd"], s["name"])
             self.assertTrue(any("authorization failed" in r.pattern for r in s["expect_not_regex"]), s["name"])
+
+
+class SkipAndSuiteConfig(unittest.TestCase):
+    """A step whose precondition does not hold is SKIPPED: reported as skipped, exit 3, never a pass."""
+
+    def run_case(self, steps, d):
+        case = {"id": "sk", "item": "t_item", "suite_commit": "0" * 40, "basis": "unit test", "steps": steps}
+        cp = Path(d) / "sk.json"
+        cp.write_text(json.dumps(case))
+        return run_tool(str(cp), "--exec", "local", "--junit", f"{d}/j.xml", "--evidence", f"{d}/e.json", "--iso-sha256", "0" * 64, "--allow-dirty")
+
+    JOURNALD = {"cmd": "journalctl -u configd -n 1 -q | grep -q .", "reason": "journald is not usable"}
+
+    def steps(self, probe_cmd):
+        return [{"name": "before", "cmd": "echo a", "basis": "t", "expect_exit": 0, "expect_regex": "^a$"},
+                {"name": "needs-journald", "cmd": "echo 'startup reconcile: Reconciled: x'", "basis": "t", "expect_exit": 0,
+                 "expect_regex": "startup reconcile", "requires": {**self.JOURNALD, "cmd": probe_cmd}},
+                {"name": "after", "cmd": "echo b", "basis": "t", "expect_exit": 0, "expect_regex": "^b$"}]
+
+    def test_journald_missing_is_skip_not_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, err = self.run_case(self.steps("false"), d)
+            self.assertEqual(rc, 3, out + err)
+            self.assertIn("SKIP  sk.needs-journald", out)
+            self.assertIn("PASS  sk.after", out)                     # the other steps are still judged
+            self.assertIn("1 skipped", out)
+            suite = ET.parse(f"{d}/j.xml").getroot()
+            self.assertEqual(suite.get("skipped"), "1")
+            self.assertEqual(suite.get("failures"), "0")
+            tc = [t for t in suite.iter("testcase") if t.get("name") == "needs-journald"][0]
+            self.assertIsNotNone(tc.find("skipped"))
+            self.assertIsNone(tc.find("failure"))
+
+    def test_a_skipped_step_never_makes_the_evidence_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.run_case(self.steps("false"), d)
+            ev = json.load(open(f"{d}/e.json"))["records"][0]
+            self.assertEqual(ev["status"], "FAIL")
+            self.assertEqual(ev["cases"]["skipped"], 1)
+            self.assertLess(ev["cases"]["passed"], ev["cases"]["total"])
+
+    def test_precondition_met_runs_and_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, err = self.run_case(self.steps("true"), d)
+            self.assertEqual(rc, 0, out + err)
+            self.assertIn("PASS  sk.needs-journald", out)
+            self.assertEqual(ET.parse(f"{d}/j.xml").getroot().get("skipped"), "0")
+
+    def test_a_step_that_runs_still_fails_when_its_assertion_is_false(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = self.steps("true")
+            st[1]["expect_regex"] = "THIS_NEVER_APPEARS"
+            rc, out, err = self.run_case(st, d)
+            self.assertEqual(rc, 1, out + err)
+
+    def test_a_failure_wins_over_a_skip_in_the_exit_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = self.steps("false")
+            st[2]["expect_regex"] = "NEVER"
+            rc, out, err = self.run_case(st, d)
+            self.assertEqual(rc, 1, out + err)
+
+    def test_requires_is_validated(self):
+        with tempfile.TemporaryDirectory() as d:
+            for bad in ({"cmd": "true"}, {"reason": "x"}, {"cmd": "true", "reason": "x", "bogus": 1}, "true"):
+                st = self.steps("true")
+                st[1]["requires"] = bad
+                rc, out, err = self.run_case(st, d)
+                self.assertEqual(rc, 2, (bad, out, err))
+
+    def test_the_shipped_journald_steps_skip_when_journald_is_missing(self):
+        steps = [s for s in vc.load_case(CASES / "p2p4.yaml")["steps"] if "journalctl" in s["cmd"]]
+        self.assertGreaterEqual(len(steps), 4)
+        for s in steps:
+            self.assertTrue(s["requires"] and "journalctl" in s["requires"]["cmd"], s["name"])
+            self.assertTrue(s["expect_regex"], s["name"])               # an assertion, not just a probe
+
+    def test_suite_config_structure_and_mk_release_accepts_it(self):
+        names = ("f6.yaml", "item12.yaml", "p2p4.yaml")
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "suite.json"
+            rc, o, e = run_tool(*[str(CASES / f) for f in names], "--emit-suite-config", str(out), "--validate")
+            self.assertEqual(rc, 0, o + e)
+            doc = json.loads(out.read_text())
+            self.assertEqual(doc["format"], "danos-suite-config-v1")
+            # the REAL loader, not a look at its source
+            items, digest, errors = mk.load_suite_config(out)
+            self.assertEqual(errors, [])
+            self.assertTrue(digest)
+        cases = {c["item"]: c for c in (vc.load_case(CASES / f) for f in names)}
+        self.assertEqual(sorted(items), sorted(cases))
+        for item, case in cases.items():
+            expected = [f"{case['id']}.console-sync"] + [f"{case['id']}.{s['name']}" for s in case["steps"]]
+            ent = items[item]
+            self.assertEqual(list(ent["required_cases"]), expected, item)
+            self.assertEqual(ent["min_cases"], len(case["steps"]) + 1, item)
+            self.assertEqual(ent["min_cases"], len(ent["required_cases"]), item)
+
+    def test_a_suite_config_out_of_step_with_its_case_is_caught(self):
+        # the regression the test above guards: a case gains a step, the suite config is not regenerated
+        case = vc.load_case(CASES / "f6.yaml")
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "suite.json"
+            vc.emit_suite_config([case], str(out))
+            doc = json.loads(out.read_text())
+            ent = doc["items"][case["item"]]
+            ent["required_cases"].pop()
+            ent["min_cases"] -= 1
+            out.write_text(json.dumps(doc))
+            items, _, errors = mk.load_suite_config(out)
+            self.assertEqual(errors, [])                       # mk-release alone cannot see it ...
+            self.assertNotEqual(items[case["item"]]["min_cases"], len(case["steps"]) + 1)   # ... the comparison above does
+
+
+class DiagnoseTtyAssertion(unittest.TestCase):
+    def step(self, name):
+        return [s for s in vc.load_case(CASES / "f6-diagnose.yaml")["steps"] if s["name"] == name][0]
+
+    def verdict(self, fake_tty_output, name="controlling-terminal"):
+        st = self.step(name)
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            tty = d / "tty"
+            tty.write_text("#!/bin/sh\n" + fake_tty_output)
+            tty.chmod(0o755)
+            case = {"id": "t", "item": "t_item", "suite_commit": "0" * 40, "basis": "unit test",
+                    "steps": [{k: st[k] for k in ("name", "cmd", "basis")} | {
+                        "expect_exit": 0, "expect_regex": [r.pattern for r in st["expect_regex"]]}]}
+            cp = d / "c.json"
+            cp.write_text(json.dumps(case))
+            r = subprocess.run([sys.executable, str(TOOL), str(cp), "--exec", "local", "--junit", f"{d}/j.xml"],
+                               capture_output=True, text=True, env={**os.environ, "PATH": f"{d}:{os.environ['PATH']}"})
+            self.assertIn(r.returncode, (0, 1), r.stdout + r.stderr)
+            return r.returncode == 0
+
+    def test_the_two_legitimate_values_pass(self):
+        self.assertTrue(self.verdict("echo /dev/ttyS0"))
+        self.assertTrue(self.verdict("echo 'not a tty'; exit 1"))
+
+    def test_any_other_value_fails(self):
+        self.assertFalse(self.verdict("echo /dev/pts/3"))
+        self.assertFalse(self.verdict("echo 'tty: something broke'; exit 1"))
+
+    def test_the_value_must_be_the_whole_line_not_a_substring_elsewhere(self):
+        # the old form matched '^(/dev/ttyS0|not a tty)$' on any line of the combined output
+        st = self.step("controlling-terminal")
+        self.assertIn("TTY=", st["cmd"])
+        self.assertTrue(all("TTY=" in r.pattern for r in st["expect_regex"]))
+
+    def test_ps_row_must_be_this_shell(self):
+        st = self.step("shell-process-row")
+        self.assertIn("$1==p", st["cmd"])
+
+
+class GuestSeedScript(unittest.TestCase):
+    """make-guest-seed.sh: argument checks and artifact manifest. Offline, no QEMU, no network."""
+    SCRIPT = HERE / "make-guest-seed.sh"
+
+    def make(self, *args, cwd=None):
+        r = subprocess.run(["bash", str(self.SCRIPT), *args], capture_output=True, text=True, cwd=cwd)
+        return r.returncode, r.stdout, r.stderr
+
+    def test_argument_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = f"{d}/s.iso"
+            case = str(CASES / "selfcheck-pass.yaml")
+            self.assertEqual(self.make()[0], 2)
+            self.assertEqual(self.make(case)[0], 2)
+            self.assertEqual(self.make(f"{d}/nope.yaml", out)[0], 2)
+            self.assertEqual(self.make(case, f"{d}/s.img")[0], 2)                       # not .iso
+            self.assertEqual(self.make(case, f"{d}/nodir/s.iso")[0], 2)
+            self.assertEqual(self.make(case, out, "--bogus")[0], 2)
+            self.assertEqual(self.make(case, out, "--var", "novalue")[0], 2)
+            self.assertEqual(self.make(case, out, "--var", "A=it's")[0], 2)             # quote would break the shell line
+            self.assertEqual(self.make(case, out, "--var", "A=$(id)")[0], 2)
+            self.assertEqual(self.make(case, out, "--instance-id", "bad id")[0], 2)
+            self.assertFalse(Path(out).exists(), "no seed may be left behind by a rejected call")
+
+    def test_an_invalid_case_builds_no_seed(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = Path(d) / "bad.yaml"
+            bad.write_text(json.dumps({"id": "bad", "item": "x", "steps": []}))
+            rc, o, e = self.make(str(bad), f"{d}/s.iso")
+            self.assertEqual(rc, 2, o + e)
+            self.assertFalse(Path(f"{d}/s.iso").exists())
+
+    def test_refuses_to_overwrite(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "s.iso"
+            out.write_bytes(b"keep")
+            self.assertEqual(self.make(str(CASES / "selfcheck-pass.yaml"), str(out))[0], 2)
+            self.assertEqual(out.read_bytes(), b"keep")
+
+    def build(self, d, case="selfcheck-pass.yaml", *extra):
+        out = Path(d) / "s.iso"
+        rc, o, e = self.make(str(CASES / case), str(out), *extra)
+        self.assertEqual(rc, 0, o + e)
+        return out, o
+
+    def test_manifest_lists_unmodified_files_with_their_hashes(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            out, o = self.build(d)
+            want = {"/vm/verify-case.py": TOOL, "/vm/console.py": HERE / "console.py", "/vm/case.yaml": CASES / "selfcheck-pass.yaml"}
+            for dest, src in want.items():
+                h = hashlib.sha256(src.read_bytes()).hexdigest()
+                self.assertRegex(o, rf"{h}  {re.escape(dest)} ")
+                self.assertIn(h, o)
+            self.assertIn("/vm/run.sh", o)
+            self.assertIn("runcmd: [['bash', '/vm/run.sh']]", o)
+            self.assertIn("volume label cidata", o)
+
+    def test_iso_has_cidata_label_and_the_two_nocloud_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, _ = self.build(d)
+            info = subprocess.run(["isoinfo", "-d", "-i", str(out)], capture_output=True, text=True).stdout.lower()
+            if "volume id" not in info:
+                self.skipTest("isoinfo not available")        # reported by unittest as skipped, not passed
+            self.assertIn("volume id: cidata", info)
+            ls = subprocess.run(["isoinfo", "-R", "-f", "-i", str(out)], capture_output=True, text=True).stdout
+            self.assertIn("/user-data", ls)
+            self.assertIn("/meta-data", ls)
+
+    def decode(self, iso):
+        import base64, gzip
+        ud = subprocess.run(["isoinfo", "-R", "-i", str(iso), "-x", "/user-data"], capture_output=True).stdout.decode()
+        self.assertTrue(ud.startswith("#cloud-config\n"))
+        doc = json.loads(ud.split("\n", 1)[1])
+        return {w["path"]: gzip.decompress(base64.b64decode(w["content"])) for w in doc["write_files"]}, doc
+
+    def test_embedded_files_are_byte_identical_to_the_repository(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, _ = self.build(d)
+            files, doc = self.decode(out)
+            self.assertEqual(files["/vm/verify-case.py"], TOOL.read_bytes())
+            self.assertEqual(files["/vm/console.py"], (HERE / "console.py").read_bytes())
+            self.assertEqual(files["/vm/case.yaml"], (CASES / "selfcheck-pass.yaml").read_bytes())
+            self.assertIn(b"--exec local", files["/vm/run.sh"])
+            self.assertNotIn(b"--console", files["/vm/run.sh"])
+            self.assertEqual(doc["runcmd"], [["bash", "/vm/run.sh"]])
+
+    def test_vars_reach_the_runner_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, _ = self.build(d, "selfcheck-pass.yaml", "--var", "A=b")
+            files, _ = self.decode(out)
+            self.assertIn(b"--var 'A=b'", files["/vm/run.sh"])
+
+    def test_run_sh_end_to_end_with_the_markers_and_a_decodable_junit(self):
+        """Run the generated run.sh for real (paths redirected away from /vm and /dev/ttyS0)."""
+        import base64, gzip, hashlib
+        with tempfile.TemporaryDirectory() as d:
+            out, _ = self.build(d)
+            files, _ = self.decode(out)
+            vm = Path(d) / "vm"
+            vm.mkdir()
+            for dest, data in files.items():
+                (vm / Path(dest).name).write_bytes(data)
+            script = files["/vm/run.sh"].decode().replace("exec >/dev/ttyS0 2>&1", f"exec >{d}/serial.log 2>&1").replace("/vm/", f"{vm}/").replace("/vm ", f"{vm} ")
+            (vm / "run.sh").write_text(script)
+            r = subprocess.run(["bash", str(vm / "run.sh")], capture_output=True, text=True)
+            log = (Path(d) / "serial.log").read_text()
+            self.assertIn("=== VC-SEED BEGIN case=selfcheck-pass ===", log, r.stderr)
+            self.assertIn("=== VC-SEED END ===", log)
+            self.assertIn("VC-SEED-RC=0", log)
+            m = re.search(r"VC-SEED-SHA256 runner=(\w+) console=(\w+) case=(\w+)", log)
+            e = re.search(r"VC-SEED-EXPECTED runner=(\w+) console=(\w+) case=(\w+)", log)
+            self.assertEqual(m.groups(), e.groups())
+            self.assertEqual(m.group(1), hashlib.sha256(TOOL.read_bytes()).hexdigest())
+            body = log.split("JUNIT_BEGIN\n", 1)[1].split("\nJUNIT_END", 1)[0]
+            xml = gzip.decompress(base64.b64decode(body))
+            js = re.search(r"VC-SEED-JUNIT-SHA256=(\w+) SIZE=(\d+)", log)
+            self.assertEqual(js.group(1), hashlib.sha256(xml).hexdigest())
+            self.assertEqual(int(js.group(2)), len(xml))
+            root = ET.fromstring(xml)
+            self.assertEqual(root.get("failures"), "0")
+            self.assertGreater(int(root.get("tests")), 3)
+
+    def test_a_failing_case_reports_its_nonzero_rc_in_the_seed_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, _ = self.build(d, "selfcheck.yaml")
+            files, _ = self.decode(out)
+            vm = Path(d) / "vm"
+            vm.mkdir()
+            for dest, data in files.items():
+                (vm / Path(dest).name).write_bytes(data)
+            script = files["/vm/run.sh"].decode().replace("exec >/dev/ttyS0 2>&1", f"exec >{d}/serial.log 2>&1").replace("/vm/", f"{vm}/").replace("/vm ", f"{vm} ")
+            (vm / "run.sh").write_text(script)
+            subprocess.run(["bash", str(vm / "run.sh")], capture_output=True, text=True)
+            self.assertIn("VC-SEED-RC=1", (Path(d) / "serial.log").read_text())
 
 
 class HardenedInvocation(unittest.TestCase):
@@ -808,7 +1153,8 @@ class GoldenAgainstRealTranscripts(unittest.TestCase):
     def test_no_step_depends_on_journald(self):
         for f in sorted(CASES.glob("*.yaml")):
             for st in vc.load_case(f)["steps"]:
-                self.assertNotIn("journalctl", st["cmd"], f"{f.name}:{st['name']}")
+                if "journalctl" in st["cmd"]:
+                    self.assertTrue(st["requires"], f"{f.name}:{st['name']} reads journald without a requires probe (it would FAIL, not SKIP)")
 
     def test_design_derived_steps_are_labelled(self):
         case = vc.load_case(CASES / "p2p4.yaml")

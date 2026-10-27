@@ -18,8 +18,9 @@ Usage:
 Both executors go through the same shell protocol and the same assertion code;
 they differ only in how bytes reach a shell.
 
-Exit status: 0 every step passed, 1 at least one step failed, 2 the case or the
-invocation is invalid (a JUnit file with one failing testcase is still written,
+Exit status: 0 every step passed, 1 at least one step failed, 3 nothing failed but at
+least one step was SKIPPED (a skip is never a pass: the release gate counts it as not
+passed), 2 the case or the invocation is invalid (a JUnit file with one failing testcase is still written,
 so a stale passing file cannot be mistaken for this run).
 """
 
@@ -53,7 +54,8 @@ MAX_CMD = 2400          # bytes; base64 of it must fit one terminal line
 
 CASE_KEYS = {"id", "item", "suite_commit", "description", "basis", "vars", "noise_filter", "steps"}
 STEP_KEYS = {"name", "cmd", "basis", "timeout", "expect_exit", "expect_regex",
-             "expect_not_regex", "expect_json", "abort_on_fail"}
+             "expect_not_regex", "expect_json", "abort_on_fail", "requires"}
+REQUIRES_KEYS = {"cmd", "reason", "timeout"}
 JSON_OPS = {"equals", "exists", "contains", "matches"}
 NOISE = {
     # what the guest prints on the console by itself, interleaved with output
@@ -240,13 +242,34 @@ def load_case(path, cli_vars=None):
             problems.append(f"{where}: declares no assertion (expect_exit / expect_regex / "
                             "expect_not_regex / expect_json); a step that asserts nothing "
                             "cannot pass or fail")
+        requires = None
+        if st.get("requires") is not None:
+            rq = st["requires"]
+            if not isinstance(rq, dict):
+                problems.append(f"{where}: requires must be an object with cmd and reason")
+            else:
+                for k in sorted(set(rq) - REQUIRES_KEYS):
+                    problems.append(f"{where}: requires: unknown key {k!r}")
+                rcmd, rreason, rto = rq.get("cmd"), rq.get("reason"), rq.get("timeout", 30)
+                if not isinstance(rcmd, str) or not rcmd.strip():
+                    problems.append(f"{where}: requires.cmd must be a non-empty string")
+                elif len(rcmd.encode()) > MAX_CMD:
+                    problems.append(f"{where}: requires.cmd is over {MAX_CMD} bytes")
+                if not isinstance(rreason, str) or not rreason.strip():
+                    problems.append(f"{where}: requires.reason is required: say what is unavailable when the probe fails")
+                if isinstance(rto, bool) or not isinstance(rto, (int, float)) or rto <= 0:
+                    problems.append(f"{where}: requires.timeout must be a positive number")
+                    rto = 30
+                if isinstance(rcmd, str) and isinstance(rreason, str):
+                    requires = {"cmd": sub(rcmd, where), "reason": rreason, "timeout": float(rto)}
         timeout = st.get("timeout", 60)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
             problems.append(f"{where}: timeout must be a positive number")
             timeout = 60
         steps.append({"name": name, "cmd": cmd, "basis": basis or "", "timeout": float(timeout),
                       "expect_exit": exp_exit, "expect_regex": rx, "expect_not_regex": nrx,
-                      "expect_json": ejson, "abort_on_fail": bool(st.get("abort_on_fail", False))})
+                      "expect_json": ejson, "abort_on_fail": bool(st.get("abort_on_fail", False)),
+                      "requires": requires})
     if problems:
         raise CaseError(problems)
     return {"id": cid, "item": item, "suite_commit": sc, "description": doc.get("description", ""),
@@ -541,9 +564,10 @@ def run_case(case, make_transport, raw_log):
     """Returns a list of result dicts: name, basis, elapsed, rc, output, noise, failures."""
     results = []
 
-    def res(name, basis, t0, rc, out, noise, fails):
+    def res(name, basis, t0, rc, out, noise, fails, skipped=None):
         results.append({"name": name, "basis": basis, "elapsed": time.monotonic() - t0,
-                        "rc": rc, "output": out, "noise": noise, "failures": fails})
+                        "rc": rc, "output": out, "noise": noise, "failures": fails,
+                        "skipped": skipped})
 
     def not_run(step, why):
         res(step["name"], step["basis"], time.monotonic(), None, "", 0, [f"not run: {why}"])
@@ -584,6 +608,27 @@ def run_case(case, make_transport, raw_log):
                 not_run(st, f"aborted after failed step {aborted!r}")
                 continue
             t0 = time.monotonic()
+            rq = st.get("requires")
+            if rq:
+                # A precondition for MEASURING (e.g. journald is usable), not an assertion. If it does not hold the step
+                # is skipped and recorded as skipped; it is never a pass. A probe that cannot even run is a lost console.
+                try:
+                    prc, pout = shell.run(rq["cmd"], rq["timeout"])
+                    why = None if prc == 0 else f"{rq['reason']} (probe exit status {prc})"
+                except StepTimeout:
+                    pout = ""
+                    why = f"{rq['reason']} (probe timed out after {rq['timeout']:g}s)"
+                    if not shell.recover():
+                        res(st["name"], st["basis"], t0, None, "", 0, [f"console unusable after the timeout of the precondition probe: {why}"])
+                        lost = f"console unusable after the probe of step {st['name']!r}"
+                        continue
+                except ShellError as e:
+                    res(st["name"], st["basis"], t0, None, "", 0, [f"console error during the precondition probe: {e}"])
+                    lost = f"console lost during the probe of step {st['name']!r}: {e}"
+                    continue
+                if why:
+                    res(st["name"], st["basis"], t0, None, pout, 0, [], skipped=why)
+                    continue
             try:
                 rc, raw_out = shell.run(st["cmd"], st["timeout"])
             except StepTimeout as e:
@@ -626,8 +671,9 @@ def excerpt(text, head=1500, tail=5000):
 
 def build_junit(case_id, results, props):
     failures = sum(1 for r in results if r["failures"])
+    skipped = sum(1 for r in results if r.get("skipped") and not r["failures"])
     suite = ET.Element("testsuite", name=case_id, tests=str(len(results)),
-                       failures=str(failures), errors="0", skipped="0",
+                       failures=str(failures), errors="0", skipped=str(skipped),
                        time=f"{sum(r['elapsed'] for r in results):.3f}",
                        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                        hostname=socket.gethostname())
@@ -643,6 +689,9 @@ def build_junit(case_id, results, props):
             f = ET.SubElement(tc, "failure", message=xml_text(r["failures"][0][:200]),
                               type="AssertionError")
             f.text = xml_text("\n".join(r["failures"]) + "\n" + measured)
+        elif r.get("skipped"):
+            sk = ET.SubElement(tc, "skipped", message=xml_text(r["skipped"][:200]))
+            sk.text = xml_text(f"SKIPPED, not passed: {r['skipped']}\nbasis: {r['basis']}\n--- precondition probe output ---\n{excerpt(r['output'])}")
         else:
             so = ET.SubElement(tc, "system-out")
             so.text = xml_text(measured)
@@ -721,10 +770,15 @@ def write_invalid(junit, case_id, problems):
     ET.ElementTree(suite).write(junit, encoding="utf-8", xml_declaration=True)
 
 
-def emit_suite_config(case, path):
-    names = [f"{case['id']}.console-sync"] + [f"{case['id']}.{s['name']}" for s in case["steps"]]
-    doc = {"format": SUITE_CONFIG_FORMAT, "items": {case["item"]: {
-        "min_cases": len(names), "required_cases": names, "suite_commit": None}}}
+def emit_suite_config(cases, path):
+    """One entry per item; cases that share an item contribute all their testcase names to it."""
+    items = {}
+    for case in cases:
+        names = [f"{case['id']}.console-sync"] + [f"{case['id']}.{s['name']}" for s in case["steps"]]
+        items.setdefault(case["item"], []).extend(names)
+    doc = {"format": SUITE_CONFIG_FORMAT, "items": {
+        item: {"min_cases": len(names), "required_cases": names, "suite_commit": None}
+        for item, names in items.items()}}
     Path(path).write_text(json.dumps(doc, indent=2) + "\n")
 
 
@@ -732,7 +786,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Run an assertion case against a guest shell; write JUnit XML and "
                     "verification evidence. PASS is derived only from measured output.")
-    ap.add_argument("case", help="case definition (JSON; YAML if PyYAML is installed)")
+    ap.add_argument("case", nargs="+", help="case definition (JSON; YAML if PyYAML is installed); "
+                                            "several only with --validate or --emit-suite-config")
     where = ap.add_mutually_exclusive_group()
     where.add_argument("--console", metavar="HOST:PORT|unix:PATH",
                        help="serial console of a booted guest; give --user/--password unless a "
@@ -765,16 +820,23 @@ def main(argv=None):
             print(f"error: --var wants K=V, got {kv!r}", file=sys.stderr)
             return 2
         cli_vars[k] = v
-    try:
-        case = load_case(a.case, cli_vars)
-    except CaseError as e:
-        print("INVALID CASE:\n  " + "\n  ".join(e.problems), file=sys.stderr)
-        write_invalid(a.junit, None, e.problems)
+    if len(a.case) > 1 and not (a.validate or a.emit_suite_config):
+        print("error: running needs exactly one case file", file=sys.stderr)
         return 2
+    loaded = []
+    for cf in a.case:
+        try:
+            loaded.append(load_case(cf, cli_vars))
+        except CaseError as e:
+            print(f"INVALID CASE {cf}:\n  " + "\n  ".join(e.problems), file=sys.stderr)
+            write_invalid(a.junit, None, e.problems)
+            return 2
+    case = loaded[0]
     if a.emit_suite_config:
-        emit_suite_config(case, a.emit_suite_config)
+        emit_suite_config(loaded, a.emit_suite_config)
     if a.validate:
-        print(f"case {case['id']}: {len(case['steps'])} steps, item {case['item']}: valid")
+        for c in loaded:
+            print(f"case {c['id']}: {len(c['steps'])} steps, item {c['item']}: valid")
         return 0
     if not (a.console or a.exec_):
         print("error: give --console HOST:PORT or --exec local", file=sys.stderr)
@@ -840,12 +902,14 @@ def main(argv=None):
     status = "PASS" if counts["total"] > 0 and counts["passed"] == counts["total"] else "FAIL"
 
     for r in results:
-        mark = "FAIL" if r["failures"] else "PASS"
+        mark = "FAIL" if r["failures"] else ("SKIP" if r.get("skipped") else "PASS")
         print(f"{mark}  {case['id']}.{r['name']}  ({r['elapsed']:.1f}s)")
         for f in r["failures"]:
             print(f"      {f}")
-    print(f"{case['id']}: {counts['passed']}/{counts['total']} passed, {counts['failed']} failed "
-          f"-> {status}   junit={a.junit}")
+        if mark == "SKIP":
+            print(f"      skipped, not passed: {r['skipped']}")
+    print(f"{case['id']}: {counts['passed']}/{counts['total']} passed, {counts['failed']} failed, "
+          f"{counts['skipped']} skipped -> {status}   junit={a.junit}")
 
     if a.evidence:
         now = hashlib.sha256(Path(case["path"]).read_text().encode()).hexdigest()   # same as load_case
@@ -862,7 +926,9 @@ def main(argv=None):
         Path(a.evidence).write_text(json.dumps(
             {"format": EVIDENCE_FORMAT, "records": [rec]}, indent=2) + "\n")
         print(f"evidence={a.evidence} (unsigned: sign it before it can be used as release input)")
-    return 0 if status == "PASS" else 1
+    if counts["failed"]:
+        return 1
+    return 0 if status == "PASS" else 3
 
 
 if __name__ == "__main__":

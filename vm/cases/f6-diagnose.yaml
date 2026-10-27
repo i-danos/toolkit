@@ -2,20 +2,13 @@
  "id": "f6-diagnose",
  "item": "fixture_diagnose",
  "suite_commit": "auto",
- "description": "Why was set refused on the first real runs while show worked. Answer found in the source (R4-r3): the text 'Configuration path: [] is not valid' is just how an access-denied error with no path is formatted; the refusal is the ACM, which allows writes only to group vyattacfg, and root is not in it. root-is-in-vyattacfg and acm-files record exactly that. The probes then run the SAME cfgcli -print set the failing step ran under one varied condition each; on a guest where root is in vyattacfg they should all pass, on a stock guest they all fail alike (which is the point). Needs a root shell; changes nothing (cfgcli -print only prints).",
+ "description": "Why was set refused on the first real runs while show worked. The text 'Configuration path: [] is not valid' is just how an access-denied error with no path is formatted (R4-r3). Whether the ACM denies root differs by execution context (R4-r6: allowed from cloud-init, refused from the serial console in an earlier run, mechanism unexplained). acm-files records the ACM data. The probes run the SAME cfgcli -print set the failing step ran under one varied condition each; each one should pass or fail alike; a difference between them is the finding. Needs a root shell; changes nothing (cfgcli -print only prints).",
  "basis": [
   "handoff/verify/r4-r1c-hermes/f6-real.junit.xml: session-setup and discard passed, `vcli -s $SID -c show` worked, the four set steps failed",
   "vyatta-cfg/scripts/vcli runs `bash -c` after setup_env; vyatta-cfg/functions/script-wrapper: set -> cmd_helper -> `cfgcli -print`; configd/cmd/cfgcli/main.go dials configd with $VYATTA_CONFIG_SID",
   "configd/server/conn.go:168 treats uid 0 as superuser, so root being refused is the thing to explain"
  ],
  "steps": [
-  {
-   "name": "root-is-in-vyattacfg",
-   "basis": "design + observed in the image: the shipped ACM is enabled and its only data rule allows group vyattacfg (config.boot.default:2-3,261-267; read-default allow, create/update/delete-default deny in vyatta-system-acm-configd-v1.yang); AcmAuther.AuthorizePath exempts only configd's own uid (config/auth/acm_auther.go:36-73, configd server/conn.go:164); the image's /etc/group has root only in group root. Groups come from getgrouplist(user name) (utils/os/group/lookup_unix.go), so sg/newgrp do not help. Root cannot set anything unless the guest seed adds it to vyattacfg (usermod -aG vyattacfg root) - see the README",
-   "cmd": "id -nG root; getent group vyattacfg",
-   "expect_exit": 0,
-   "expect_regex": "(^| )vyattacfg( |$)"
-  },
   {
    "name": "acm-files",
    "basis": "design: configd loads the authdb from configruleset.txt at start and again on every change to it; with the file missing or unreadable it starts with an empty, disabled authdb (config/auth/auth.go:201-208,306-310,571-596), which allows everything. The image ships no such file",
@@ -39,10 +32,17 @@
   },
   {
    "name": "controlling-terminal",
-   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'",
-   "cmd": "tty; ps -o pid,ppid,tty,stat,args -p $$",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'; tty prints /dev/ttyS0 on the serial login and 'not a tty' under cloud-init (no controlling terminal). Both are legitimate, anything else (a pty, an error) is not; the value is anchored on the TTY= line, not matched anywhere in the output",
+   "cmd": "TTY=$(tty 2>&1); echo \"TTY=$TTY\"",
    "expect_exit": 0,
-   "expect_regex": "^/dev/ttyS0$"
+   "expect_regex": "^TTY=(/dev/ttyS0|not a tty)$"
+  },
+  {
+   "name": "shell-process-row",
+   "basis": "fixture: a probe; the first real run (handoff/verify/r4-r1c-hermes/f6-real.junit.xml) failed set with 'Configuration path: [] is not valid / authorization failed'; proves ps reports THIS shell with its pid, ppid and tty columns (the awk keeps only the row whose pid is $$)",
+   "cmd": "ps -o pid=,ppid=,tty= -p $$ | awk -v p=$$ '$1==p {print \"PS_PID_MATCH=1 PPID=\" $2 \" TTY=\" $3}'",
+   "expect_exit": 0,
+   "expect_regex": "^PS_PID_MATCH=1 PPID=[0-9]+ TTY=\\S+$"
   },
   {
    "name": "services-active",
