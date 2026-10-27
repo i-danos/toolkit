@@ -426,18 +426,21 @@
   },
   {
    "name": "journal-startup-reconcile-acmd-reconciled-p2",
-   "basis": "observed: ISO 20261027T0908, configd 2.12.2danos7, handoff/verify/R3-p2-marker-20261027.md and evidence/p2-marker-20261027/: the line is configd's own log in journald. SKIPPED, never passed, when journald cannot be read; the other steps are still judged - after acmd was restarted the startup reconcile reports acmd reconciled",
+   "basis": "measured on ISO 20261027T0908: the startup reconcile logs a line only for components it has to handle ('Not reconciled: net.vyatta.vci.vrrp.v1 (read-back verify_error)' was the only line, and acmd was absent from dirty). acmd counts as reconciled when it is not listed under dirty.",
    "cmd": "journalctl -u configd --no-pager -o cat --since \"$(cat /tmp/restart2-p2)\" | grep \"startup reconcile\"",
    "timeout": 60,
    "expect_exit": 0,
    "expect_regex": [
-    "startup reconcile: Reconciled: net\\.vyatta\\.vci\\.acmd\\.v1"
+    "\"dirty\":\\{[^}]*\\}"
    ],
    "requires": {
     "cmd": "timeout 20 journalctl -u configd --no-pager -n 1 -q -o cat | grep -q .",
     "reason": "journald is not usable on this guest (journalctl -u configd printed nothing)",
     "timeout": 30
-   }
+   },
+   "expect_not_regex": [
+    "\"net\\.vyatta\\.vci\\.acmd\\.v1\":\\{\"class\""
+   ]
   },
   {
    "name": "journal-after-reconcile-p2",
@@ -860,18 +863,21 @@
   },
   {
    "name": "journal-startup-reconcile-acmd-reconciled-p4",
-   "basis": "observed: ISO 20261027T0908, configd 2.12.2danos7, handoff/verify/R3-p4-marker-20261027.md and evidence/p4-marker-20261027/: the line is configd's own log in journald. SKIPPED, never passed, when journald cannot be read; the other steps are still judged - after acmd was restarted the startup reconcile reports acmd reconciled",
+   "basis": "measured on ISO 20261027T0908: the startup reconcile logs a line only for components it has to handle ('Not reconciled: net.vyatta.vci.vrrp.v1 (read-back verify_error)' was the only line, and acmd was absent from dirty). acmd counts as reconciled when it is not listed under dirty.",
    "cmd": "journalctl -u configd --no-pager -o cat --since \"$(cat /tmp/restart2-p4)\" | grep \"startup reconcile\"",
    "timeout": 60,
    "expect_exit": 0,
    "expect_regex": [
-    "startup reconcile: Reconciled: net\\.vyatta\\.vci\\.acmd\\.v1"
+    "\"dirty\":\\{[^}]*\\}"
    ],
    "requires": {
     "cmd": "timeout 20 journalctl -u configd --no-pager -n 1 -q -o cat | grep -q .",
     "reason": "journald is not usable on this guest (journalctl -u configd printed nothing)",
     "timeout": 30
-   }
+   },
+   "expect_not_regex": [
+    "\"net\\.vyatta\\.vci\\.acmd\\.v1\":\\{\"class\""
+   ]
   },
   {
    "name": "journal-after-reconcile-p4",
