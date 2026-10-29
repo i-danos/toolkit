@@ -42,7 +42,7 @@ fail=0
 exec > "$OUT" 2>&1
 "$HERE/image-fingerprint.sh"
 S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$1" "$2" 2>&1; }
-ok()  { printf '  PASS  %s\n' "$1"; pass=$((pass + 1)); }
+ok()  { printf '  PASS  %s\n' "$1"; shift; [ $# -gt 0 ] && printf '%s\n' "$@" | head -6 | sed 's/^/        /'; pass=$((pass + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; shift; printf '%s\n' "$@" | head -6 | sed 's/^/        /'; fail=$((fail + 1)); }
 
 echo "===== 0. Install the tool ====="
@@ -65,7 +65,7 @@ if printf '%s' "$out" | grep -q "UNREADABLE"; then
 	echo "  checks need an image carrying 'dpa object show'."
 	exit "$fail"
 fi
-ok "both sides answered"
+ok "both sides are readable"
 
 echo
 echo "===== 2. Desired counts only what zebra pushed down ====="
@@ -73,7 +73,7 @@ rib=$(S $R1 "sudo vtysh -c 'show ip route json' 2>/dev/null | python3 -c 'import
 des=$(printf '%s' "$out" | grep -o '"desired": *[0-9]*' | grep -o '[0-9]*')
 echo "    RIB prefixes: $rib   counted as desired: $des"
 if [ -n "$des" ] && [ "$des" -le "${rib:-0}" ]; then
-	ok "desired is a subset of the RIB, not the whole of it ($des of $rib)"
+	ok "desired is a subset of the RIB" "desired=$des rib=$rib"
 else
 	bad "desired is a subset of the RIB" "desired=$des rib=$rib"
 fi
@@ -88,7 +88,7 @@ if printf '%s' "$out" | grep -q '"keyspace_mismatch": *true'; then
 	S $R1 "sudo python3 /tmp/dpa-drift.py 2>&1 | head -8" | sed 's/^/        /'
 else
 	m=$(printf '%s' "$out" | grep -o '"matched": *[0-9]*' | grep -o '[0-9]*')
-	ok "identity lines up, $m routes matched on both sides"
+	ok "the two sides agree on identity" "$m routes matched on both sides"
 fi
 
 echo
@@ -101,7 +101,7 @@ sleep 4
 after=$(S $R1 "sudo python3 /tmp/dpa-drift.py --json 2>&1")
 d2=$(printf '%s' "$after" | grep -o '"desired": *[0-9]*' | grep -o '[0-9]*')
 if [ -n "$d2" ] && [ "$d2" -gt "${des:-0}" ]; then
-	ok "adding a route moved the desired count ($des -> $d2)"
+	ok "adding a route moved the desired count" "desired $des -> $d2"
 else
 	bad "adding a route moved the desired count" "desired stayed at $d2"
 fi
@@ -115,7 +115,7 @@ sleep 4
 final=$(S $R1 "sudo python3 /tmp/dpa-drift.py --json 2>&1")
 d3=$(printf '%s' "$final" | grep -o '"desired": *[0-9]*' | grep -o '[0-9]*')
 if [ "${d3:-0}" -eq "${des:-0}" ]; then
-	ok "removing it put the desired count back ($d3)"
+	ok "removing it put the desired count back" "desired $des -> $d3"
 else
 	bad "removing it put the desired count back" "was $des, now $d3"
 fi
