@@ -43,7 +43,7 @@ fail=0
 exec > "$OUT" 2>&1
 "$HERE/image-fingerprint.sh"
 S() { docker exec danos-robot timeout 240 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$1" "$2" 2>&1; }
-ok()  { printf '  PASS  %s\n' "$1"; pass=$((pass + 1)); }
+ok()  { printf '  PASS  %s\n' "$1"; shift; [ $# -gt 0 ] && printf '%s\n' "$@" | head -6 | sed 's/^/        /'; pass=$((pass + 1)); }
 bad() { printf '  FAIL  %s\n' "$1"; shift; printf '%s\n' "$@" | head -5 | sed 's/^/        /'; fail=$((fail + 1)); }
 
 echo "===== 0. Install ====="
@@ -75,7 +75,7 @@ printf '%s\n' "$out" | sed 's/^/    /'
 first=$(printf '%s' "$out" | grep -oE '10\.91\.1\.0/24  [0-9]+ cycle' | head -1 | grep -oE '[0-9]+ cycle' | grep -oE '[0-9]+')
 last=$(printf '%s' "$out" | grep -oE '10\.91\.1\.0/24  [0-9]+ cycle' | tail -1 | grep -oE '[0-9]+ cycle' | grep -oE '[0-9]+')
 if [ -n "$last" ] && [ "${last:-0}" -gt "${first:-0}" ]; then
-	ok "the count rises across cycles ($first -> $last), so it is persistence not a one-shot"
+	ok "the count rises across cycles" "first=$first last=$last -- persistence, not a one-shot"
 else
 	bad "the count rises across cycles" "first=$first last=$last"
 fi
@@ -87,7 +87,7 @@ echo "===== 3. It did not repair ====="
 still=$(S $R1 "sudo python3 /tmp/dpa-drift.py --json 2>&1" | tail -1)
 miss=$(printf '%s' "$still" | grep -o '"desired_not_programmed": \[[^]]*\]' | grep -c '10.91')
 if [ "${miss:-0}" -ge 1 ]; then
-	ok "the drift is still there after watching -- the loop repaired nothing"
+	ok "the drift is still there after watching" "the loop repaired nothing"
 else
 	bad "the drift is still there after watching" \
 	    "it is gone, which means something fixed it; a detector must not" \
@@ -102,7 +102,7 @@ out=$(S $R1 "sudo python3 /tmp/dpa-drift.py --watch 2 --cycles 3 2>&1")
 printf '%s\n' "$out" | tail -4 | sed 's/^/    /'
 n=$(printf '%s' "$out" | grep -oE 'disagreements [0-9]+' | tail -1 | grep -oE '[0-9]+')
 if [ "${n:-1}" -eq 0 ]; then
-	ok "once the reconnect delivered them, the count went back to zero"
+	ok "the count went back to zero" "the reconnect delivered them"
 else
 	bad "the count went back to zero" "still $n -- a stale count would trigger falsely later"
 fi
