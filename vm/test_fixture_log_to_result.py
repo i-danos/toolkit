@@ -64,7 +64,7 @@ class FixtureLogToResult(unittest.TestCase):
         self.assertEqual(r["checks"][1]["detail"], "boom")
 
     def test_detail_splits_on_the_first_separator_only(self):
-        p, r = convert("  PASS     a -- b -- c\n")
+        p, r = convert("  PASS     a -- b -- c\n  1 of 1\n")
         self.assertEqual((r["checks"][0]["check"], r["checks"][0]["detail"]), ("a", "b -- c"))
 
     def test_rejects_a_log_with_no_check_lines(self):
@@ -81,7 +81,7 @@ class FixtureLogToResult(unittest.TestCase):
             self.assertIn("empty", p.stderr)
 
     def test_rejects_a_repeated_check_name(self):
-        p, r = convert("  PASS     a\n  FAIL     a\n")
+        p, r = convert("  PASS     a\n  FAIL     a\n  1 of 2\n")
         self.assertEqual(p.returncode, 2)
         self.assertIsNone(r)
         self.assertIn("duplicate", p.stderr)
@@ -98,6 +98,19 @@ class FixtureLogToResult(unittest.TestCase):
         self.assertEqual(p.returncode, 2)
         self.assertIsNone(r)
         self.assertIn("Result section", p.stderr)
+
+    def test_rejects_a_log_with_no_summary_line_by_default(self):
+        p, r = convert("  PASS     a\n  PASS     b\n")
+        self.assertEqual(p.returncode, 2)
+        self.assertIsNone(r)
+        self.assertIn("summary", p.stderr)
+
+    def test_allow_missing_summary_accepts_it_but_still_checks_a_present_one(self):
+        p, r = convert("  PASS     a\n  PASS     b\n", "--allow-missing-summary")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((r["passed"], r["total"], r["status"]), (2, 2, "PASS"))
+        p, r = convert("  PASS     a\n  FAIL     b\n  2 of 2\n", "--allow-missing-summary")
+        self.assertEqual(p.returncode, 2)
 
 
 if __name__ == "__main__":

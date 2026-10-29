@@ -5,7 +5,7 @@
 The accept-*.sh harnesses write the same JSON themselves at the end of a run.
 When only the log survives (the run was cut short, or the JSON was lost), this
 rebuilds it with the same schema -- and refuses any log it cannot account for:
-no check lines, a check name used twice, a summary that disagrees with the
+no check lines, no summary line, a check name used twice, a summary that disagrees with the
 per-check lines, or a Result section that disagrees with the live lines.
 
 Log grammar (what record() prints):
@@ -15,6 +15,7 @@ Log grammar (what record() prints):
 
 Usage: fixture-log-to-result.py LOG --gate TEXT --image NAME [--out FILE]
                                 [--timestamp ISO8601] [--read-only]
+                                [--allow-missing-summary]
 Exit: 0 written, 2 rejected (nothing is written).
 """
 
@@ -33,7 +34,7 @@ class Rejected(Exception):
     pass
 
 
-def parse(text):
+def parse(text, allow_missing_summary=False):
     """Return [{"check","status","detail"}] after validating the log."""
     if not text.strip():
         raise Rejected("log is empty")
@@ -67,6 +68,8 @@ def parse(text):
             raise Rejected("Result section does not match the live check lines")
         for e, l in zip(echo, live):
             e["detail"] = e["detail"] or l["detail"]
+    if not summaries and not allow_missing_summary:
+        raise Rejected("no 'N of M' summary line (a truncated log?); --allow-missing-summary to accept")
     npass = sum(r["status"] == "PASS" for r in rows)
     for n, t in summaries:
         if (n, t) != (npass, len(rows)):
@@ -93,10 +96,12 @@ def main(argv=None):
     ap.add_argument("--out")
     ap.add_argument("--timestamp")
     ap.add_argument("--read-only", action="store_true")
+    ap.add_argument("--allow-missing-summary", action="store_true",
+                    help="accept a log with no 'N of M' line (default: reject, it may be truncated)")
     a = ap.parse_args(argv)
     try:
         with open(a.log, encoding="utf-8", errors="replace") as f:
-            rows = parse(f.read())
+            rows = parse(f.read(), a.allow_missing_summary)
     except (Rejected, OSError) as e:
         print(f"fixture-log-to-result: rejected: {e}", file=sys.stderr)
         return 2
