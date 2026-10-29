@@ -52,7 +52,9 @@ done
 case "$OUT" in *.iso) ;; *) die "output must end in .iso: $OUT";; esac
 [ ! -e "$OUT" ] || die "refusing to overwrite existing $OUT"
 [ -d "$(dirname "$OUT")" ] || die "output directory does not exist: $(dirname "$OUT")"
-command -v genisoimage >/dev/null || die "genisoimage not found"
+if command -v genisoimage >/dev/null; then MKISO=genisoimage
+elif command -v xorriso >/dev/null; then MKISO="xorriso -as mkisofs"
+else die "neither genisoimage nor xorriso found (tried both); install one of them"; fi
 command -v python3 >/dev/null || die "python3 not found"
 
 if [ "$VALIDATE" = 1 ]; then
@@ -114,8 +116,8 @@ PYEOF
 [ $? -eq 0 ] || die "could not write user-data"
 
 rm -f "$STAGE/run.sh"
-genisoimage -quiet -output "$OUT" -volid cidata -joliet -rock "$STAGE/user-data" "$STAGE/meta-data" 2>"$STAGE/gen.err" \
-  || { cat "$STAGE/gen.err" >&2; die "genisoimage failed"; }
+$MKISO -quiet -output "$OUT" -volid cidata -joliet -rock "$STAGE/user-data" "$STAGE/meta-data" 2>"$STAGE/gen.err" \
+  || { cat "$STAGE/gen.err" >&2; die "${MKISO%% *} failed"; }
 
 echo "seed: $OUT  ($(stat -c %s "$OUT") bytes, volume label cidata, instance-id $IID)"
 echo "runner   sha256 $R_SHA  $RUNNER"
@@ -128,9 +130,16 @@ if command -v xorriso >/dev/null; then
 fi
 echo "files the guest will write (after decoding user-data), with sha256:"
 python3 -I - "$OUT" <<'PYEOF'
-import base64, gzip, hashlib, json, subprocess, sys
+import base64, gzip, hashlib, json, os, subprocess, sys, tempfile
 iso = sys.argv[1]
-ud = subprocess.run(["xorriso", "-osirrox", "on", "-indev", iso, "-cat", "/user-data"], capture_output=True).stdout.decode()
+ud = ""
+with tempfile.TemporaryDirectory() as td:
+    # xorriso has no -cat; extract the file instead. isoinfo (cdrkit) is the fallback.
+    dst = os.path.join(td, "user-data")
+    subprocess.run(["xorriso", "-osirrox", "on", "-indev", iso, "-extract", "/user-data", dst],
+                   capture_output=True)
+    if os.path.exists(dst):
+        ud = open(dst).read()
 if not ud.startswith("#cloud-config"):
     ud = subprocess.run(["isoinfo", "-R", "-i", iso, "-x", "/user-data"], capture_output=True).stdout.decode()
 doc = json.loads(ud.split("\n", 1)[1])
