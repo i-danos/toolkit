@@ -10,6 +10,7 @@ import json
 import os
 import pty
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -943,20 +944,46 @@ class GuestSeedScript(unittest.TestCase):
             self.assertIn("runcmd: [['bash', '/vm/run.sh']]", o)
             self.assertIn("volume label cidata", o)
 
+    # ISO readers. isoinfo (cdrkit) is used when present; otherwise xorriso, which is what
+    # a host without genisoimage has. The criteria are the same either way: volume id
+    # cidata, Rock Ridge names /user-data and /meta-data, and the file bytes as written.
+    def iso_label(self, iso):
+        if shutil.which("isoinfo"):
+            info = subprocess.run(["isoinfo", "-d", "-i", str(iso)], capture_output=True, text=True).stdout.lower()
+            m = re.search(r"volume id: (\S+)", info)
+            return m and m.group(1)
+        if shutil.which("xorriso"):
+            o = subprocess.run(["xorriso", "-indev", str(iso), "-pvd_info"], capture_output=True, text=True).stdout
+            m = re.search(r"^Volume Id\s*:\s*(\S+)", o, re.M)
+            return m and m.group(1).lower()
+        self.skipTest("neither isoinfo nor xorriso available")   # reported as skipped, not passed
+
+    def iso_files(self, iso):
+        if shutil.which("isoinfo"):
+            return subprocess.run(["isoinfo", "-R", "-f", "-i", str(iso)], capture_output=True, text=True).stdout.split()
+        o = subprocess.run(["xorriso", "-indev", str(iso), "-find", "/", "-type", "f"], capture_output=True, text=True).stdout
+        return [l.strip().strip("'") for l in o.splitlines() if l.startswith("'/")]
+
+    def iso_read(self, iso, path):
+        if shutil.which("isoinfo"):
+            return subprocess.run(["isoinfo", "-R", "-i", str(iso), "-x", path], capture_output=True).stdout
+        with tempfile.TemporaryDirectory() as td:
+            dst = Path(td) / "f"
+            subprocess.run(["xorriso", "-osirrox", "on", "-indev", str(iso), "-extract", path, str(dst)], capture_output=True)
+            return dst.read_bytes() if dst.exists() else b""
+
     def test_iso_has_cidata_label_and_the_two_nocloud_files(self):
         with tempfile.TemporaryDirectory() as d:
             out, _ = self.build(d)
-            info = subprocess.run(["isoinfo", "-d", "-i", str(out)], capture_output=True, text=True).stdout.lower()
-            if "volume id" not in info:
-                self.skipTest("isoinfo not available")        # reported by unittest as skipped, not passed
-            self.assertIn("volume id: cidata", info)
-            ls = subprocess.run(["isoinfo", "-R", "-f", "-i", str(out)], capture_output=True, text=True).stdout
+            self.assertEqual(self.iso_label(out), "cidata")
+            ls = self.iso_files(out)
             self.assertIn("/user-data", ls)
             self.assertIn("/meta-data", ls)
+            self.assertIn(b"instance-id:", self.iso_read(out, "/meta-data"))
 
     def decode(self, iso):
         import base64, gzip
-        ud = subprocess.run(["isoinfo", "-R", "-i", str(iso), "-x", "/user-data"], capture_output=True).stdout.decode()
+        ud = self.iso_read(iso, "/user-data").decode()
         self.assertTrue(ud.startswith("#cloud-config\n"))
         doc = json.loads(ud.split("\n", 1)[1])
         return {w["path"]: gzip.decompress(base64.b64decode(w["content"])) for w in doc["write_files"]}, doc
