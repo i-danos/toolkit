@@ -1005,19 +1005,32 @@ class GuestSeedScript(unittest.TestCase):
             files, _ = self.decode(out)
             self.assertIn(b"--var 'A=b'", files["/vm/run.sh"])
 
+    # ---- running the generated run.sh for real --------------------------------------------------
+    # The script is rewritten to live under a temp dir instead of /vm, and its serial port (VC_TTY) is a
+    # plain file there. Nothing else is changed, so what runs is what the guest runs.
+
+    def prepare(self, d, case="selfcheck-pass.yaml"):
+        out, _ = self.build(d, case)
+        files, _ = self.decode(out)
+        vm = Path(d) / "vm"
+        vm.mkdir()
+        for dest, data in files.items():
+            (vm / Path(dest).name).write_bytes(data)
+        script = files["/vm/run.sh"].decode().replace("/vm/", f"{vm}/").replace("/run/vc.pid", f"{d}/vc.pid")
+        (vm / "run.sh").write_text(script)
+        return vm, files
+
+    def run_seed(self, d, vm, tty=None, **env):
+        e = dict(os.environ, VC_TTY=str(tty or Path(d) / "serial.log"), VC_TTY_TRIES="3", VC_TTY_PAUSE="0.1")
+        e.update(env)
+        return subprocess.run(["bash", str(vm / "run.sh")], capture_output=True, text=True, env=e, timeout=120)
+
     def test_run_sh_end_to_end_with_the_markers_and_a_decodable_junit(self):
-        """Run the generated run.sh for real (paths redirected away from /vm and /dev/ttyS0)."""
         import base64, gzip, hashlib
         with tempfile.TemporaryDirectory() as d:
-            out, _ = self.build(d)
-            files, _ = self.decode(out)
-            vm = Path(d) / "vm"
-            vm.mkdir()
-            for dest, data in files.items():
-                (vm / Path(dest).name).write_bytes(data)
-            script = files["/vm/run.sh"].decode().replace("exec >/dev/ttyS0 2>&1", f"exec >{d}/serial.log 2>&1").replace("/vm/", f"{vm}/").replace("/vm ", f"{vm} ")
-            (vm / "run.sh").write_text(script)
-            r = subprocess.run(["bash", str(vm / "run.sh")], capture_output=True, text=True)
+            vm, _ = self.prepare(d)
+            r = self.run_seed(d, vm)
+            self.assertEqual(r.returncode, 0, r.stderr)
             log = (Path(d) / "serial.log").read_text()
             self.assertIn("=== VC-SEED BEGIN case=selfcheck-pass ===", log, r.stderr)
             self.assertIn("=== VC-SEED END ===", log)
@@ -1034,19 +1047,128 @@ class GuestSeedScript(unittest.TestCase):
             root = ET.fromstring(xml)
             self.assertEqual(root.get("failures"), "0")
             self.assertGreater(int(root.get("tests")), 3)
+            # the runner's own output and the files the guest keeps for after-the-fact inspection
+            for name in ("run.log", "stdout.log", "stderr.log", "junit.xml", "result-block.txt"):
+                self.assertTrue((vm / "out" / name).is_file(), name)
 
     def test_a_failing_case_reports_its_nonzero_rc_in_the_seed_output(self):
         with tempfile.TemporaryDirectory() as d:
-            out, _ = self.build(d, "selfcheck.yaml")
+            vm, _ = self.prepare(d, "selfcheck.yaml")
+            r = self.run_seed(d, vm)
+            self.assertIn("VC-SEED-RC=1", (Path(d) / "serial.log").read_text())
+            self.assertEqual(r.returncode, 0, "the case's verdict is VC-SEED-RC; run.sh itself must not fail "
+                                              "(cloud-init would report scripts-user failed)")
+
+    def test_run_sh_does_not_bind_its_stdout_to_the_serial_port(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, files = self.prepare(d)
+            text = files["/vm/run.sh"].decode()
+            code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))   # comments explain the old way
+            self.assertNotIn("exec >/dev/ttyS0", code)
+            self.assertNotIn("--console", text)
+            self.assertIn("MODE=${VC_MODE:-setsid}", text)                # the default keeps the cgroup
+            self.assertIn("setsid -w", text)
+            self.assertIn("CONTROL ONLY", text)                           # systemd-run is documented as breaking it
+            for sig in ("HUP", "TERM"):
+                self.assertIn(sig, text)
+
+    def test_exit_status_is_zero_and_the_result_is_kept_when_the_port_cannot_be_written(self):
+        with tempfile.TemporaryDirectory() as d:
+            vm, _ = self.prepare(d)
+            dead = Path(d) / "no" / "such" / "dir" / "ttyS0"              # open() fails every time
+            r = self.run_seed(d, vm, tty=dead)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            block = (vm / "out" / "result-block.txt").read_text()
+            self.assertIn("VC-SEED-RC=0", block)
+            self.assertIn("=== VC-SEED END ===", block)
+            log = (vm / "out" / "run.log").read_text()
+            self.assertIn("TTY-WRITE-FAILED", log)
+            self.assertIn("TTY-EMIT-FAILED", log)
+            self.assertFalse(dead.exists())
+
+    def test_the_result_block_is_written_exactly_once_when_the_port_comes_up_late(self):
+        with tempfile.TemporaryDirectory() as d:
+            vm, _ = self.prepare(d)
+            port_dir = Path(d) / "late"
+            tty = port_dir / "ttyS0"
+            threading.Timer(0.6, port_dir.mkdir).start()                  # the port is unusable at first
+            r = self.run_seed(d, vm, tty=tty, VC_TTY_TRIES="40")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = tty.read_text()
+            for marker in ("=== VC-SEED BEGIN", "VC-SEED-RC=", "JUNIT_BEGIN", "JUNIT_END", "=== VC-SEED END ==="):
+                self.assertEqual(text.count(marker), 1, f"{marker!r} x{text.count(marker)} in:\n{text[:400]}")
+
+    def test_plain_and_setsid_modes_both_produce_the_same_verdict(self):
+        for mode in ("setsid", "plain"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d:
+                vm, _ = self.prepare(d)
+                r = self.run_seed(d, vm, VC_MODE=mode)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("VC-SEED-RC=0", (Path(d) / "serial.log").read_text())
+                self.assertIn(f"mode={mode}", (vm / "out" / "run.log").read_text())
+
+    def test_the_result_survives_a_vhangup_of_the_port_while_the_case_runs(self):
+        """The real failure: agetty starts (TTYVHangup=yes) after run.sh began. Needs CAP_SYS_TTY_CONFIG."""
+        import ctypes, fcntl, pty, termios
+        libc = ctypes.CDLL(None, use_errno=True)
+        m, sl = pty.openpty()
+        name = os.ttyname(sl)
+
+        def hangup():
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    os.setsid()
+                    fd = os.open(name, os.O_RDWR)
+                    fcntl.ioctl(fd, termios.TIOCSCTTY, 0)
+                    os._exit(0 if libc.vhangup() == 0 else 3)
+                finally:
+                    os._exit(4)
+            return os.waitpid(pid, 0)[1]
+
+        probe_old = os.open(name, os.O_WRONLY | os.O_NOCTTY)
+        if os.WEXITSTATUS(hangup()) != 0:
+            os.close(probe_old)
+            self.skipTest("vhangup needs CAP_SYS_TTY_CONFIG (run as root, e.g. in a container with that capability)")
+        with self.assertRaises(OSError):                                   # the premise: an fd opened before is dead
+            os.write(probe_old, b"x")
+        os.close(probe_old)
+        with tempfile.TemporaryDirectory() as d:
+            case = Path(d) / "slow.json"
+            case.write_text(json.dumps({"id": "slow", "item": "fixture_selfcheck", "suite_commit": "auto", "basis": ["x"],
+                                        "steps": [{"name": "slow", "basis": "x", "cmd": "sleep 3; echo done",
+                                                   "expect_exit": 0, "expect_regex": "^done$"}]}))
+            subprocess.run(["git", "init", "-q", d], check=True)
+            out = Path(d) / "s.iso"
+            rc, o, e = self.make(str(case), str(out), "--no-validate")
+            self.assertEqual(rc, 0, o + e)
             files, _ = self.decode(out)
             vm = Path(d) / "vm"
             vm.mkdir()
             for dest, data in files.items():
                 (vm / Path(dest).name).write_bytes(data)
-            script = files["/vm/run.sh"].decode().replace("exec >/dev/ttyS0 2>&1", f"exec >{d}/serial.log 2>&1").replace("/vm/", f"{vm}/").replace("/vm ", f"{vm} ")
-            (vm / "run.sh").write_text(script)
-            subprocess.run(["bash", str(vm / "run.sh")], capture_output=True, text=True)
-            self.assertIn("VC-SEED-RC=1", (Path(d) / "serial.log").read_text())
+            (vm / "run.sh").write_text(files["/vm/run.sh"].decode().replace("/vm/", f"{vm}/").replace("/run/vc.pid", f"{d}/vc.pid"))
+            p = subprocess.Popen(["bash", str(vm / "run.sh")], env=dict(os.environ, VC_TTY=name), start_new_session=True,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.5)
+            hangup()                                                       # lands while the case is running
+            got = b""
+            deadline = time.time() + 60
+            import select
+            while time.time() < deadline:
+                r, _, _ = select.select([m], [], [], 0.5)
+                if r:
+                    try:
+                        got += os.read(m, 65536)
+                    except OSError:
+                        pass
+                elif p.poll() is not None:
+                    break
+            self.assertEqual(p.wait(), 0)
+            text = got.decode(errors="replace")
+            self.assertEqual(text.count("=== VC-SEED END ==="), 1, text)
+            self.assertIn("VC-SEED-RC=0", text)
+            self.assertIn("PASS  slow.slow", text)
 
 
 class HardenedInvocation(unittest.TestCase):
