@@ -518,6 +518,33 @@ EVIDENCE_FORMAT = "danos-verification-evidence-v2"
 PROVENANCE_FORMAT = "danos-build-provenance-v2"
 
 
+TRUSTED_KEYS_FILE = Path(__file__).resolve().with_name("trusted-keys.sha256")
+
+
+def pinned_key_problem(key_path):
+    """(ok, reason): key_path is one of the release roots listed in trusted-keys.sha256.
+
+    'This signature verifies against this public key' says nothing about whether
+    that public key is still the project's root. The allowlist is the only place
+    that answers it, so a superseded or lost root cannot be accepted again by
+    accident (the retired roots are recorded in REVOKED-KEYS.md). A source tree
+    without the allowlist -- e.g. a checkout of this tool alone -- keeps the old
+    behaviour: no pin is applied.
+    """
+    if not TRUSTED_KEYS_FILE.is_file():
+        return True, ""
+    try:
+        want = {ln.split()[0].lower() for ln in TRUSTED_KEYS_FILE.read_text().splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")}
+        got = hashlib.sha256(Path(key_path).read_bytes()).hexdigest()
+    except OSError as e:
+        return False, f"trusted key could not be read for pinning: {e}"
+    if got not in want:
+        return False, (f"trusted key {got[:16]}… is not in release/trusted-keys.sha256: "
+                       "superseded or unknown root, see release/REVOKED-KEYS.md")
+    return True, ""
+
+
 def verify_signature(doc_path, trusted_key):
     """(ok, reason): doc_path + '.sig' is an Ed25519 signature over doc_path by
     the operator-supplied trusted public key (PEM). The key must not come from
@@ -537,6 +564,9 @@ def verify_signature(doc_path, trusted_key):
         return False, f"signature check could not run: {e}"
     if r.returncode != 0:
         return False, "signature does not verify against the trusted key"
+    ok, why = pinned_key_problem(trusted_key)
+    if not ok:
+        return False, why
     return True, ""
 
 

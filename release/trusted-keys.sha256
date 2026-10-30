@@ -1,0 +1,5 @@
+# Release roots this project still trusts, one sha256 per line (of the PEM file).
+# Only a root listed here is accepted by mk-release.py --trusted-key; see
+# REVOKED-KEYS.md for why the earlier roots are not here. Rotating a root means
+# generating a new key, adding it here, and shipping the same commit that adds it.
+ead6fe7751cec2b7b995dfa5be288d681581c4c899cd925b5bc65c5fbf5678f8  root-C-ed25519-20261030

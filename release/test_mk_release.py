@@ -170,6 +170,14 @@ class SignedDirMixin:
         subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out",
                         str(self.keys / "evil.pem")], check=True, capture_output=True)
         self.pub = self.keys / "k.pub"
+        # These keys are throwaway, so by design they are not in
+        # release/trusted-keys.sha256; point the pin at a per-test allowlist that
+        # lists this test's key, or every signature test would be rejected as a
+        # retired root. TrustedKeyPinTest overrides it again on purpose.
+        pin = self.keys / "trusted-keys.sha256"
+        pin.write_text(hashlib.sha256(self.pub.read_bytes()).hexdigest() + "  test-key\n")
+        self.addCleanup(setattr, mk, "TRUSTED_KEYS_FILE", mk.TRUSTED_KEYS_FILE)
+        mk.TRUSTED_KEYS_FILE = pin
 
     def write_signed(self, name, doc, key="k.pem", sign=True):
         path = self.dir / name
@@ -564,6 +572,42 @@ class ProvenanceTest(SignedDirMixin, unittest.TestCase):
         prov, _ = self.load(self.entry())
         self.assertNotEqual(self.resolve(prov, recorded=())["category"],
                             "local_git_version_stamped")
+
+
+class TrustedKeyPinTest(SignedDirMixin, unittest.TestCase):
+    """A verifying signature is not enough: the public key itself must still be a
+    root the project publishes (trusted-keys.sha256), otherwise a retired key can
+    be fed back in and old signatures laundered through it."""
+
+    def setUp(self):
+        self.make_dir()
+
+    def _verify_with_pin(self, allowlist_text):
+        pin = self.keys / "trusted-keys.sha256"
+        pin.write_text(allowlist_text)
+        doc = self.write_signed("d.json", {"hello": "world"})
+        real = mk.TRUSTED_KEYS_FILE
+        mk.TRUSTED_KEYS_FILE = pin
+        try:
+            return mk.verify_signature(doc, self.pub)
+        finally:
+            mk.TRUSTED_KEYS_FILE = real
+
+    def test_key_listed_in_allowlist_is_accepted(self):
+        got = hashlib.sha256(self.pub.read_bytes()).hexdigest()
+        ok, why = self._verify_with_pin(f"{got}  root-C\n")
+        self.assertTrue(ok, why)
+
+    def test_key_absent_from_allowlist_is_rejected(self):
+        ok, why = self._verify_with_pin("deadbeef  root-A (lost)\n")
+        self.assertFalse(ok)
+        self.assertIn("not in release/trusted-keys.sha256", why)
+
+    def test_empty_allowlist_rejects_everything(self):
+        # An empty allowlist is still an allowlist: nothing matches, so nothing passes.
+        ok, why = self._verify_with_pin("")
+        self.assertFalse(ok)
+        self.assertIn("not in release/trusted-keys.sha256", why)
 
 
 if __name__ == "__main__":
