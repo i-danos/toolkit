@@ -1,0 +1,114 @@
+{
+ "id": "drift_state_machine",
+ "item": "drift_state_machine",
+ "suite_commit": "auto",
+ "description": "The four checks of vm/verify-drift-watch.sh (settled box shows no persistent disagreement; a drift that cannot heal is counted and the count rises; the drift is still there afterwards, nothing repaired it; the count returns to zero when the drift clears), run unmodified on the HOST against R1 of the running topology (TOPO=ipsec, through the danos-robot container: it injects an FPM session disconnect with vtysh and removes it again). Run with --exec local on the host, not in a guest. Covers ONE path of the state machine (desired-not-programmed while the FPM session is down: observed -> stale_candidate -> confirmed_stale, then clearing); the explained states, the promotion thresholds and the reset on a classification change are covered by vm/test_dpa_drift_state.py, not here.",
+ "basis": [
+  "design: handoff/verify/drift-state-machine-coverage-plan-20261028.md",
+  "required case names: handoff/verify/suite-config.json items.drift_state_machine",
+  "the script's names are the first argument of its ok()/bad() calls, identical on both branches since toolkit ef23a28"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "log": "/tmp/vc-drift-state-machine.log"
+ },
+ "steps": [
+  {
+   "name": "topology-is-up",
+   "basis": "design: the script drives R1 (192.168.203.155) through the danos-robot container, TOPO=ipsec (verify-drift-watch.sh header); if R1 does not answer, nothing below means anything",
+   "cmd": "docker exec danos-robot timeout 30 sshpass -p vyatta ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 vyatta@192.168.203.155 'echo R1_UP'",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": "^R1_UP$"
+  },
+  {
+   "name": "run-verify-drift-watch",
+   "basis": "design: the checks are the ok()/bad() calls of vm/verify-drift-watch.sh, run unmodified; the log is removed first so a stale file cannot satisfy a later step",
+   "cmd": "rm -f {{log}}; OUT={{log}} bash {{vm_dir}}/verify-drift-watch.sh; echo \"WATCH_RC=$?\"; test -s {{log}} && echo \"LOG_BYTES=$(stat -c %s {{log}})\"",
+   "timeout": 900,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^WATCH_RC=[0-9]+$",
+    "^LOG_BYTES=[1-9][0-9]*$"
+   ]
+  },
+  {
+   "name": "three-cycles-on-a-settled-box-no-disagreement",
+   "basis": "design: check 1 (verify-drift-watch.sh:60/62); the required case name is the slug of the name the script's ok() prints, and only a PASS line printed once, verbatim, passes it",
+   "cmd": "n=$(grep -cE '^  (PASS|FAIL)  three cycles on a settled box, no disagreement$' {{log}}); echo \"occurrences=$n\"; grep -E '^  (PASS|FAIL)  three cycles on a settled box, no disagreement$' {{log}}",
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^  PASS  three cycles on a settled box, no disagreement$"
+   ],
+   "expect_not_regex": "^  FAIL  "
+  },
+  {
+   "name": "the-count-rises-across-cycles",
+   "basis": "design: check 2 (verify-drift-watch.sh:78/80); the required case name is the slug of the name the script's ok() prints, and only a PASS line printed once, verbatim, passes it",
+   "cmd": "n=$(grep -cE '^  (PASS|FAIL)  the count rises across cycles$' {{log}}); echo \"occurrences=$n\"; grep -E '^  (PASS|FAIL)  the count rises across cycles$' {{log}}",
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^  PASS  the count rises across cycles$"
+   ],
+   "expect_not_regex": "^  FAIL  "
+  },
+  {
+   "name": "the-drift-is-still-there-after-watching",
+   "basis": "design: check 3 (verify-drift-watch.sh:90/92); the required case name is the slug of the name the script's ok() prints, and only a PASS line printed once, verbatim, passes it",
+   "cmd": "n=$(grep -cE '^  (PASS|FAIL)  the drift is still there after watching$' {{log}}); echo \"occurrences=$n\"; grep -E '^  (PASS|FAIL)  the drift is still there after watching$' {{log}}",
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^  PASS  the drift is still there after watching$"
+   ],
+   "expect_not_regex": "^  FAIL  "
+  },
+  {
+   "name": "the-count-went-back-to-zero",
+   "basis": "design: check 4 (verify-drift-watch.sh:105/107); the required case name is the slug of the name the script's ok() prints, and only a PASS line printed once, verbatim, passes it",
+   "cmd": "n=$(grep -cE '^  (PASS|FAIL)  the count went back to zero$' {{log}}); echo \"occurrences=$n\"; grep -E '^  (PASS|FAIL)  the count went back to zero$' {{log}}",
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^  PASS  the count went back to zero$"
+   ],
+   "expect_not_regex": "^  FAIL  "
+  },
+  {
+   "name": "check-lines-parse-and-are-exactly-four",
+   "basis": "design: vm/fixture-log-to-result.py reads the same log (no duplicate check name, statuses consistent); --allow-missing-summary because the script prints '4 passed, 0 failed', not 'N of M'",
+   "cmd": "python3 {{vm_dir}}/fixture-log-to-result.py {{log}} --gate drift_state_machine --image fixture-log --allow-missing-summary",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_json": [
+    {
+     "path": [
+      "status"
+     ],
+     "equals": "PASS"
+    },
+    {
+     "path": [
+      "passed"
+     ],
+     "equals": 4
+    },
+    {
+     "path": [
+      "total"
+     ],
+     "equals": 4
+    }
+   ]
+  },
+  {
+   "name": "script-summary-line-says-4-passed-0-failed",
+   "basis": "design: verify-drift-watch.sh prints '  %d passed, %d failed' before it exits with the number of failures",
+   "cmd": "grep -E '^  [0-9]+ passed, [0-9]+ failed$' {{log}}",
+   "expect_exit": 0,
+   "expect_regex": "^  4 passed, 0 failed$"
+  }
+ ]
+}
