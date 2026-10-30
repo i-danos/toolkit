@@ -431,6 +431,22 @@ The items named by the cases (`a02_f6_rule_without_action`,
 rows of `VERIFICATION_ITEMS`**, so `mk-release.py` rejects their evidence as an
 unknown item until they are added there, with a suite-config entry.
 
+**`item12`'s W2 injector is a race against configd, so it is scheduled, not timed.** The case must make
+the journal write at the *end* of a commit (W2) fail while every earlier write and the runfile write
+succeed. The first injector polled `running.config`'s mtime every 0.5 ms; under TCG the tail of a commit
+takes milliseconds and it won, under KVM it takes microseconds and the injector swapped the journal for a
+directory only after W2 had been written (no warning, `commit: null` in the saved journal, hence
+`commit/state: no such field`). It now (1) waits for the commit's own `persisting` journal write via
+inotify, which comes before the runfile is rendered and written, (2) swaps the journal for a directory with one
+`renameat2(RENAME_EXCHANGE)` on a directory prepared in advance, (3) pins configd's threads and itself to one
+cpu and runs `SCHED_FIFO`, so it runs before configd's next instruction. Conditions: root, python3, inotify,
+`renameat2`, and `CAP_SYS_NICE` for the pinning (without it the injector says so on `/tmp/w2watch.out` and is
+best effort only). Measured in a container against real configd commits on tmpfs: the old injector produced the
+warning in 25 of 200 commits, the new one in 240 of 240 (232 of 240 with `W2_PIN=0`). **Not yet measured in a
+KVM guest**: until it has been, a `commit-reports-the-journal-failure` FAIL on KVM is a fixture result to
+investigate (`/tmp/w2watch.out`, the saved `commit-state.json.bak`), not yet a product verdict. The assertions
+of the case were not touched; if the injector cannot be made to land, run the case under TCG.
+
 **P2 and P4 cannot be told apart from the journal.** At both seams `commit-state.json`
 shows the same thing (`commit.state` applying, acmd `may_have_been_sent` true,
 `settled` false), so `cases/p2p4.yaml` reads acmd's own state, which differs: at P2
