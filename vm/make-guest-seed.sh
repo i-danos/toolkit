@@ -11,6 +11,15 @@
 # port between fixed markers. The seed is independent of the ISO under test.
 #
 # Serial output (all lines start with the fixed text shown; see README "Three ways to run a case"):
+# The serial port is written with a fresh open() per write and only from run.sh itself; the runner's own
+# stdout/stderr and everything else go to files under /vm/out (run.log, stdout.log, stderr.log, junit.xml,
+# result-block.txt). Why: serial-getty@.service has TTYVHangup=yes, so when agetty starts AFTER a script has
+# opened /dev/ttyS0 (the usual "exec >/dev/ttyS0"), vhangup(2) revokes that descriptor, every later write fails
+# with EIO, the output is lost and the script exits non-zero, which cloud-init reports as "Failed to run module
+# scripts-user". The runner still ran; only the report was lost (handoff/runs/f6-hang-r2).
+# VC_MODE (set in the guest's environment): setsid (default; same cgroup, so f6's execution-context step still
+# passes) | plain | systemd-run (CONTROL ONLY: the case runs in vc-case.service, a different cgroup, so the
+# execution-context step FAILS). VC_TTY / VC_TTY_TRIES / VC_TTY_PAUSE exist for the tests.
 #   === VC-SEED BEGIN case=<id> ===
 #   VC-SEED-SHA256 runner=<hex> console=<hex> case=<hex>        what was run, for after-the-fact checks
 #   ... the runner's own PASS/FAIL/SKIP lines ...
@@ -76,22 +85,59 @@ for v in "${VARS[@]}"; do VARARGS+=" --var '$v'"; done
 
 cat > "$STAGE/run.sh" <<EOF
 #!/bin/bash
-exec >/dev/ttyS0 2>&1
-echo "=== VC-SEED BEGIN case=$CASE_ID ==="
-echo "VC-SEED-SHA256 runner=\$(sha256sum /vm/verify-case.py | cut -d' ' -f1) console=\$(sha256sum /vm/console.py | cut -d' ' -f1) case=\$(sha256sum /vm/case.yaml | cut -d' ' -f1)"
-echo "VC-SEED-EXPECTED runner=$R_SHA console=$C_SHA case=$K_SHA"
-mkdir -p /vm/out
-python3 /vm/verify-case.py /vm/case.yaml --exec local --junit /vm/out/junit.xml$VARARGS
-echo "VC-SEED-RC=\$?"
-if [ -s /vm/out/junit.xml ]; then
-  echo "VC-SEED-JUNIT-SHA256=\$(sha256sum /vm/out/junit.xml | cut -d' ' -f1) SIZE=\$(stat -c %s /vm/out/junit.xml)"
-  echo JUNIT_BEGIN
-  gzip -9 < /vm/out/junit.xml | base64 -w 76
-  echo JUNIT_END
-else
-  echo "VC-SEED-NO-JUNIT"
-fi
-echo "=== VC-SEED END ==="
+# Hang-up-resistant wrapper. The runner, console.py and the case are the UNMODIFIED files.
+# Why it differs from the stock run.sh: stock does "exec >/dev/ttyS0". serial-getty@.service has
+# TTYVHangup=yes, so when systemd starts agetty AFTER that open, vhangup(2) revokes the descriptor and every
+# later write fails with EIO -- the runner still runs, but its output is lost and the last write makes
+# cloud-init report "Failed to run module scripts-user". Here: output goes to files first, the serial port is
+# opened afresh for every write, and a result block is written to the port only after the runner has ended.
+# VC_MODE: setsid (default; keeps the cgroup, so the execution-context step still passes) | plain |
+#          systemd-run (CONTROL ONLY: new cgroup vc-case.service, the f6 execution-context step will fail)
+OUT=/vm/out; LOG=\$OUT/run.log; TTY=\${VC_TTY:-/dev/ttyS0}; MODE=\${VC_MODE:-setsid}
+TRIES=\${VC_TTY_TRIES:-8}; PAUSE=\${VC_TTY_PAUSE:-1}
+mkdir -p \$OUT
+t() { printf '[%s up=%s] %s\\n' "\$(date -u +%T)" "\$(cut -d' ' -f1 /proc/uptime)" "\$*" >> \$LOG; }
+# one write = one open(); retried because the port can be mid-reset when the getty starts
+tw() { local n; for ((n = 0; n < TRIES; n++)); do if printf '%s\\n' "\$*" >> \$TTY 2>/dev/null; then return 0; fi; sleep \$PAUSE; done; t "TTY-WRITE-FAILED: \${1:0:70}"; return 1; }
+emit() { local n; for ((n = 0; n < TRIES; n++)); do if cat "\$1" >> \$TTY 2>/dev/null; then return 0; fi; sleep \$PAUSE; done; t "TTY-EMIT-FAILED: \$1"; return 1; }
+# probes: which signal (if any) arrived
+for s in HUP TERM INT QUIT PIPE; do trap "t 'SIGNAL \$s received'; echo \$s >> \$OUT/signals.log" \$s; done
+echo \$\$ > /run/vc.pid 2>/dev/null || echo \$\$ > \$OUT/vc.pid
+# the descriptor stock run.sh would have used, kept ONLY to measure it: fd 3 is opened now and never written to
+exec 3>>\$TTY 2>/dev/null || t "fd3 open failed"
+exec >> \$LOG 2>&1
+t "start pid=\$\$ ppid=\$PPID mode=\$MODE uid=\$(id -u) cgroup=\$(tr '\\n' ' ' </proc/\$\$/cgroup)"
+t "agetty at start: \$(systemctl show serial-getty@ttyS0 -p ExecMainStartTimestampMonotonic -p NRestarts -p ActiveState 2>&1 | tr '\\n' ' ')"
+tw "=== VC-SEED BEGIN case=$CASE_ID ==="
+tw "VC-SEED-SHA256 runner=\$(sha256sum /vm/verify-case.py | cut -d' ' -f1) console=\$(sha256sum /vm/console.py | cut -d' ' -f1) case=\$(sha256sum /vm/case.yaml | cut -d' ' -f1)"
+tw "VC-SEED-EXPECTED runner=$R_SHA console=$C_SHA case=$K_SHA"
+( while :; do
+    old=\$(stty -a <&3 2>&1 >/dev/null | head -c 40); [ -n "\$old" ] || old=ok          # the stock descriptor
+    new=\$(stty -F \$TTY -a 2>&1 >/dev/null | head -c 40); [ -n "\$new" ] || new=ok     # a fresh open
+    t "hb runner=\$(pgrep -f 'python3 /vm/verify-case.py' | head -1) stock-fd=\$old fresh-open=\$new configd=\$(systemctl is-active configd 2>&1) acmd=\$(systemctl is-active acmd 2>&1) agetty-start=\$(systemctl show serial-getty@ttyS0 -p ExecMainStartTimestampMonotonic --value 2>&1)"
+    sleep 5
+  done ) &
+HB=\$!
+RUN=(python3 /vm/verify-case.py /vm/case.yaml --exec local --junit \$OUT/junit.xml$VARARGS)
+case "\$MODE" in
+  systemd-run) systemd-run --unit=vc-case --collect --wait --pipe --property=SendSIGHUP=no "\${RUN[@]}" > \$OUT/stdout.log 2> \$OUT/stderr.log ;;
+  plain)       "\${RUN[@]}" > \$OUT/stdout.log 2> \$OUT/stderr.log ;;
+  *)           setsid -w "\${RUN[@]}" > \$OUT/stdout.log 2> \$OUT/stderr.log ;;
+esac
+rc=\$?
+kill \$HB 2>/dev/null
+t "runner exit rc=\$rc junit=\$(ls -l \$OUT/junit.xml 2>&1)"
+t "agetty at end: \$(systemctl show serial-getty@ttyS0 -p ExecMainStartTimestampMonotonic -p NRestarts -p ActiveState 2>&1 | tr '\\n' ' ')"
+{ cat \$OUT/stdout.log
+  echo "VC-SEED-RC=\$rc"
+  if [ -s \$OUT/junit.xml ]; then
+    echo "VC-SEED-JUNIT-SHA256=\$(sha256sum \$OUT/junit.xml | cut -d' ' -f1) SIZE=\$(stat -c %s \$OUT/junit.xml)"
+    echo JUNIT_BEGIN; gzip -9 < \$OUT/junit.xml | base64 -w 76; echo JUNIT_END
+  else echo "VC-SEED-NO-JUNIT"; fi
+  echo "=== VC-SEED END ==="; } > \$OUT/result-block.txt
+emit \$OUT/result-block.txt && t "result block written to \$TTY" 
+t "stock fd 3 at the end: \$(stty -a <&3 2>&1 >/dev/null | head -c 60)"
+exit 0
 EOF
 
 python3 -I - "$STAGE" "$HERE" "$CASE" "$IID" "$CASE_ID" <<'PYEOF'

@@ -270,6 +270,19 @@ the one-liner in the script header and compare the hash; no evidence document is
 guest (no ISO hash, no repository there). The seed does not depend on the ISO under test. The
 serial port is then only a one-way log, so QEMU's `-serial` can go to a file.
 
+`run.sh` never binds its stdout to the serial port. The guest's `serial-getty@ttyS0` has
+`TTYVHangup=yes`: if agetty starts after a script has opened `/dev/ttyS0` (the old
+`exec >/dev/ttyS0`), `vhangup(2)` revokes that descriptor, every later write fails with EIO, the
+whole report is lost and the script's last write makes cloud-init print `Failed to run module
+scripts-user`, although the runner ran to the end. So the runner writes to files under `/vm/out`
+(`run.log`, `stdout.log`, `stderr.log`, `junit.xml`, `result-block.txt`), the port is opened afresh
+for every write, the result block goes out once after the runner has ended, and `run.sh` exits 0
+(the case's verdict is `VC-SEED-RC`). After a boot, `/vm/out/run.log` also records the signals the
+script received and a heartbeat comparing the old descriptor with a fresh open. `VC_MODE` selects how
+the case is started: `setsid` (default, same cgroup, so the `execution-context` step still passes),
+`plain`, or `systemd-run` — **control only**: it runs the case in `vc-case.service`, a different
+cgroup, which makes `execution-context` fail.
+
 **Running against a guest with `--console`** (diagnosis). The serial port must be reachable over
 TCP (`qemu ... -serial tcp:127.0.0.1:4460,server,nowait`). The cases need root (`systemctl`,
 `/var/run/vyatta/configd`). The live image does ship an official account (`tmpuser`, level
