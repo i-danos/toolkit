@@ -1171,6 +1171,94 @@ class GuestSeedScript(unittest.TestCase):
             self.assertIn("PASS  slow.slow", text)
 
 
+class Item12Injector(unittest.TestCase):
+    """The W2 injector of cases/item12.yaml, run against a writer that imitates the tail of a configd commit
+    (journal rename 'applying', journal rename 'persisting', runfile work, journal rename = W2)."""
+
+    @classmethod
+    def case(cls):
+        return json.loads((CASES / "item12.yaml").read_text())
+
+    def injector_source(self):
+        cmd = self.case()["steps"][2]["cmd"]
+        self.assertEqual(cmd.count("<<'PY'\n"), 1)
+        return cmd.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0] + "\n"
+
+    def journal_write(self, d, state, todo):
+        j = Path(d) / "commit-state.json"
+        tmp = Path(d) / "commit-state.json.tmp"
+        tmp.write_text(json.dumps({"version": 1, "commit": {"id": "1-1", "state": state, "todo": todo}},
+                                  separators=(",", ":")) + "\n")       # as Go's json.Marshal writes it
+        os.rename(tmp, j)
+
+    def run_commit(self, todo, window=0.03):
+        """Returns (w2_error_or_None, injector_stdout, bak_text_or_None, journal_is_dir)."""
+        with tempfile.TemporaryDirectory() as d:
+            j = Path(d) / "commit-state.json"
+            j.write_text('{"version":1,"commit":null}\n')
+            src = Path(d) / "w2watch.py"
+            src.write_text(self.injector_source())
+            env = dict(os.environ, W2_DIR=d, W2_PIN="0")        # pinning needs CAP_SYS_NICE; the swap logic does not
+            p = subprocess.Popen([sys.executable, str(src)], env=env, stdout=subprocess.PIPE, text=True)
+            try:
+                for line in p.stdout:
+                    if "armed" in line:
+                        break
+                else:
+                    self.fail("the injector never armed")
+                self.journal_write(d, "applying", ["net.vyatta.vci.acmd.v1"])        # W1
+                time.sleep(0.01)
+                self.journal_write(d, "persisting", todo)                             # the trigger
+                time.sleep(window)                                                    # render + write the runfile
+                err = None
+                try:
+                    self.journal_write(d, "applying", [])                             # W2 (stand-in content)
+                except OSError as e:
+                    err = e
+                time.sleep(0.05)
+                p.terminate()
+                out = p.stdout.read()
+            finally:
+                p.kill()
+                p.wait()
+                p.stdout.close()
+            bak = Path(d) / "commit-state.json.bak"
+            return err, out, bak.read_text() if bak.is_file() else None, j.is_dir()
+
+    def test_w2_fails_and_the_w1_record_survives_in_the_saved_journal(self):
+        err, out, bak, is_dir = self.run_commit(["net.vyatta.vci.acmd.v1", "net.vyatta.vci.config.provisiond.v1"])
+        self.assertIsNotNone(err, "W2's rename onto the journal path must fail")
+        self.assertTrue(is_dir)
+        self.assertIn("W2WATCH: CAUGHT runfile write, journal replaced by dir", out)
+        rec = json.loads(bak)["commit"]
+        self.assertEqual(rec["state"], "persisting")
+        self.assertIn("net.vyatta.vci.acmd.v1", rec["todo"])
+
+    def test_a_commit_that_does_not_involve_acm_is_left_alone(self):
+        err, out, bak, is_dir = self.run_commit(["net.vyatta.vci.frr.v1"])
+        self.assertIsNone(err)
+        self.assertFalse(is_dir)
+        self.assertNotIn("CAUGHT", out)
+
+    def test_the_earlier_journal_writes_of_a_commit_do_not_trigger_it(self):
+        err, out, bak, is_dir = self.run_commit(["net.vyatta.vci.acmd.v1"], window=0.03)
+        self.assertIsNotNone(err)                      # sanity: it triggers once, at 'persisting', not at 'applying'
+        self.assertEqual(out.count("CAUGHT"), 1)
+
+    def test_the_assertions_the_injector_serves_are_unchanged(self):
+        steps = {s["name"]: s for s in self.case()["steps"]}
+        warn = steps["commit-reports-the-journal-failure"]
+        self.assertEqual(warn["expect_regex"], "WARNING: the commit journal could not be updated \\(end of the commit\\).*"
+                                               "after a restart the components of this commit are treated as unknown")
+        self.assertEqual(warn["expect_exit"], 0)
+        self.assertIn("skip_if", warn)                 # an injection that did not land is a recorded skip, never a pass
+        w1 = steps["w1-intent-record-survived"]
+        self.assertEqual(w1["expect_json"], [{"path": ["commit", "state"], "equals": "persisting"},
+                                             {"path": ["commit", "todo"], "contains": "net.vyatta.vci.acmd.v1"}])
+        self.assertEqual(steps["injector-caught-the-runfile-write"]["expect_regex"],
+                         "^W2WATCH: CAUGHT runfile write, journal replaced by dir")
+
+
 class HardenedInvocation(unittest.TestCase):
     def tool(self, d, extra, steps=None):
         p = write_case(d, steps or [{"name": "a", "basis": "x", "cmd": "true", "expect_exit": 0}])
