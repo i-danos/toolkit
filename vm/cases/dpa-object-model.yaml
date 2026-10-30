@@ -1,0 +1,42 @@
+{
+ "id": "dpa_object_model_nexthop_group",
+ "item": "dpa_object_model_nexthop_group",
+ "suite_commit": "auto",
+ "description": "On every router of the running topology (R1-R3, TOPO=ipsec), `dpa object show nexthop-group` is enumerable (the class entry says enumerable true), its objects are keyed inet/idx:N or inet6/idx:N, and every nh_index that the data plane's `route show` (IPv4) and `route6 show` (IPv6) refer to is present in the enumeration of the matching family. Run with --exec local on the HOST (it reaches the routers through the danos-robot container), not in a guest. HARDWARE PATH NOT COVERED: the VMs have no hardware backend, so the state is no_support and the backend sw-dataplane; that is the expected answer, it is reported and not judged, and nothing here says anything about nexthop groups programmed into hardware. Not compared against zebra (there is no desired-side view of these groups), so this is coverage, not drift detection.",
+ "basis": [
+  "observed: docs/DEFECTS.md section 'DPA object model: nexthop-group class' and release/mk-release.py VERIFICATION_ITEMS dpa_object_model_nexthop_group",
+  "required case name: handoff/verify/suite-config.json items.dpa_object_model_nexthop_group",
+  "limit: indices 0-3 are enumerated but referenced by no zebra route (the data plane's own reserved routes); the index-to-route mapping is not checked one by one"
+ ],
+ "steps": [
+  {
+   "name": "topology-is-up",
+   "basis": "design: the claim is about all three routers of a live topology (mk-release dpa_object_model_nexthop_group); R1/R2/R3 are 192.168.203.155-157 behind the danos-robot container, TOPO=ipsec",
+   "cmd": "for r in 155 156 157; do docker exec danos-robot timeout 30 sshpass -p vyatta ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 vyatta@192.168.203.$r \"echo UP_$r\"; done",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^UP_155$",
+    "^UP_156$",
+    "^UP_157$"
+   ]
+  },
+  {
+   "name": "dpa-class-nexthop-group-is-enumerable",
+   "basis": "observed: docs/DEFECTS.md 'DPA object model: nexthop-group class' (3 routers, 0 missing); keys from vyatta-dataplane src/nh_common.c nexthop_emit_dpa_objects (inet/idx:N, inet6/idx:N), nh_index from src/route.c rt_print_nexthop and src/netinet6/route_v6.c rt6_print_nexthop. State and backend are printed, not judged: no_support / sw-dataplane is the expected answer on a VM",
+   "cmd": "for r in 155 156 157; do\nS() { docker exec danos-robot timeout 60 sshpass -p vyatta ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 vyatta@192.168.203.$r \"sudo /opt/vyatta/bin/vplsh -l -c \\\"$1\\\"\" 2>/dev/null; }\nS 'dpa object show nexthop-group' > /tmp/vc-nhg.$r; S 'route show' > /tmp/vc-rt4.$r; S 'route6 show' > /tmp/vc-rt6.$r\ndone\npython3 - <<'PY'\nimport json,re\ndef load(p):\n    t=open(p).read(); return json.loads(t[t.index('{'):])\nfor r,n in ((155,'R1'),(156,'R2'),(157,'R3')):\n    try:\n        d=load('/tmp/vc-nhg.%d'%r)['dpa_objects']\n        c=[x for x in d['classes'] if x['class']=='nexthop-group'][0]\n        o=[x for x in d['objects'] if x.get('class')=='nexthop-group']\n        m=[re.fullmatch(r'(inet6?)/idx:(\\d+)',x['key']) for x in o]\n        idx={'inet':set(),'inet6':set()}\n        for k in m:\n            if k: idx[k.group(1)].add(int(k.group(2)))\n        r4={e['nh_index'] for e in load('/tmp/vc-rt4.%d'%r)['route_show']}\n        r6={e['nh_index'] for e in load('/tmp/vc-rt6.%d'%r)['route6_show']}\n        print('%s nexthop-group enumerable=%s groups=%d keys=%s referenced=%d/%d missing=%s%s state=%s backend=%s' % (n,str(c['enumerable']).lower(),len(o),'ok' if all(m) else 'BAD',len(r4),len(r6),sorted(r4-idx['inet']),sorted(r6-idx['inet6']),','.join(sorted({x['state'] for x in o})),','.join(sorted({x['backend'] for x in o}))))\n    except Exception as e:\n        print('%s nexthop-group UNREADABLE %r'%(n,e))\nPY\nrm -f /tmp/vc-nhg.* /tmp/vc-rt4.* /tmp/vc-rt6.*",
+   "timeout": 300,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^R1 nexthop-group enumerable=true groups=[1-9][0-9]* keys=ok referenced=[0-9]+/[0-9]+ missing=\\[\\]\\[\\] state=\\S+ backend=\\S+$",
+    "^R2 nexthop-group enumerable=true groups=[1-9][0-9]* keys=ok referenced=[0-9]+/[0-9]+ missing=\\[\\]\\[\\] state=\\S+ backend=\\S+$",
+    "^R3 nexthop-group enumerable=true groups=[1-9][0-9]* keys=ok referenced=[0-9]+/[0-9]+ missing=\\[\\]\\[\\] state=\\S+ backend=\\S+$"
+   ],
+   "expect_not_regex": [
+    "UNREADABLE",
+    "enumerable=false",
+    "keys=BAD"
+   ]
+  }
+ ]
+}

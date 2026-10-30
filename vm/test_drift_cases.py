@@ -168,5 +168,119 @@ class DriftStateMachineCase(unittest.TestCase):
         self.assertEqual(res[DRIFT_REQUIRED[1]], "FAIL")
 
 
+# ---- cases/dpa-object-model.yaml ---------------------------------------------------------------------
+
+DPA_ID = "dpa_object_model_nexthop_group"
+DPA_REQUIRED = DPA_ID + ".dpa-class-nexthop-group-is-enumerable"
+
+# A fake docker that answers like the three routers: the last argument is the remote command, the router is the
+# vyatta@192.168.203.15x argument; the answers are files named <what>.<last octet> in $FAKE_DIR.
+FAKE_DOCKER_DPA = r"""#!/bin/bash
+cmd="${@: -1}"
+host=$(printf '%s\n' "$@" | grep -o 'vyatta@192.168.203.[0-9]*' | head -1); n=${host##*.}
+case "$cmd" in
+  "echo UP_"*) eval "$cmd" ;;
+  *"dpa object show nexthop-group"*) cat "$FAKE_DIR/nhg.$n" ;;
+  *"route6 show"*) cat "$FAKE_DIR/rt6.$n" ;;
+  *"route show"*) cat "$FAKE_DIR/rt4.$n" ;;
+esac
+exit 0
+"""
+
+
+def nhg_doc(enumerable=True, keys=None, state="NO_SUPPORT", backend="sw-dataplane"):
+    keys = keys if keys is not None else ["inet/idx:%d" % i for i in range(6)] + ["inet6/idx:%d" % i for i in range(3)]
+    return json.dumps({"dpa_objects": {
+        "classes": [{"class": "route", "enumerable": True}, {"class": "nexthop-group", "enumerable": enumerable}],
+        "objects": [{"class": "nexthop-group", "key": k, "state": state, "backend": backend} for k in keys]}})
+
+
+def routes(key, idx):
+    return json.dumps({key: [{"prefix": "10.%d.0.0/24" % i, "scope": 0, "nh_index": n} for i, n in enumerate(idx)]})
+
+
+class DpaObjectModelCase(unittest.TestCase):
+    ROUTERS = ("155", "156", "157")
+
+    def setup(self, **per_router):
+        """per_router: router octet -> dict(nhg=..., rt4=..., rt6=...) overriding the healthy answers."""
+        h = Host("dpa-object-model.yaml", FAKE_DOCKER_DPA)
+        self.addCleanup(h.close)
+        fd = h.d / "answers"
+        fd.mkdir()
+        for r in self.ROUTERS:
+            o = per_router.get(r, {})
+            (fd / f"nhg.{r}").write_text(o.get("nhg", nhg_doc()))
+            (fd / f"rt4.{r}").write_text(o.get("rt4", routes("route_show", [4, 5, 5])))
+            (fd / f"rt6.{r}").write_text(o.get("rt6", routes("route6_show", [1, 2])))
+        return h, fd
+
+    def run_case(self, **per_router):
+        h, fd = self.setup(**per_router)
+        return h.run(FAKE_DIR=str(fd))
+
+    def test_the_id_is_the_suite_config_prefix(self):
+        case = json.loads((CASES / "dpa-object-model.yaml").read_text())
+        self.assertEqual(case["id"], DPA_ID)
+        self.assertEqual(case["item"], DPA_ID)
+        self.assertIn(DPA_REQUIRED, [case["id"] + "." + s["name"] for s in case["steps"]])
+        self.assertIn("HARDWARE PATH NOT COVERED", case["description"])
+
+    def test_healthy_routers_pass_with_no_support_and_sw_dataplane(self):
+        p, res = self.run_case()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(res[DPA_REQUIRED], "PASS")
+        self.assertEqual(set(res.values()), {"PASS"})
+
+    def test_the_state_and_backend_are_reported_not_judged(self):
+        other = nhg_doc(state="FULL", backend="some-hw-backend")
+        p, res = self.run_case(**{"156": {"nhg": other}})
+        self.assertEqual(res[DPA_REQUIRED], "PASS", p.stdout)
+
+    def test_a_class_that_is_not_enumerable_fails(self):
+        p, res = self.run_case(**{"156": {"nhg": nhg_doc(enumerable=False)}})
+        self.assertEqual(res[DPA_REQUIRED], "FAIL")
+        self.assertEqual(p.returncode, 1)
+
+    def test_a_key_that_is_not_inet_or_inet6_idx_fails(self):
+        for bad in ("inet/idx:x", "ipv4/idx:3", "inet/3", "inet6/idx:"):
+            p, res = self.run_case(**{"157": {"nhg": nhg_doc(keys=["inet/idx:1", bad])}})
+            self.assertEqual(res[DPA_REQUIRED], "FAIL", bad)
+
+    def test_an_empty_enumeration_fails(self):
+        p, res = self.run_case(**{"155": {"nhg": nhg_doc(keys=[])}})
+        self.assertEqual(res[DPA_REQUIRED], "FAIL")
+
+    def test_an_ipv4_nh_index_that_is_not_enumerated_fails(self):
+        p, res = self.run_case(**{"156": {"rt4": routes("route_show", [4, 99])}})
+        self.assertEqual(res[DPA_REQUIRED], "FAIL")
+
+    def test_an_ipv6_nh_index_that_is_not_enumerated_fails(self):
+        p, res = self.run_case(**{"157": {"rt6": routes("route6_show", [1, 42])}})
+        self.assertEqual(res[DPA_REQUIRED], "FAIL")
+
+    def test_the_families_are_not_mixed_up(self):
+        # index 7 exists only as inet6: a route6 may use it, an IPv4 route may not
+        keys = ["inet/idx:%d" % i for i in range(4)] + ["inet6/idx:7"]
+        p, res = self.run_case(**{"155": {"nhg": nhg_doc(keys=keys), "rt4": routes("route_show", [1]), "rt6": routes("route6_show", [7])}})
+        self.assertEqual(res[DPA_REQUIRED], "PASS", p.stdout)
+        p, res = self.run_case(**{"155": {"nhg": nhg_doc(keys=keys), "rt4": routes("route_show", [7]), "rt6": routes("route6_show", [7])}})
+        self.assertEqual(res[DPA_REQUIRED], "FAIL")
+
+    def test_a_router_that_does_not_answer_fails_rather_than_being_skipped(self):
+        p, res = self.run_case(**{"157": {"nhg": "", "rt4": "", "rt6": ""}})
+        self.assertEqual(res[DPA_REQUIRED], "FAIL")
+        self.assertNotIn("SKIP", res.values())
+
+    def test_a_route_without_nh_index_fails_loudly(self):
+        bad = json.dumps({"route_show": [{"prefix": "10.0.0.0/24"}]})
+        p, res = self.run_case(**{"155": {"rt4": bad}})
+        self.assertEqual(res[DPA_REQUIRED], "FAIL")
+
+    def test_no_routes_at_all_is_not_a_failure_of_this_claim(self):
+        p, res = self.run_case(**{"156": {"rt4": json.dumps({"route_show": []}), "rt6": json.dumps({"route6_show": []})}})
+        self.assertEqual(res[DPA_REQUIRED], "PASS", p.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
