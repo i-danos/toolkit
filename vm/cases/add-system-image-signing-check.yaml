@@ -1,0 +1,62 @@
+{
+ "id": "add_system_image_signing_check",
+ "item": "add_system_image_signing_check",
+ "suite_commit": "auto",
+ "description": "`add system image` calls check_binary_signatures before it installs. This runs the real function, taken from the ISO under test, on the ISO's real shim, GRUB and kernel with no VM: positive with MOK support (succeeds), negative without it (fails at GRUB) -- so the positive result could have been a failure. NOT a signature validation: the function compares certificate subjects only and says so in its own header ('cannot detect a tampered binary'). Firmware state is supplied: db from OVMF_VARS_4M.ms.fd, the MOK is the OBS signer certificate; efivarfs itself cannot be faked, so `efi-readvar` and `mokutil --export` are stand-ins that hand those over.",
+ "basis": [
+  "design: toolkit/vm/verify-add-image-check.sh header; vyatta-image-tools scripts/vyatta-install-image.functions check_binary_signatures / sig_chain_trusted_for",
+  "required case names: handoff/verify/suite-config.json items.add_system_image_signing_check",
+  "limit: the function's result is a certificate-name heuristic, the case checks that and nothing about signature validity"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "iso": "/home/aikon/danos/acceptance-p05/topo-test4/i-danos_2608_20261030T0752-amd64.hybrid.iso",
+  "out": "/home/aikon/danos/acceptance-p05/secure-boot-add-image",
+  "vfv": "/home/aikon/danos/.obs/venv-sb/bin/virt-fw-vars"
+ },
+ "steps": [
+  {
+   "name": "run-check-binary-signatures-fixture",
+   "basis": "design: vm/verify-add-image-check.sh runs the image's own check_binary_signatures on its own shim, GRUB and kernel in a privileged container, with and without MOK support; the output directory is emptied first so an earlier run cannot satisfy a step",
+   "cmd": "case \"$(basename {{out}})\" in secure-boot-*) ;; *) echo \"BAD_OUT {{out}}: refusing to empty a directory that is not secure-boot-*\"; exit 2;; esac; bash {{vm_dir}}/verify-add-image-check.sh {{iso}} {{out}} {{vfv}} > {{out}}.fixture.stdout 2>&1; echo \"FIXTURE_RC=$?\"; mv {{out}}.fixture.stdout {{out}}/fixture.stdout; echo \"RESULT_LINES=$(wc -l < {{out}}/results.txt)\"; echo \"functions_sha256=$(sha256sum {{out}}/root/opt/vyatta/sbin/vyatta-install-image.functions | cut -d' ' -f1)\"; grep -c '^check_binary_signatures *()' {{out}}/root/opt/vyatta/sbin/vyatta-install-image.functions | sed 's/^/definitions_in_the_shipped_file=/'",
+   "timeout": 1500,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FIXTURE_RC=0$",
+    "^RESULT_LINES=2$",
+    "^functions_sha256=[0-9a-f]{64}$",
+    "^definitions_in_the_shipped_file=1$"
+   ]
+  },
+  {
+   "name": "the-shipped-function-accepts-the-full-chain",
+   "basis": "design: with MOK support the subjects of shim (Microsoft UEFI CA 2011, in db), GRUB and the kernel (OBS certificate, enrolled as MOK) are all known, so check_binary_signatures succeeds",
+   "cmd": "n=$(grep -c '^positive rc=' {{out}}/results.txt); echo \"occurrences=$n\"; grep '^positive rc=' {{out}}/results.txt; echo \"output_bytes=$(wc -c < {{out}}/positive.out)\"",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^positive rc=0$",
+    "^output_bytes=1$"
+   ],
+   "expect_not_regex": "^positive rc=[1-9]"
+  },
+  {
+   "name": "with-mok-support-disabled-it-fails-at-grub",
+   "basis": "design: the same function and files without mokutil: shim still passes (its CA is in db), GRUB's OBS certificate is only a MOK, so it fails at grubx64.efi.signed and never reaches the kernel",
+   "cmd": "n=$(grep -c '^negative rc=' {{out}}/results.txt); echo \"occurrences=$n\"; grep '^negative rc=' {{out}}/results.txt; cat {{out}}/negative.out",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^negative rc=1$",
+    "^Signing check, no match in signature list for .*/usr/lib/grub/x86_64-efi-signed/grubx64\\.efi\\.signed$"
+   ],
+   "expect_not_regex": [
+    "shimx64",
+    "/boot/vmlinuz",
+    "^negative rc=0"
+   ]
+  }
+ ]
+}

@@ -73,12 +73,12 @@ def step_output(path, name):
 
 
 class Run:
-    def __init__(self, case, **fake):
+    def __init__(self, case, fake_script=("verify-secure-boot.sh", FAKE), **fake):
         self.td = tempfile.TemporaryDirectory()
         self.d = Path(self.td.name)
         (self.d / "vm").mkdir()
-        fv = self.d / "vm" / "verify-secure-boot.sh"
-        fv.write_text(FAKE)
+        fv = self.d / "vm" / fake_script[0]
+        fv.write_text(fake_script[1])
         fv.chmod(0o755)
         self.out = self.d / "secure-boot-x"
         self.case = CASES / case
@@ -208,6 +208,79 @@ class CertExpiry(unittest.TestCase):
     def test_the_kernel_not_starting_does_not_pass(self):
         p, (res, _) = self.run_case(FAKE_T2="shim-refused")
         self.assertEqual(res[REQUIRED[EXPIRY][0]], "FAIL")
+
+
+# ---- cases/add-system-image-signing-check.yaml ------------------------------------------------------
+
+ADD = "add_system_image_signing_check"
+REQUIRED[ADD] = ["the-shipped-function-accepts-the-full-chain", "with-mok-support-disabled-it-fails-at-grub"]
+GRUB = "/w/root/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
+FAKE_ADD = r"""#!/bin/bash
+# fake verify-add-image-check.sh <iso> <out> <vfv>
+OUT=$2
+rm -rf "$OUT"; mkdir -p "$OUT/root/opt/vyatta/sbin"
+cat > "$OUT/root/opt/vyatta/sbin/vyatta-install-image.functions" <<'EOF'
+check_binary_signatures ()
+{
+    return 0
+}
+EOF
+{ echo "positive rc=${FAKE_POS_RC:-0}"; echo "negative rc=${FAKE_NEG_RC:-1}"; } > "$OUT/results.txt"
+[ -n "${FAKE_ONE_LINE:-}" ] && echo "negative rc=1" >> "$OUT/results.txt"
+printf '%s\n' "${FAKE_POS_OUT:-}" > "$OUT/positive.out"
+printf '%s\n' "${FAKE_NEG_OUT-Signing check, no match in signature list for /w/root/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed}" > "$OUT/negative.out"
+exit "${FAKE_RC:-0}"
+"""
+
+
+class AddImage(unittest.TestCase):
+    def run_case(self, **env):
+        r = Run("add-system-image-signing-check.yaml", ("verify-add-image-check.sh", FAKE_ADD), **env)
+        self.addCleanup(r.close)
+        return r.run()
+
+    def test_the_names_are_the_contract(self):
+        case = json.loads((CASES / "add-system-image-signing-check.yaml").read_text())
+        self.assertEqual(case["id"], ADD)
+        for n in REQUIRED[ADD]:
+            self.assertIn(n, [s["name"] for s in case["steps"]])
+
+    def test_a_good_run_passes_both_and_the_classname_is_the_item_key(self):
+        p, (res, classes) = self.run_case()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        for n in REQUIRED[ADD]:
+            self.assertEqual(res[n], "PASS", n)
+        self.assertEqual(classes, {ADD})
+
+    def test_a_failing_positive_run_fails_its_case_only(self):
+        p, (res, _) = self.run_case(FAKE_POS_RC="1", FAKE_POS_OUT="Signing check, no match in signature list for x")
+        self.assertEqual(res[REQUIRED[ADD][0]], "FAIL")
+        self.assertEqual(res[REQUIRED[ADD][1]], "PASS")
+
+    def test_a_negative_control_that_still_succeeds_fails_the_case(self):
+        # the check that cannot fail proves nothing
+        p, (res, _) = self.run_case(FAKE_NEG_RC="0", FAKE_NEG_OUT="")
+        self.assertEqual(res[REQUIRED[ADD][1]], "FAIL")
+        self.assertEqual(res[REQUIRED[ADD][0]], "PASS")
+
+    def test_the_negative_control_must_fail_at_grub_not_somewhere_else(self):
+        for out in ("Signing check, no match in signature list for /w/root/usr/lib/shim/shimx64.efi.signed",
+                    "Signing check, no match in signature list for /w/root/boot/vmlinuz",
+                    "Signing check, failed to get signature list", ""):
+            p, (res, _) = self.run_case(FAKE_NEG_OUT=out)
+            self.assertEqual(res[REQUIRED[ADD][1]], "FAIL", out)
+
+    def test_a_negative_run_that_reports_shim_as_well_does_not_pass(self):
+        out = ("Signing check, no match in signature list for /w/root/usr/lib/shim/shimx64.efi.signed\n"
+               "Signing check, no match in signature list for " + GRUB)
+        p, (res, _) = self.run_case(FAKE_NEG_OUT=out)
+        self.assertEqual(res[REQUIRED[ADD][1]], "FAIL")
+
+    def test_a_result_printed_twice_or_a_failed_fixture_does_not_pass(self):
+        p, (res, _) = self.run_case(FAKE_ONE_LINE="1")
+        self.assertEqual(res[REQUIRED[ADD][1]], "FAIL")
+        p, (res, _) = self.run_case(FAKE_RC="1")
+        self.assertEqual(res["run-check-binary-signatures-fixture"], "FAIL")
 
 
 if __name__ == "__main__":
