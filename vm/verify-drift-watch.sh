@@ -81,8 +81,11 @@ S $R1 "sudo vtysh -c 'configure terminal' -c 'ip route 10.91.1.0/24 blackhole' -
 sleep 3
 out=$(S $R1 "sudo python3 /tmp/dpa-drift.py --watch 2 --cycles 4 2>&1")
 printf '%s\n' "$out" | sed 's/^/    /'
-first=$(printf '%s' "$out" | grep -oE '10\.91\.1\.0/24  [0-9]+ cycle' | head -1 | grep -oE '[0-9]+ cycle' | grep -oE '[0-9]+')
-last=$(printf '%s' "$out" | grep -oE '10\.91\.1\.0/24  [0-9]+ cycle' | tail -1 | grep -oE '[0-9]+ cycle' | grep -oE '[0-9]+')
+# The count is the "N cycle(s)" that ends the line (dpa-drift.py --watch prints
+# "<kind> <class> vrf:<vrf>/<prefix>  <state> (<classification>)  N cycles"); the
+# state words between the prefix and the count are not part of the match.
+first=$(printf '%s\n' "$out" | grep -E '10\.91\.1\.0/24[[:space:]]' | grep -oE '[0-9]+ cycles?[[:space:]]*$' | head -1 | grep -oE '[0-9]+')
+last=$(printf '%s\n' "$out" | grep -E '10\.91\.1\.0/24[[:space:]]' | grep -oE '[0-9]+ cycles?[[:space:]]*$' | tail -1 | grep -oE '[0-9]+')
 if [ -n "$last" ] && [ "${last:-0}" -gt "${first:-0}" ]; then
 	ok "the count rises across cycles" "first=$first last=$last -- persistence, not a one-shot"
 else

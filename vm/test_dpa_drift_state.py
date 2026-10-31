@@ -451,5 +451,73 @@ class SettledBox(unittest.TestCase):
         self.assertEqual(r["kernel_local"], [])
 
 
+# ---- the count verify-drift-watch.sh reads out of --watch's output ----------------------------------------------
+
+SCRIPT = Path(__file__).with_name("verify-drift-watch.sh").read_text()
+PARSE_LINES = [l for l in SCRIPT.splitlines() if l.startswith(("first=$(", "last=$("))]
+CHECK2 = re.search(r'^if \[ -n "\$last" \].*?^fi$', SCRIPT, re.M | re.S).group(0)
+
+# a line of the first real run (acceptance 2026-10-30, handoff/verify/evidence/drift-20261030/drift-script-run2.log)
+REAL = ("    cycle 3  desired 7  programmed 11  disagreements 4\n"
+        "        missing  route6 vrf:default/fe80::/64  stale_candidate (observed)  3 cycles\n"
+        "        missing  route vrf:default/10.91.2.0/24  stale_candidate (observed)  3 cycles\n"
+        "        missing  route vrf:default/10.91.1.0/24  stale_candidate (observed)  3 cycles\n"
+        "        extra    route6 vrf:default/fe80::5054:ff:fe01:1f01/128  unsupported_or_unreadable "
+        "(unsupported_or_unreadable)  0 cycles\n")
+
+
+def run_bash(script, *args):
+    return subprocess.run(["bash", "-c", script, "bash", *args], capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin"}).stdout
+
+
+def counts(out):
+    """first= and last= as verify-drift-watch.sh computes them from `out` (its own two lines, run in bash)."""
+    script = "out=$1\n" + "\n".join(PARSE_LINES) + "\necho first=$first\necho last=$last"
+    return dict(kv.split("=", 1) for kv in run_bash(script, out).split())
+
+
+class WatchCountParsing(unittest.TestCase):
+    def test_the_script_has_exactly_the_two_parse_lines_and_the_check(self):
+        self.assertEqual(len(PARSE_LINES), 2)
+        self.assertIn("bad \"the count rises across cycles\"", CHECK2)
+        self.assertIn("ok \"the count rises across cycles\"", CHECK2)
+
+    def test_the_real_line_format_is_parsed(self):
+        c = counts(REAL)
+        self.assertEqual(c["last"], "3")
+        self.assertEqual(c["first"], "3")
+
+    def test_first_and_last_are_the_first_and_last_cycle(self):
+        out = "".join(f"        missing  route vrf:default/10.91.1.0/24  {st} (observed)  {n} cycle{'s' if n > 1 else ''}\n"
+                      for n, st in ((1, "observed"), (2, "observed"), (3, "stale_candidate"), (4, "stale_candidate")))
+        self.assertEqual(counts(out), {"first": "1", "last": "4"})
+
+    def test_the_output_of_dpa_drift_itself_is_what_gets_parsed(self):
+        # the format is produced by watch(): a route zebra has and the data plane never gets, four cycles
+        box = settled_box(extra_desired={"10.91.1.0/24": zebra_route("static", "dp0s4")})
+        box[tuple(VTYSH["route"])] = {"10.0.2.0/24": zebra_route(), "10.91.1.0/24": zebra_route("static", "dp0s4"),
+                                      "10.91.2.0/24": zebra_route("static", "dp0s4")}
+        with Box(box) as b:
+            text = b.watch_text(4)
+        self.assertEqual(counts(text), {"first": "1", "last": "4"}, text)
+
+    def test_an_unparseable_output_gives_empty_values_and_the_check_reports_fail(self):
+        for out in ("", "cycle 1  desired 3  programmed 3  disagreements 0\n",
+                    "        missing  route vrf:default/10.91.1.0/24  stale_candidate (observed)\n"):
+            c = counts(out)
+            self.assertEqual(c.get("first", ""), "", out)
+            self.assertEqual(c.get("last", ""), "", out)
+            body = "ok(){ echo OK; }; bad(){ echo BAD; }; first=%s; last=%s\n%s" % (
+                "'%s'" % c.get("first", ""), "'%s'" % c.get("last", ""), CHECK2)
+            self.assertEqual(run_bash(body).split(), ["BAD"], out)
+
+    def test_a_count_that_does_not_rise_is_reported_fail_too(self):
+        body = "ok(){ echo OK; }; bad(){ echo BAD; }; first=3; last=3\n" + CHECK2
+        self.assertEqual(run_bash(body).split(), ["BAD"])
+        body = "ok(){ echo OK; }; bad(){ echo BAD; }; first=1; last=4\n" + CHECK2
+        self.assertEqual(run_bash(body).split(), ["OK"])
+
+
 if __name__ == "__main__":
     unittest.main()
