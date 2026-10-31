@@ -1,0 +1,88 @@
+{
+ "id": "signed_boot_chain_live_iso",
+ "item": "signed_boot_chain_live_iso",
+ "suite_commit": "auto",
+ "description": "The live ISO's UEFI Secure Boot chain on real OVMF firmware with Secure Boot on (KVM, -cpu host): Debian shim signed by Microsoft -> GRUB and kernel signed by the OBS project certificate. T1 no MOK: refused by shim. T2 the OBS certificate enrolled as MOK: the kernel starts. T3 = T2 plus one flipped bit in GRUB: refused by shim. T4 = T2 plus one flipped bit in the kernel: refused by GRUB with 'bad shim signature'. T2 and T4 differ by exactly one bit, so T4's refusal is the signature check working. Run with --exec local on the HOST; one QEMU at a time.",
+ "basis": [
+  "design: toolkit/vm/verify-secure-boot.sh header; handoff/verify/suite-config.json items.signed_boot_chain_live_iso",
+  "serial criteria as in the script's classify(): shim-refused (T1, T3), kernel-started (T2), grub-refused-kernel(bad shim signature) (T4), required EXACTLY (the script's own check also accepts 'chain stopped')",
+  "history: acceptance-p05/secure-boot-test4 (serial logs, 4 passed, no JUnit)"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "iso": "/home/aikon/danos/acceptance-p05/topo-test4/i-danos_2608_20261030T0752-amd64.hybrid.iso",
+  "out": "/home/aikon/danos/acceptance-p05/secure-boot-live-iso",
+  "vfv": "/home/aikon/danos/.obs/venv-sb/bin/virt-fw-vars"
+ },
+ "steps": [
+  {
+   "name": "run-secure-boot-fixture",
+   "basis": "design: vm/verify-secure-boot.sh (real OVMF with Secure Boot on, KVM, -cpu host) run unmodified; results.txt is what it classified from each serial log; the output directory is emptied of old results first, so an earlier run cannot satisfy a step",
+   "cmd": "case \"$(basename {{out}})\" in secure-boot-*) ;; *) echo \"BAD_OUT {{out}}: refusing to empty a directory that is not secure-boot-*\"; exit 2;; esac; rm -rf {{out}}; mkdir -p {{out}}; ONLY=T1,T2,T3,T4 bash {{vm_dir}}/verify-secure-boot.sh {{iso}} {{out}} {{vfv}} > {{out}}.fixture.stdout 2>&1; echo \"FIXTURE_RC=$?\"; mv {{out}}.fixture.stdout {{out}}/fixture.stdout; echo \"qemu: $(grep -m1 -a 'qemu: ' {{out}}/secure-boot.log | cut -c1-200)\"; echo \"iso_sha256=$(sha256sum {{iso}} | cut -d' ' -f1)\"; echo \"RESULT_LINES=$(wc -l < {{out}}/results.txt)\"",
+   "timeout": 3000,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FIXTURE_RC=[0-9]+$",
+    "^qemu: +qemu: -enable-kvm -cpu host ",
+    "^iso_sha256=[0-9a-f]{64}$",
+    "^RESULT_LINES=4$"
+   ]
+  },
+  {
+   "name": "t1-unenrolled-chain-is-refused-by-shim",
+   "basis": "design: T1 expects shim to refuse the chain when the OBS certificate is not a MOK",
+   "cmd": "n=$(grep -cE '^T1 ' {{out}}/results.txt); echo \"occurrences=$n\"; grep -E '^T1 ' {{out}}/results.txt; echo \"serial evidence ({{out}}/t1.serial):\"; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/t1.serial | tr -d '\\r' | grep -m1 -aiE 'Verification failed|Security Violation|Access Denied|Failed to load image|Failed to open|MokManager|Perform MOK' | cut -c1-200",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^T1 shim-refused$"
+   ],
+   "expect_not_regex": [
+    "^T1 (nothing-recognised|grub-menu-only|chain-stopped)"
+   ]
+  },
+  {
+   "name": "t2-chain-with-the-obs-mok-boots-the-kernel",
+   "basis": "design: T2 expects the kernel to start when the OBS certificate is enrolled",
+   "cmd": "n=$(grep -cE '^T2 ' {{out}}/results.txt); echo \"occurrences=$n\"; grep -E '^T2 ' {{out}}/results.txt; echo \"serial evidence ({{out}}/t2.serial):\"; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/t2.serial | tr -d '\\r' | grep -m1 -aiE 'Linux version [0-9]' | cut -c1-200",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^T2 kernel-started$"
+   ],
+   "expect_not_regex": [
+    "^T2 (nothing-recognised|grub-menu-only|chain-stopped)"
+   ]
+  },
+  {
+   "name": "t3-one-flipped-bit-in-grub-is-refused",
+   "basis": "design: T3 expects shim to refuse GRUB with one bit flipped",
+   "cmd": "n=$(grep -cE '^T3 ' {{out}}/results.txt); echo \"occurrences=$n\"; grep -E '^T3 ' {{out}}/results.txt; echo \"serial evidence ({{out}}/t3.serial):\"; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/t3.serial | tr -d '\\r' | grep -m1 -aiE 'Verification failed|Security Violation|Access Denied|Failed to load image|Failed to open' | cut -c1-200",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^T3 shim-refused$"
+   ],
+   "expect_not_regex": [
+    "^T3 (nothing-recognised|grub-menu-only|chain-stopped)"
+   ]
+  },
+  {
+   "name": "t4-one-flipped-bit-in-the-kernel-is-refused",
+   "basis": "design: T4 expects GRUB to refuse the kernel with one bit flipped, with the message 'bad shim signature'",
+   "cmd": "n=$(grep -cE '^T4 ' {{out}}/results.txt); echo \"occurrences=$n\"; grep -E '^T4 ' {{out}}/results.txt; echo \"serial evidence ({{out}}/t4.serial):\"; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/t4.serial | tr -d '\\r' | grep -m1 -aiE 'bad shim signature' | cut -c1-200",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^T4 grub-refused-kernel\\(bad shim signature\\)$"
+   ],
+   "expect_not_regex": [
+    "^T4 (nothing-recognised|grub-menu-only|chain-stopped)"
+   ]
+  }
+ ]
+}

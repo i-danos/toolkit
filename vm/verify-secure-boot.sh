@@ -35,12 +35,15 @@ NAME=sb
 #   ONLY=T2            run only the named tests (comma list)
 #   SBAT_LEVEL=grub,6  write that SbatLevel into the variable store
 #   RTC_BASE=2030-01-01 start the guest clock at that date
+# Every test also appends '<T> <classification>' to $OUT/results.txt, which the acceptance cases
+# (cases/sb-*.yaml) read instead of trusting the PASS/FAIL lines above.
 ONLY=${ONLY:-T1,T2,T3,T4}
 SBAT_LEVEL=${SBAT_LEVEL:-}
 RTC_BASE=${RTC_BASE:-}
 RUN=${OBS_DIR:-/home/aikon/danos/.obs}/run/$NAME
 SHIM_GUID=605dab50-e046-4300-abb6-3dd810dd8b23
 mkdir -p "$OUT" "$RUN"
+rm -f "$OUT/results.txt"
 exec > >(tee "$OUT/secure-boot.log") 2>&1
 
 for f in "$CODE" "$VARS_MS" "$VFV"; do [ -e "$f" ] || { echo "BLOCKED: missing $f"; exit 1; }; done
@@ -85,6 +88,7 @@ boot_uefi() {
   stop_vm
   local v; v=$(mktemp "$OUT/vars.XXXXXX"); cp "$vars" "$v"
   RTC_ARGS=(); [ -n "$RTC_BASE" ] && RTC_ARGS=(-rtc "base=$RTC_BASE")
+  echo "  qemu: -enable-kvm -cpu host -smp 2 -m 3072 ${RTC_ARGS[*]:-(guest clock: host)} -machine q35,smm=on, OVMF secboot, pflash secure=on"
   nohup setsid qemu-system-x86_64 -name "$NAME" -enable-kvm -cpu host -smp 2 -m 3072 "${RTC_ARGS[@]}" \
     -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
     -drive if=pflash,format=raw,unit=0,file="$CODE",readonly=on \
@@ -177,7 +181,7 @@ case ",$ONLY," in
 *,T1,*)
 echo; echo "===== T1: Microsoft keys only, OBS certificate NOT enrolled ====="
 boot_uefi "$VARS_MS" "$ISO" 3 "$OUT/t1.serial" 90
-R=$(classify "$OUT/t1.serial"); check "T1 unenrolled chain is refused" refused "$R"
+R=$(classify "$OUT/t1.serial"); echo "T1 $R" >> "$OUT/results.txt"; check "T1 unenrolled chain is refused" refused "$R"
 
 ;;
 esac
@@ -185,7 +189,7 @@ case ",$ONLY," in
 *,T2,*)
 echo; echo "===== T2: OBS certificate enrolled as MOK ====="
 boot_uefi "$OUT/vars-mok.fd" "$ISO" 3 "$OUT/t2.serial" 240
-R=$(classify "$OUT/t2.serial"); check "T2 trusted chain boots" kernel-started "$R"
+R=$(classify "$OUT/t2.serial"); echo "T2 $R" >> "$OUT/results.txt"; check "T2 trusted chain boots" kernel-started "$R"
 sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$OUT/t2.serial" | tr -d '\r' | grep -iE "Secure boot|lockdown|locked down" | head -4 | sed 's/^/      /'
 
 ;;
@@ -204,7 +208,7 @@ PY
 }
 flip $((GRUB_OFF + 1000000))
 boot_uefi "$OUT/vars-mok.fd" "$OUT/tampered.iso" 3 "$OUT/t3.serial" 90
-R=$(classify "$OUT/t3.serial"); check "T3 tampered GRUB is refused" refused "$R"
+R=$(classify "$OUT/t3.serial"); echo "T3 $R" >> "$OUT/results.txt"; check "T3 tampered GRUB is refused" refused "$R"
 flip $((GRUB_OFF + 1000000))          # restore
 
 ;;
@@ -214,7 +218,7 @@ case ",$ONLY," in
 echo; echo "===== T4: T2 plus one flipped byte in the kernel ====="
 flip $((KERN_OFF + 5000000))
 boot_uefi "$OUT/vars-mok.fd" "$OUT/tampered.iso" 3 "$OUT/t4.serial" 120
-R=$(classify "$OUT/t4.serial"); check "T4 tampered kernel is refused" refused "$R"
+R=$(classify "$OUT/t4.serial"); echo "T4 $R" >> "$OUT/results.txt"; check "T4 tampered kernel is refused" refused "$R"
 rm -f "$OUT/tampered.iso"
 
 ;;
