@@ -56,7 +56,7 @@
   {
    "name": "add-system-image-reports-its-signing-check",
    "basis": "design: the conclusion of the signing check is recorded as printed; silence is FAIL",
-   "cmd": "echo lockdown: $(tr -d '\\r' < {{out}}/lockdown.out | grep -aE '\\[.*\\]' | head -1); L=$(tr -d '\\r' < {{out}}/addimage.out | grep -aiE 'signing check|signed binaries|secure boot'); if [ -n \"$L\" ]; then printf '%s\\n' \"$L\"; echo signing-check-conclusion=printed; else echo signing-check-conclusion=none-printed; exit 1; fi",
+   "cmd": "echo lockdown: $(tr -d '\\r' < {{out}}/lockdown.out | grep -aE '\\[.*\\]' | head -1); L=$(tr -d '\\r' < {{out}}/addimage.out | grep -aiE 'signing check|signed binaries|secure boot'); if [ -n \"$L\" ]; then printf '%s\\n' \"$L\"; echo signing-check-conclusion=printed; else echo signing-check-conclusion=none-printed; false; fi",
    "timeout": 30,
    "expect_exit": 0,
    "expect_regex": [
