@@ -49,6 +49,15 @@ echo "===== 0. Install the tool ====="
 b64=$(base64 -w0 "$HERE/dpa-drift.py")
 S $R1 "echo '$b64' | base64 -d | sudo tee /tmp/dpa-drift.py >/dev/null
        sudo chmod 755 /tmp/dpa-drift.py; echo installed" | tail -1 | sed 's/^/    /'
+# dpa-drift.py imports dpa-coverage-manifest.py from its own directory (the class
+# notes live there so there is only one copy of that fact). Installing only the
+# tool leaves the import pointing at a file that is not there: every cycle then
+# dies with FileNotFoundError '/tmp/dpa-coverage-manifest.py', the counts come back
+# empty, and all four checks read as FAIL -- which looks exactly like a data plane
+# that reports nothing. Ship the sibling with it.
+b64=$(base64 -w0 "$HERE/dpa-coverage-manifest.py")
+S $R1 "echo '$b64' | base64 -d | sudo tee /tmp/dpa-coverage-manifest.py >/dev/null
+       sudo chmod 644 /tmp/dpa-coverage-manifest.py; echo manifest-installed" | tail -1 | sed 's/^/    /'
 
 echo
 echo "===== 1. Both sides readable ====="
@@ -119,7 +128,7 @@ if [ "${d3:-0}" -eq "${des:-0}" ]; then
 else
 	bad "removing it put the desired count back" "was $des, now $d3"
 fi
-S $R1 "sudo rm -f /tmp/dpa-drift.py" > /dev/null
+S $R1 "sudo rm -f /tmp/dpa-drift.py /tmp/dpa-coverage-manifest.py" > /dev/null
 
 echo
 echo "===== Result ====="
