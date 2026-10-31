@@ -1,0 +1,67 @@
+{
+ "id": "signed_boot_chain_kernel_view_and_add_image_check",
+ "item": "signed_boot_chain_kernel_view_and_add_image_check",
+ "suite_commit": "auto",
+ "description": "On a disk the installer wrote under OVMF Secure Boot (KVM -cpu host, guest clock = host clock), the installed system's own view: mokutil --sb-state, the kernel log line 'Secure boot enabled', and what `add system image` prints about its signing check. The signing-check conclusion is recorded faithfully: a tool that prints nothing is a FAIL, not a pass. /sys/kernel/security/lockdown is recorded, not an expectation.",
+ "basis": [
+  "observed: 2026-10-31 interactive sbkv guest: installed disk boots to login, mokutil/sudo/dmesg need superuser + new login",
+  "root cause of the 5h59m sbkv hang: uefi-install.sh leaves the VM running by design; the case had no timeout and no trap (now sb-lib.sh)",
+  "design: handoff/verify/suite-config.json items.signed_boot_chain_kernel_view_and_add_image_check"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "iso": "/home/aikon/danos/acceptance-p05/topo-test4/i-danos_2608_20261030T0752-amd64.hybrid.iso",
+  "out": "/home/aikon/danos/acceptance-p05/secure-boot-kernel-view",
+  "vfv": "/home/aikon/danos/.obs/venv-sb/bin/virt-fw-vars"
+ },
+ "steps": [
+  {
+   "name": "run-sb-kernel-view-fixture",
+   "basis": "design: sb-lib.sh caps every boot at 900 s and traps cleanup; the directory is emptied first",
+   "cmd": "case \"$(basename {{out}})\" in secure-boot-*) ;; *) echo \"BAD_OUT {{out}}\"; exit 2;; esac; rm -rf {{out}}; mkdir -p {{out}}; bash {{vm_dir}}/verify-sb-kernel-view.sh {{iso}} {{out}} {{vfv}} > {{out}}.fixture.stdout 2>&1; echo \"FIXTURE_RC=$?\"; mv {{out}}.fixture.stdout {{out}}/fixture.stdout; grep -E '^qemu:' {{out}}/fixture.stdout | head -1; grep -E '^iso_sha256=' {{out}}/results.txt; grep -E '^stage-' {{out}}/results.txt; echo \"RESULT_LINES=$(wc -l < {{out}}/results.txt)\"",
+   "timeout": 5400,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FIXTURE_RC=0$",
+    "^qemu: -enable-kvm -cpu host ",
+    "^iso_sha256=[0-9a-f]{64}$",
+    "^stage-install rc=0$",
+    "^stage-boot rc=0$",
+    "^stage-collect done$"
+   ]
+  },
+  {
+   "name": "mokutil-reports-secureboot-enabled",
+   "basis": "design: mokutil --sb-state in the installed guest",
+   "cmd": "grep -a 'SecureBoot' {{out}}/mokutil.out | tr -d '\\r' | sed 's/^ *//'",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^SecureBoot enabled$"
+   ],
+   "expect_not_regex": [
+    "disabled"
+   ]
+  },
+  {
+   "name": "kernel-logs-secure-boot-enabled",
+   "basis": "design: kernel log line from dmesg",
+   "cmd": "grep -a -i 'secure boot enabled' {{out}}/dmesg.out | tr -d '\\r' | grep -v 'dmesg' | head -1",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "Secure boot enabled"
+   ]
+  },
+  {
+   "name": "add-system-image-reports-its-signing-check",
+   "basis": "design: the conclusion of the signing check is recorded as printed; silence is FAIL",
+   "cmd": "echo lockdown: $(tr -d '\\r' < {{out}}/lockdown.out | grep -aE '\\[.*\\]' | head -1); L=$(tr -d '\\r' < {{out}}/addimage.out | grep -aiE 'signing check|signed binaries|secure boot'); if [ -n \"$L\" ]; then printf '%s\\n' \"$L\"; echo signing-check-conclusion=printed; else echo signing-check-conclusion=none-printed; exit 1; fi",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^signing-check-conclusion=printed$"
+   ]
+  }
+ ]
+}
