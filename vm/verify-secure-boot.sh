@@ -31,6 +31,13 @@ VFV=${3:?path to virt-fw-vars}
 CODE=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
 VARS_MS=/usr/share/OVMF/OVMF_VARS_4M.ms.fd
 NAME=sb
+# Optional knobs, all default to the behaviour the accepted run used:
+#   ONLY=T2            run only the named tests (comma list)
+#   SBAT_LEVEL=grub,6  write that SbatLevel into the variable store
+#   RTC_BASE=2030-01-01 start the guest clock at that date
+ONLY=${ONLY:-T1,T2,T3,T4}
+SBAT_LEVEL=${SBAT_LEVEL:-}
+RTC_BASE=${RTC_BASE:-}
 RUN=${OBS_DIR:-/home/aikon/danos/.obs}/run/$NAME
 SHIM_GUID=605dab50-e046-4300-abb6-3dd810dd8b23
 mkdir -p "$OUT" "$RUN"
@@ -47,7 +54,8 @@ CERT=$OUT/inspect/grubx64.signer.pem
 [ -s "$CERT" ] || { echo "BLOCKED: no signer certificate extracted"; exit 1; }
 echo "certificate to enroll: $(openssl x509 -in "$CERT" -noout -subject -enddate | tr '\n' ' ')"
 
-"$VFV" -i "$VARS_MS" --add-mok "$SHIM_GUID" "$CERT" -o "$OUT/vars-mok.fd" >/dev/null 2>&1 \
+SBAT_ARGS=(); [ -n "$SBAT_LEVEL" ] && SBAT_ARGS=(--set-sbat-level "$SBAT_LEVEL") && echo "sbat level to write: $SBAT_LEVEL"
+"$VFV" -i "$VARS_MS" --add-mok "$SHIM_GUID" "$CERT" "${SBAT_ARGS[@]}" -o "$OUT/vars-mok.fd" >/dev/null 2>&1 \
   || { echo "BLOCKED: virt-fw-vars could not enroll the MOK"; exit 1; }
 
 qemu_pid() {
@@ -70,7 +78,8 @@ boot_uefi() {
   local vars=$1 iso=$2 entry=$3 log=$4 secs=$5
   stop_vm
   local v; v=$(mktemp "$OUT/vars.XXXXXX"); cp "$vars" "$v"
-  nohup setsid qemu-system-x86_64 -name "$NAME" -enable-kvm -cpu host -smp 2 -m 3072 \
+  RTC_ARGS=(); [ -n "$RTC_BASE" ] && RTC_ARGS=(-rtc "base=$RTC_BASE")
+  nohup setsid qemu-system-x86_64 -name "$NAME" -enable-kvm -cpu host -smp 2 -m 3072 "${RTC_ARGS[@]}" \
     -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on \
     -drive if=pflash,format=raw,unit=0,file="$CODE",readonly=on \
     -drive if=pflash,format=raw,unit=1,file="$v" \
@@ -158,15 +167,25 @@ check() { # name expected actual
   fi
 }
 
+case ",$ONLY," in
+*,T1,*)
 echo; echo "===== T1: Microsoft keys only, OBS certificate NOT enrolled ====="
 boot_uefi "$VARS_MS" "$ISO" 3 "$OUT/t1.serial" 90
 R=$(classify "$OUT/t1.serial"); check "T1 unenrolled chain is refused" refused "$R"
 
+;;
+esac
+case ",$ONLY," in
+*,T2,*)
 echo; echo "===== T2: OBS certificate enrolled as MOK ====="
 boot_uefi "$OUT/vars-mok.fd" "$ISO" 3 "$OUT/t2.serial" 240
 R=$(classify "$OUT/t2.serial"); check "T2 trusted chain boots" kernel-started "$R"
 sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$OUT/t2.serial" | tr -d '\r' | grep -iE "Secure boot|lockdown|locked down" | head -4 | sed 's/^/      /'
 
+;;
+esac
+case ",$ONLY," in
+*,T3,*)
 echo; echo "===== T3: T2 plus one flipped byte in GRUB ====="
 cp "$ISO" "$OUT/tampered.iso"
 flip() { python3 - "$OUT/tampered.iso" "$1" <<'PY'
@@ -182,11 +201,17 @@ boot_uefi "$OUT/vars-mok.fd" "$OUT/tampered.iso" 3 "$OUT/t3.serial" 90
 R=$(classify "$OUT/t3.serial"); check "T3 tampered GRUB is refused" refused "$R"
 flip $((GRUB_OFF + 1000000))          # restore
 
+;;
+esac
+case ",$ONLY," in
+*,T4,*)
 echo; echo "===== T4: T2 plus one flipped byte in the kernel ====="
 flip $((KERN_OFF + 5000000))
 boot_uefi "$OUT/vars-mok.fd" "$OUT/tampered.iso" 3 "$OUT/t4.serial" 120
 R=$(classify "$OUT/t4.serial"); check "T4 tampered kernel is refused" refused "$R"
 rm -f "$OUT/tampered.iso"
 
+;;
+esac
 echo; echo "===== $pass passed, $fail failed ====="
 [ $fail -eq 0 ]
