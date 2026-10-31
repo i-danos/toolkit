@@ -128,7 +128,53 @@ def run(cmd):
         return None
 
 
-def desired():
+def never_programmed(klass, prefix):
+    """Why the data plane will not hold this zebra route, or None.
+
+    Only what the data plane's own source says it refuses, not a list of prefixes this tool
+    believes are special:
+
+    * route6 whose address is fe80:: (the link-local prefix itself, fe80::/64 on every
+      interface that has an IPv6 link-local address). handle_route6() in vyatta-dataplane
+      src/ip_netlink.c returns before it adds anything when IN6_IS_ADDR_UNSPEC_LINKLOCAL(dst)
+      holds (macro: src/netinet6/route_v6.h:31 -- fe80::/10 with the low 96 bits zero). It is
+      so for a data-plane port too, not just for the management port: zebra lists the
+      route, the data plane never will, and counting that as "desired, not programmed" is a
+      permanent false difference. The link-local ADDRESSES (fe80::x/128) are a different
+      thing, see kernel_local().
+    """
+    if klass != "route6":
+        return None
+    try:
+        a = int(ipaddress.ip_address(prefix.split("/")[0]))
+    except ValueError:
+        return None
+    if (a >> 118) == 0x3FA and (a & ((1 << 96) - 1)) == 0:     # fe80::/10, low 96 bits zero
+        return "link-local prefix: the data plane ignores it (ip_netlink.c handle_route6, IN6_IS_ADDR_UNSPEC_LINKLOCAL)"
+    return None
+
+
+def kernel_local(p, k):
+    """True when every data-plane entry under k is a local host route.
+
+    The data plane builds these itself from the kernel's local table (handle_route6 /
+    handle_route in vyatta-dataplane src/ip_netlink.c: RTN_LOCAL becomes RTF_LOCAL, no
+    interface stored) and says so in the object's own next hop, kind "local"
+    (src/dpa_object.c dpa_nh_kind). They exist for every address the box has, on a
+    data-plane port or on the management port alike, and zebra's RIB does not list them as
+    installed routes, so there is nothing on the desired side to compare them with. They are
+    reported on their own line, never as programmed-not-desired. Unknown is not local: an
+    image that reports no next hops (next_hops None) or an entry with any other hop kind
+    stays an ordinary extra.
+    """
+    for e in p[k]:
+        hops = e.get("next_hops")
+        if not hops or not all(isinstance(h, dict) and h.get("kind") == "local" for h in hops):
+            return False
+    return True
+
+
+def desired(skipped=None):
     """(klass, vrf_name, prefix) for every route zebra actually pushed down.
 
     One VTYSH call per compared class (route, route6, ...) -- each has its own
@@ -143,6 +189,10 @@ def desired():
     route6 was added: a partial Desired side is worse than none, since it
     would report the unread class's routes as gone missing rather than as
     unreadable.
+
+    Routes the data plane refuses by design (never_programmed) are left out and, when a
+    list is given as `skipped`, appended to it as (class, vrf, prefix, reason), so the
+    exclusion is visible in the report instead of making the desired count look smaller.
     """
     out = {}
     for klass in sorted(COMPARED):
@@ -191,6 +241,13 @@ def desired():
             elif isinstance(v, list):
                 flat.setdefault(k, []).extend(v)
         for prefix, entries in flat.items():
+            why = never_programmed(klass, prefix)
+            if why:
+                if skipped is not None:
+                    for e in entries:
+                        if e.get("selected") and e.get("installed"):
+                            skipped.append((klass, e.get("vrfName", "default"), prefix, why))
+                continue
             for e in entries:
                 # The whole point: only what was selected *and* installed.
                 if not (e.get("selected") and e.get("installed")):
@@ -591,7 +648,8 @@ def compare_next_hops(d, p, matched):
 def main():
     as_json = "--json" in sys.argv
 
-    d = desired()
+    not_programmable = []
+    d = desired(not_programmable)
     p = programmed()
 
     if d is None:
@@ -623,8 +681,11 @@ def main():
     # a reserved entry and a real one at different scopes -- 0.0.0.0/0 does --
     # and calling the whole key owned would hide a real route behind a
     # reserved one.
-    extra = sorted(k for k in set(p) - set(d) if unowned(p, k))
+    extra = sorted(k for k in set(p) - set(d) if unowned(p, k) and not kernel_local(p, k))
     owned = sorted(k for k in set(p) - set(d) if not unowned(p, k))
+    # Local host routes the data plane builds from the kernel (see kernel_local): not zebra's
+    # to ask for, so not a difference between the two sides; listed, not folded.
+    local = sorted(k for k in set(p) - set(d) if unowned(p, k) and kernel_local(p, k))
 
     # The guard. Nothing in common while both sides hold routes means the two
     # identity schemes disagree, not that the data plane lost everything.
@@ -658,6 +719,13 @@ def main():
              "dependencies": p[k][0]["dependencies"],
              "classification": classify_extra(p, k, cov)}
             for k in extra
+        ],
+        "kernel_local": [
+            {"class": k[0], "vrf": k[1], "prefix": k[2], "state": p[k][0]["state"]}
+            for k in local
+        ],
+        "not_programmable": [
+            {"class": c, "vrf": v, "prefix": pf, "reason": r} for c, v, pf, r in not_programmable
         ],
         "dataplane_owned": [
             {"class": k[0], "vrf": k[1], "prefix": k[2], "classification": "source_mismatch"}
@@ -708,6 +776,10 @@ def main():
             for e in result["dataplane_owned"]:
                 print("  dataplane-owned, not drift  %(class)s vrf:%(vrf)s/%(prefix)s"
                       % e)
+            for e in result["kernel_local"]:
+                print("  local host route, not compared  %(class)s vrf:%(vrf)s/%(prefix)s  %(state)s" % e)
+            for e in result["not_programmable"]:
+                print("  zebra route the data plane never programs  %(class)s vrf:%(vrf)s/%(prefix)s  (%(reason)s)" % e)
         for e in result["next_hop_mismatch"]:
             print("  NEXT HOP MISMATCH  %s vrf:%s/%s  zebra %s  dataplane %s%s"
                   % (e["class"], e["vrf"], e["prefix"],
@@ -819,7 +891,7 @@ def watch(interval, cycles, as_json, stale_after=3, confirm_after=3):
 
         cov = coverage()
         missing = set(d) - set(p)
-        extra = set(k for k in set(p) - set(d) if unowned(p, k))
+        extra = set(k for k in set(p) - set(d) if unowned(p, k) and not kernel_local(p, k))
         now = {("missing",) + k: classify_missing(k[0], cov) for k in missing}
         now.update({("extra",) + k: classify_extra(p, k, cov) for k in extra})
         # A next-hop disagreement is unexplained by definition, so it counts a
