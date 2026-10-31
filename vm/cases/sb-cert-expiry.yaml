@@ -1,0 +1,50 @@
+{
+ "id": "signed_boot_chain_certificate_expiry",
+ "item": "signed_boot_chain_certificate_expiry",
+ "suite_commit": "auto",
+ "description": "The chain still boots when the guest clock is past the expiry of the OBS signing certificate (notAfter 2028-10-29): -rtc base=2030-01-01. Shim and GRUB do not check certificate validity, so an expired signing certificate must not stop a machine that already trusts it. The guest clock is read from the kernel's own 'rtc_cmos: setting system clock to ...' line, the certificate's end date from the certificate in the ISO.",
+ "basis": [
+  "observed: 2026-10-31 06:30 manual run, acceptance-p05/secure-boot-test4-expiry (kernel started, 'Secure boot enabled', clock 2030-01-01T00:00:10 UTC)",
+  "design: handoff/verify/suite-config.json items.signed_boot_chain_certificate_expiry",
+  "the guest clock comes from the kernel log, not from an interactive `date`: the live entry used here has no login automation"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "iso": "/home/aikon/danos/acceptance-p05/topo-test4/i-danos_2608_20261030T0752-amd64.hybrid.iso",
+  "out": "/home/aikon/danos/acceptance-p05/secure-boot-expiry",
+  "vfv": "/home/aikon/danos/.obs/venv-sb/bin/virt-fw-vars"
+ },
+ "steps": [
+  {
+   "name": "run-secure-boot-fixture",
+   "basis": "design: vm/verify-secure-boot.sh (real OVMF with Secure Boot on, KVM, -cpu host) run unmodified; results.txt is what it classified from each serial log; the output directory is emptied of old results first, so an earlier run cannot satisfy a step",
+   "cmd": "case \"$(basename {{out}})\" in secure-boot-*) ;; *) echo \"BAD_OUT {{out}}: refusing to empty a directory that is not secure-boot-*\"; exit 2;; esac; rm -rf {{out}}; mkdir -p {{out}}; ONLY=T2 RTC_BASE=2030-01-01 bash {{vm_dir}}/verify-secure-boot.sh {{iso}} {{out}} {{vfv}} > {{out}}.fixture.stdout 2>&1; echo \"FIXTURE_RC=$?\"; mv {{out}}.fixture.stdout {{out}}/fixture.stdout; echo \"qemu: $(grep -m1 -a 'qemu: ' {{out}}/secure-boot.log | cut -c1-200)\"; echo \"iso_sha256=$(sha256sum {{iso}} | cut -d' ' -f1)\"; echo \"RESULT_LINES=$(wc -l < {{out}}/results.txt)\"",
+   "timeout": 3000,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FIXTURE_RC=[0-9]+$",
+    "^qemu: +qemu: -enable-kvm -cpu host ",
+    "^iso_sha256=[0-9a-f]{64}$",
+    "^RESULT_LINES=1$"
+   ]
+  },
+  {
+   "name": "guest-clock-past-the-cert-expiry-still-boots",
+   "basis": "design: T2 with the guest clock after the certificate's notAfter must still reach the kernel with Secure Boot enabled",
+   "cmd": "n=$(grep -cE '^T2 ' {{out}}/results.txt); echo \"occurrences=$n\"; grep -E '^T2 ' {{out}}/results.txt; S=$(sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/t2.serial | tr -d '\\r'); if printf '%s\\n' \"$S\" | grep -qa 'Secure boot enabled'; then echo secure-boot=enabled; else echo secure-boot=not-reported; fi; clk=$(printf '%s\\n' \"$S\" | sed -n 's/.*setting system clock to \\([0-9T:-]*\\) UTC (\\([0-9]*\\)).*/\\2/p' | head -1); end=$(date -u -d \"$(openssl x509 -in {{out}}/inspect/grubx64.signer.pem -noout -enddate | cut -d= -f2)\" +%s); echo \"guest-clock-epoch=${clk:-none} cert-not-after-epoch=${end:-none}\"; if [ -n \"$clk\" ] && [ -n \"$end\" ] && [ \"$clk\" -gt \"$end\" ]; then echo clock-past-expiry=yes; else echo clock-past-expiry=no; fi; printf '%s\\n' \"$S\" | grep -a -m1 'setting system clock' | cut -c1-160",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^occurrences=1$",
+    "^T2 kernel-started$",
+    "^secure-boot=enabled$",
+    "^guest-clock-epoch=[0-9]+ cert-not-after-epoch=[0-9]+$",
+    "^clock-past-expiry=yes$"
+   ],
+   "expect_not_regex": [
+    "clock-past-expiry=no",
+    "secure-boot=not-reported"
+   ]
+  }
+ ]
+}

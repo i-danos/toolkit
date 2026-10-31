@@ -19,11 +19,13 @@ ISO=${2:?iso}
 BASE=${ACCEPT_BASE:-/home/aikon/danos/acceptance-p05}
 case "$ITEM" in
   signed_boot_chain_live_iso)               CASE=sb-live-iso.yaml;     SUF=live-iso ;;
+  signed_boot_chain_certificate_expiry)     CASE=sb-cert-expiry.yaml;  SUF=expiry ;;
   *) echo "unknown item $ITEM" >&2; exit 2 ;;
 esac
 OUT=${3:-$BASE/secure-boot-$SUF}
 [ -f "$ISO" ] || { echo "no such ISO: $ISO" >&2; exit 2; }
-if pgrep -x qemu-system-x86_64 >/dev/null 2>&1 && [ -z "${ACCEPT_ALLOW_QEMU:-}" ]; then
+# (pgrep -x cannot match this name: comm is cut to 15 characters)
+if ps -eo comm= | grep -q '^qemu-system' && [ -z "${ACCEPT_ALLOW_QEMU:-}" ]; then
   echo "another qemu-system is running; refusing to start (one QEMU at a time)" >&2; exit 3
 fi
 TMPLOG=$OUT.accept.log.tmp          # outside $OUT: the case empties $OUT first

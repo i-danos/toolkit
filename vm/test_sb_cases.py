@@ -171,5 +171,44 @@ class LiveIso(unittest.TestCase):
         self.assertEqual(res["run-secure-boot-fixture"], "FAIL")
 
 
+class CertExpiry(unittest.TestCase):
+    CLOCK = "[    1.252801] rtc_cmos 00:04: setting system clock to 2030-01-01T00:00:10 UTC (1893456010)"
+
+    def run_case(self, serial=None, cert_days=365, **over):
+        s = serial if serial is not None else "[    0.015] Secure boot enabled\n" + self.CLOCK
+        env = {"FAKE_T2": GOOD["T2"], "FAKE_SERIAL_T2": s, "FAKE_ONLY": "T2", "cert_days": cert_days}
+        env.update(over)
+        r = Run("sb-cert-expiry.yaml", **env)
+        self.addCleanup(r.close)
+        return r.run()
+
+    def test_the_name_is_the_contract(self):
+        case = json.loads((CASES / "sb-cert-expiry.yaml").read_text())
+        self.assertEqual(case["id"], EXPIRY)
+        self.assertIn(REQUIRED[EXPIRY][0], [s["name"] for s in case["steps"]])
+
+    def test_a_clock_after_the_certificate_end_with_secure_boot_enabled_passes(self):
+        p, (res, classes) = self.run_case()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(res[REQUIRED[EXPIRY][0]], "PASS")
+        self.assertEqual(classes, {EXPIRY})
+
+    def test_a_clock_before_the_certificate_end_does_not_pass(self):
+        p, (res, _) = self.run_case(cert_days=365 * 10)                  # the certificate outlives 2030
+        self.assertEqual(res[REQUIRED[EXPIRY][0]], "FAIL")
+
+    def test_no_clock_line_does_not_pass(self):
+        p, (res, _) = self.run_case(serial="[    0.015] Secure boot enabled")
+        self.assertEqual(res[REQUIRED[EXPIRY][0]], "FAIL")
+
+    def test_secure_boot_not_reported_does_not_pass(self):
+        p, (res, _) = self.run_case(serial=self.CLOCK)
+        self.assertEqual(res[REQUIRED[EXPIRY][0]], "FAIL")
+
+    def test_the_kernel_not_starting_does_not_pass(self):
+        p, (res, _) = self.run_case(FAKE_T2="shim-refused")
+        self.assertEqual(res[REQUIRED[EXPIRY][0]], "FAIL")
+
+
 if __name__ == "__main__":
     unittest.main()
