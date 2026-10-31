@@ -343,7 +343,13 @@ def classify_extra(p, k, cov):
                                candidate for "gone missing" either, since it
                                unambiguously *is* there
     """
-    if unowned(p, k):
+    # reserved_owned means "the data plane made this for itself": every entry under
+    # the key says so (owned is True; one reserved entry must not hide a real one at
+    # another scope, see main()). It must NOT be unowned(): that is True for entries
+    # KNOWN NOT to be owned, which is exactly what watch() and main() pass in as
+    # extras, and testing it here labelled every real programmed-not-desired object
+    # reserved_owned. Unknown (None) is neither, and goes on to the state checks.
+    if all(e["owned"] is True for e in p[k]):
         return "reserved_owned"
     e = p[k][0]
     # Case-insensitive: route's DPA state comes back upper ("NO_SUPPORT"),
