@@ -54,7 +54,13 @@ CERT=$OUT/inspect/grubx64.signer.pem
 [ -s "$CERT" ] || { echo "BLOCKED: no signer certificate extracted"; exit 1; }
 echo "certificate to enroll: $(openssl x509 -in "$CERT" -noout -subject -enddate | tr '\n' ' ')"
 
-SBAT_ARGS=(); [ -n "$SBAT_LEVEL" ] && SBAT_ARGS=(--set-sbat-level "$SBAT_LEVEL") && echo "sbat level to write: $SBAT_LEVEL"
+# virt-fw-vars >= 28 takes the sbat level from a FILE, not from the string.
+SBAT_ARGS=()
+if [ -n "$SBAT_LEVEL" ]; then
+  printf '%s' "$SBAT_LEVEL" > "$OUT/sbat-level.txt"
+  SBAT_ARGS=(--set-sbat-level "$OUT/sbat-level.txt")
+  echo "sbat level to write: $SBAT_LEVEL (from $OUT/sbat-level.txt)"
+fi
 "$VFV" -i "$VARS_MS" --add-mok "$SHIM_GUID" "$CERT" "${SBAT_ARGS[@]}" -o "$OUT/vars-mok.fd" >/dev/null 2>&1 \
   || { echo "BLOCKED: virt-fw-vars could not enroll the MOK"; exit 1; }
 
