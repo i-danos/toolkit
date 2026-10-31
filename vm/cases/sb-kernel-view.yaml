@@ -45,12 +45,12 @@
   },
   {
    "name": "kernel-logs-secure-boot-enabled",
-   "basis": "design: kernel log line from dmesg",
-   "cmd": "grep -a -i 'secure boot enabled' {{out}}/dmesg.out | tr -d '\\r' | grep -v 'dmesg' | head -1",
+   "basis": "design: kernel log line from dmesg (the kernel timestamp is dropped: verify-case strips raw kernel console lines from step output)",
+   "cmd": "grep -a -i 'secure boot enabled' {{out}}/dmesg.out | tr -d '\\r' | sed 's/^\\[ *[0-9.]*\\] */dmesg: /' | grep -v 'grep' | head -1",
    "timeout": 30,
    "expect_exit": 0,
    "expect_regex": [
-    "Secure boot enabled"
+    "^dmesg: Secure boot enabled$"
    ]
   },
   {

@@ -37,7 +37,7 @@ SUDO="echo vyatta | sudo -S -p ''"
 sb_guest 'mokutil --sb-state' > "$OUT/mokutil.out" 2>&1
 sb_guest 'cat /sys/kernel/security/lockdown' > "$OUT/lockdown.out" 2>&1
 sb_guest "$SUDO dmesg | grep -i 'secure boot'" > "$OUT/dmesg.out" 2>&1
-sb_guest "$SUDO timeout 120 vyatta-install-image http://10.0.2.2:$PORT/upg.iso < /dev/null" > "$OUT/addimage.out" 2>&1
+sb_guest "$SUDO timeout 120 /opt/vyatta/sbin/vyatta-install-image http://10.0.2.2:$PORT/upg.iso < /dev/null" > "$OUT/addimage.out" 2>&1
 cp "$SB_RUN/serial.log" "$OUT/serial-installed.log"
 R "stage-collect done"
 exit 0
