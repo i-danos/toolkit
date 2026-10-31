@@ -7,8 +7,7 @@ Eight named states: five EXPLAINED ones (reserved_owned, transient_in_flight, un
 next_hop_dependency, source_mismatch) that never accumulate a streak, and observed -> stale_candidate ->
 confirmed_stale for the residual (stale_after + confirm_after consecutive cycles of the same classification).
 
-Two tests are marked expectedFailure on purpose: they state what classify_extra's own docstring says and
-the code does not do. See DefectReservedOwnedIsInverted.
+ReservedOwned pins the ownership test of classify_extra (it was inverted until DRIFT-r2).
 """
 import ast
 import types
@@ -107,31 +106,55 @@ class ClassifyExtra(unittest.TestCase):
                 self.assertIn(drift.classify_extra(p, k, None), EXPLAINED)
 
 
-class DefectReservedOwnedIsInverted(unittest.TestCase):
-    """classify_extra() begins with `if unowned(p, k): return "reserved_owned"`.
+class ReservedOwned(unittest.TestCase):
+    """reserved_owned is for entries the data plane owns (owned is True), not for entries known NOT to be owned.
 
-    unowned() is True when every entry is KNOWN NOT to be dataplane-owned, and watch() / main() only pass
-    exactly those keys on (extra = keys with unowned(p, k)). So as the code stands every extra that reaches
-    classify_extra is labelled reserved_owned, an explained state that never accumulates a streak: a real
-    programmed-not-desired object can never become stale_candidate or confirmed_stale, and the four
-    branches after it are not reachable from watch(). The docstring says reserved_owned means "the data
-    plane made this for itself", i.e. owned is True. The extra direction was never induced live
-    (mk-release: drift_detection_induced, "Not done: ... a *extra* drift"), which is why nothing noticed.
-
-    These two tests state the documented behaviour and are expected to fail until the code is fixed;
-    when it is, unittest reports them as unexpected successes and the markers must be removed.
+    classify_extra() used to begin with `if unowned(p, k): return "reserved_owned"`. unowned() is True for
+    entries known not to be owned, and watch() / main() pass on exactly those keys, so every real
+    programmed-not-desired object was labelled reserved_owned and the state checks after it could not be
+    reached from watch(). (It was found writing this file; the extra direction had never been induced live.)
     """
 
-    @unittest.expectedFailure
     def test_an_entry_the_data_plane_owns_is_reserved_owned(self):
-        p, k = extra(entry("FULL", owned=True))
+        for state in ("FULL", "PARTIAL", "NO_SUPPORT", None):
+            p, k = extra(entry(state, owned=True))
+            self.assertEqual(drift.classify_extra(p, k, None), "reserved_owned", state)
+
+    def test_an_entry_known_not_to_be_owned_is_not_reserved_owned(self):
+        # the only kind of key watch() hands to classify_extra: it is classified by what it is
+        want = {"FULL": "source_mismatch", "PARTIAL": "transient_in_flight", "NOT_NEEDED": "transient_in_flight",
+                "NO_SUPPORT": "unsupported_or_unreadable", "no_support": "unsupported_or_unreadable"}
+        for state, cls in want.items():
+            p, k = extra(entry(state, owned=False))
+            self.assertEqual(drift.classify_extra(p, k, None), cls, state)
+        p, k = extra(entry("FULL", owned=False, deps=["nexthop-group inet/idx:7"]))
+        self.assertEqual(drift.classify_extra(p, k, None), "next_hop_dependency")
+
+    def test_one_input_both_ways(self):
+        k_owned, k_real = ("route", "default", "127.0.0.0/8"), ("route", "default", "198.51.100.0/24")
+        p = {k_owned: [entry("FULL", owned=True)], k_real: [entry("FULL", owned=False)]}
+        self.assertEqual(drift.classify_extra(p, k_owned, None), "reserved_owned")
+        self.assertNotEqual(drift.classify_extra(p, k_real, None), "reserved_owned")
+
+    def test_a_key_is_reserved_only_if_every_entry_under_it_is(self):
+        # 0.0.0.0/0 carries a reserved entry and a real one at different scopes: the real one must not hide
+        p, k = extra(entry("FULL", owned=True), entry("FULL", owned=False))
+        self.assertNotEqual(drift.classify_extra(p, k, None), "reserved_owned")
+        p, k = extra(entry("FULL", owned=True), entry("FULL", owned=None))
+        self.assertNotEqual(drift.classify_extra(p, k, None), "reserved_owned")
+        p, k = extra(entry("FULL", owned=True), entry("PARTIAL", owned=True))
         self.assertEqual(drift.classify_extra(p, k, None), "reserved_owned")
 
-    @unittest.expectedFailure
-    def test_an_entry_known_not_to_be_owned_is_not_reserved_owned(self):
-        # the only kind of key watch() hands to classify_extra
-        p, k = extra(entry("FULL", owned=False))
-        self.assertNotEqual(drift.classify_extra(p, k, None), "reserved_owned")
+    def test_what_watch_feeds_it_never_comes_back_reserved_owned(self):
+        # watch(): extra = keys programmed but not desired, with unowned(p, k); owned keys never get here
+        p = {("route", "default", "127.0.0.0/8"): [entry("FULL", owned=True)],
+             ("route", "default", "198.51.100.0/24"): [entry("FULL", owned=False)],
+             ("route6", "default", "2001:db8::/32"): [entry("no_support", owned=False)],
+             ("route", "default", "203.0.113.0/24"): [entry("FULL", owned=None)]}
+        fed = [k for k in p if drift.unowned(p, k)]
+        self.assertEqual(len(fed), 2)                                    # unknown ownership is not drift
+        self.assertEqual([drift.classify_extra(p, k, None) for k in fed],
+                         ["source_mismatch", "unsupported_or_unreadable"])
 
 
 class AdvanceState(unittest.TestCase):
