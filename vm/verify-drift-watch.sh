@@ -50,6 +50,15 @@ echo "===== 0. Install ====="
 b64=$(base64 -w0 "$HERE/dpa-drift.py")
 S $R1 "echo '$b64' | base64 -d | sudo tee /tmp/dpa-drift.py >/dev/null
        sudo chmod 755 /tmp/dpa-drift.py; echo installed" | tail -1 | sed 's/^/    /'
+# dpa-drift.py imports dpa-coverage-manifest.py from its own directory (the class
+# notes live there so there is only one copy of that fact). Installing only the
+# tool leaves the import pointing at a file that is not there: every cycle then
+# dies with FileNotFoundError '/tmp/dpa-coverage-manifest.py', the counts come back
+# empty, and all four checks read as FAIL -- which looks exactly like a data plane
+# that reports nothing. Ship the sibling with it.
+b64=$(base64 -w0 "$HERE/dpa-coverage-manifest.py")
+S $R1 "echo '$b64' | base64 -d | sudo tee /tmp/dpa-coverage-manifest.py >/dev/null
+       sudo chmod 644 /tmp/dpa-coverage-manifest.py; echo manifest-installed" | tail -1 | sed 's/^/    /'
 
 echo
 echo "===== 1. A settled box has nothing persistent ====="
@@ -111,7 +120,7 @@ echo
 echo "===== 5. Clean up ====="
 S $R1 "sudo vtysh -c 'configure terminal' -c 'no ip route 10.91.1.0/24 blackhole' -c 'no ip route 10.91.2.0/24 blackhole'" > /dev/null
 sleep 5
-S $R1 "sudo python3 /tmp/dpa-drift.py 2>&1 | head -2; sudo rm -f /tmp/dpa-drift.py" | sed 's/^/    /'
+S $R1 "sudo python3 /tmp/dpa-drift.py 2>&1 | head -2; sudo rm -f /tmp/dpa-drift.py /tmp/dpa-coverage-manifest.py" | sed 's/^/    /'
 
 echo
 echo "===== Result ====="
