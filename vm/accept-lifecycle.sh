@@ -24,10 +24,13 @@
 #
 # UPG_ISO, if set, is the ISO that gets ADDED, so the upgrade can go between two
 # different versions (the disk installed from an older ISO, UPG_ISO the newer).
-# The default is the ISO itself. With UPG_ISO set the run also reads
-# vyatta-image-tools' version inside each image it boots: the old image must say
-# the old version, the new image a different one, and the rollback the old one
-# again. EXPECT_BASE_VER / EXPECT_UPG_VER pin those versions if given. Set
+# The default is the ISO itself. With UPG_ISO set the run also reads, inside each
+# image it boots, a fingerprint: vyatta-image-tools plus every installed package
+# whose version carries a danosN suffix. The new image must differ from the old in
+# at least one of them (a single package cannot show that: vyatta-image-tools was
+# 5.57 in both of two different images), and the rollback must match the old one
+# again. The detail names the packages that differ, or says what was compared.
+# EXPECT_BASE_VER / EXPECT_UPG_VER pin vyatta-image-tools' version, as before. Set
 # SKIP_BOOT_MODES=1 to stop after the naming check (no cloud-init or no-network).
 #
 # Usage: accept-lifecycle.sh <iso> <installed.qcow2> <outdir>
@@ -112,6 +115,41 @@ cmdline() { gssh 'cat /proc/cmdline' | tail -1; }
 union_of() { printf '%s' "$1" | sed -n 's/.*vyatta-union=\([^ ]*\).*/\1/p'; }
 images() { rootcmd "$GRUBPL --list-images" | tail -1; }
 ver() { gssh "dpkg-query -W -f='\${Version}' vyatta-image-tools" | tail -1; }
+# What an image is, as "name version" lines: vyatta-image-tools and every package whose
+# version has a danosN suffix. The filtering is local so the remote command stays as
+# plain as ver()'s.
+fp() {
+	gssh "dpkg-query -W -f='PKG:\${Package} \${Version}\\n'" | sed -n 's/^PKG://p' \
+	  | awk '$2 ~ /danos/ || $1 == "vyatta-image-tools"' | LC_ALL=C sort
+}
+# fp_diff OLD NEW: one "name old -> new" line per package whose version differs or that
+# exists on one side only.
+fp_diff() {
+	awk 'NR == FNR { if (NF) old[$1] = $2; next }
+	     NF { new[$1] = $2 }
+	     END { for (p in old) if (!(p in new)) print p, old[p], "->", "(not in the set)"
+	           for (p in new) if (!(p in old)) print p, "(not in the set)", "->", new[p]
+	           for (p in new) if ((p in old) && old[p] != new[p]) print p, old[p], "->", new[p] }' \
+	  <(printf '%s\n' "$1") <(printf '%s\n' "$2") | LC_ALL=C sort
+}
+# fp_judge OLD NEW: rc 0 and the packages that differ (at most three) when the images
+# differ; rc 1 and why not (what was compared) when they do not.
+fp_judge() {
+	local d k n
+	[ -n "$1" ] || { echo "the old image's package versions could not be read"; return 1; }
+	[ -n "$2" ] || { echo "the new image's package versions could not be read"; return 1; }
+	d=$(fp_diff "$1" "$2")
+	if [ -z "$d" ]; then
+		n=$(printf '%s\n' "$1" | grep -c .)
+		echo "no version differs among the $n compared packages: $(printf '%s\n' "$1" | awk '{ printf "%s%s %s", s, $1, $2; s = "; " }' | cut -c1-240)"
+		return 1
+	fi
+	k=$(printf '%s\n' "$d" | grep -c .)
+	printf '%s\n' "$d" | head -3 | awk '{ printf "%s%s", s, $0; s = "; " }'
+	[ "$k" -gt 3 ] && printf ' (+%d more)' "$((k - 3))"
+	echo
+	return 0
+}
 CROSS=0; [ "$UPG_ISO" != "$ISO" ] && CROSS=1
 
 echo "===== 0. A throwaway overlay of the installed disk ====="
@@ -134,8 +172,8 @@ wait_ssh "$BOOT_TIMEOUT" || { record "the installed disk did not boot to ssh" BL
 CMD0=$(cmdline); UN0=$(union_of "$CMD0")
 NIC0=$(gssh 'cat /sys/class/net/dp0s3/address' | tail -1)
 IM0=$(images)
-V0=$(ver)
-echo "    version ${V0:-unreadable}  (vyatta-image-tools in the running image)"
+V0=$(ver); F0=""; [ "$CROSS" = 1 ] && F0=$(fp)
+echo "    version ${V0:-unreadable}  (vyatta-image-tools in the running image${F0:+; $(printf '%s\n' "$F0" | grep -c .) packages fingerprinted})"
 echo "    union   ${UN0:-none}"
 echo "    dp0s3   ${NIC0:-unreadable}"
 echo "    images  ${IM0:-none}"
@@ -176,13 +214,16 @@ echo "    union   ${UN1:-none}"
 [ "$(gssh 'id -un' | tail -1)" = vyatta ] && record "the admin account survived the switch" PASS "" \
 	|| record "the admin account is gone" FAIL ""
 if [ "$CROSS" = 1 ]; then
-	V1=$(ver); echo "    version ${V1:-unreadable}"
+	V1=$(ver); F1=$(fp); echo "    version ${V1:-unreadable}"
 	if [ -n "${EXPECT_UPG_VER:-}" ]; then
 		[ "$V1" = "$EXPECT_UPG_VER" ] && record "the new image runs the new version" PASS "$V0 -> $V1" \
 			|| record "the new image does not run the expected version" FAIL "wanted $EXPECT_UPG_VER, got ${V1:-unreadable}"
 	else
-		[ -n "$V1" ] && [ "$V1" != "$V0" ] && record "the new image runs a different version" PASS "$V0 -> $V1" \
-			|| record "the new image runs the same version as the old" FAIL "$V0 -> ${V1:-unreadable}"
+		if FPD=$(fp_judge "$F0" "$F1"); then
+			record "the new image runs a different version" PASS "$FPD"
+		else
+			record "the new image runs the same version as the old" FAIL "$FPD"
+		fi
 	fi
 fi
 
@@ -198,9 +239,12 @@ echo "    union   ${UN2:-none}"
 [ "$(gssh 'id -un' | tail -1)" = vyatta ] && record "the admin account survived the rollback" PASS "" \
 	|| record "the admin account is gone after rollback" FAIL ""
 if [ "$CROSS" = 1 ]; then
-	V2=$(ver); echo "    version ${V2:-unreadable}"
-	[ -n "$V2" ] && [ "$V2" = "$V0" ] && record "the rollback runs the old version again" PASS "$V2" \
-		|| record "the rollback does not run the old version" FAIL "wanted $V0, got ${V2:-unreadable}"
+	V2=$(ver); F2=$(fp); echo "    version ${V2:-unreadable}"
+	if [ -n "$V2" ] && [ "$V2" = "$V0" ] && [ -n "$F0" ] && [ "$F2" = "$F0" ]; then
+		record "the rollback runs the old version again" PASS "$V2; $(printf '%s\n' "$F2" | grep -c .) packages as before"
+	else
+		record "the rollback does not run the old version" FAIL "wanted $V0, got ${V2:-unreadable}; differing packages: $(fp_diff "$F0" "$F2" | head -3 | paste -sd';')"
+	fi
 fi
 
 echo
