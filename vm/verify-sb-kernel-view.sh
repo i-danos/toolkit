@@ -40,5 +40,10 @@ sb_guest "$SUDO dmesg | grep -i 'secure boot'" > "$OUT/dmesg.out" 2>&1
 sb_guest "N=\$(ls /sys/class/net | grep -v '^lo\$' | head -1); $SUDO ip addr add 10.0.2.15/24 dev \$N; $SUDO ip link set \$N up; $SUDO ip route add default via 10.0.2.2; ip -o -4 addr show dev \$N; curl -sI http://10.0.2.2:$PORT/upg.iso | head -1" > "$OUT/net.out" 2>&1
 sb_guest "$SUDO -v; printf 'sbkvtest\n\n\n\n' | sudo timeout 100 /opt/vyatta/sbin/vyatta-install-image http://10.0.2.2:$PORT/upg.iso" > "$OUT/addimage.out" 2>&1
 cp "$SB_RUN/serial.log" "$OUT/serial-installed.log"
+"$HERE/uefi-vm.sh" stop "$SB_NAME" >/dev/null 2>&1
+# the install-time check the add-image flow runs, on tampered copies of the image's GRUB: the real function from the ISO,
+# unmodified, in a container (no QEMU here); one bit flipped in the body, and the signature removed
+EXTRA_TAMPER=1 timeout 900 bash "$HERE/verify-add-image-check.sh" "$ISO" "$OUT/tamper-check" "$VFV" > "$OUT/tamper-check.stdout" 2>&1
+R "stage-tamper-check rc=$?"
 R "stage-collect done"
 exit 0

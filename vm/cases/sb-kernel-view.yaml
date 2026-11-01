@@ -2,11 +2,12 @@
  "id": "signed_boot_chain_kernel_view_and_add_image_check",
  "item": "signed_boot_chain_kernel_view_and_add_image_check",
  "suite_commit": "auto",
- "description": "On a disk the installer wrote under OVMF Secure Boot (KVM -cpu host, guest clock = host clock), the installed system's own view: mokutil --sb-state, the kernel log line 'Secure boot enabled', and what `add system image` prints about its signing check. The signing-check conclusion is recorded faithfully: a tool that prints nothing is a FAIL, not a pass. /sys/kernel/security/lockdown is recorded, not an expectation.",
+ "description": "On a disk the installer wrote under OVMF Secure Boot (KVM -cpu host, guest clock = host clock), the installed system's own view: mokutil --sb-state, the kernel log line 'Secure boot enabled', `add system image` completing with no signature error on the correct chain, and the install-time signing check (the ISO's own check_binary_signatures, unmodified) printing its failure when the image's GRUB is tampered. /sys/kernel/security/lockdown is recorded, not an expectation.",
  "basis": [
   "observed: 2026-10-31 interactive sbkv guest: installed disk boots to login, mokutil/sudo/dmesg need superuser + new login",
   "root cause of the 5h59m sbkv hang: uefi-install.sh leaves the VM running by design; the case had no timeout and no trap (now sb-lib.sh)",
-  "design: handoff/verify/suite-config.json items.signed_boot_chain_kernel_view_and_add_image_check"
+  "design: handoff/verify/suite-config.json items.signed_boot_chain_kernel_view_and_add_image_check (4 required cases, SB-r4)",
+  "finding: check_binary_signatures is silent on success and compares certificate subjects only: a flipped bit in the hashed image is NOT noticed by it (shim catches that at boot, see signed_boot_chain_installed_disk); removing the signature is"
  ],
  "vars": {
   "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
@@ -27,7 +28,8 @@
     "^iso_sha256=[0-9a-f]{64}$",
     "^stage-install rc=0$",
     "^stage-boot rc=0$",
-    "^stage-collect done$"
+    "^stage-collect done$",
+    "^stage-tamper-check rc=0$"
    ]
   },
   {
@@ -54,13 +56,31 @@
    ]
   },
   {
-   "name": "add-system-image-reports-its-signing-check",
-   "basis": "design: the conclusion of the signing check is recorded as printed; silence is FAIL",
-   "cmd": "echo lockdown: $(tr -d '\\r' < {{out}}/lockdown.out | grep -aE '\\[.*\\]' | head -1); L=$(tr -d '\\r' < {{out}}/addimage.out | grep -aiE 'signing check|signed binaries|secure boot'); if [ -n \"$L\" ]; then printf '%s\\n' \"$L\"; echo signing-check-conclusion=printed; else echo signing-check-conclusion=none-printed; false; fi",
+   "name": "add-system-image-completes-without-a-signature-error",
+   "basis": "design: on the correct chain `add system image` downloads, checks MD5, installs and prints Done., with no signature/verification line anywhere in its output",
+   "cmd": "echo lockdown: $(tr -d '\\r' < {{out}}/lockdown.out | grep -aE '\\[.*\\]' | head -1); A=$(tr -d '\\r' < {{out}}/addimage.out); printf '%s\\n' \"$A\" | grep -aE '^ISO download succeeded|MD5 checksums.*OK|^Done\\.$'; echo signature-error-lines=$(printf '%s\\n' \"$A\" | grep -aicE 'signature|signing check|verification failed|Warning: secure boot|could not be verified')",
    "timeout": 30,
    "expect_exit": 0,
    "expect_regex": [
-    "^signing-check-conclusion=printed$"
+    "^ISO download succeeded\\.$",
+    "^Done\\.$",
+    "^signature-error-lines=0$"
+   ],
+   "expect_not_regex": [
+    "signature-error-lines=[1-9]"
+   ]
+  },
+  {
+   "name": "add-system-image-reports-the-signing-failure-when-the-chain-is-tampered",
+   "basis": "design: the ISO's real check_binary_signatures is silent on the real chain and prints its failure for a GRUB with the signature removed; a body bit flip is recorded too (it is not detected by this check)",
+   "cmd": "T={{out}}/tamper-check; cat $T/results.txt | tr '\\n' ' '; echo; echo positive-output-bytes=$(wc -c < $T/positive.out | tr -d ' '); echo tamper-body-output-bytes=$(wc -c < $T/tamper-body.out | tr -d ' '); tr -d '\\r' < $T/tamper-nosig.out",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "positive rc=0",
+    "tamper-nosig rc=1",
+    "^positive-output-bytes=1$",
+    "^Signing check, failed to get signature for .*/usr/lib/grub/x86_64-efi-signed/grubx64\\.efi\\.signed$"
    ]
   }
  ]

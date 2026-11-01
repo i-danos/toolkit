@@ -64,6 +64,23 @@ PY
 ( cd "$OUT" && sha256sum root/usr/lib/shim/shimx64.efi.signed root/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed \
     root/boot/vmlinuz-6.12.0-trunk-vyatta-amd64 root/opt/vyatta/sbin/vyatta-install-image.functions db.esl inspect/grubx64.signer.der ) | tee "$OUT/checksums.txt"
 
+if [ -n "${EXTRA_TAMPER:-}" ]; then
+  python3 - "$OUT" <<'PY'
+import os, shutil, struct, sys
+out = sys.argv[1]
+g = "usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
+d = open(os.path.join(out, "root", g), "rb").read()
+pe = struct.unpack_from("<I", d, 0x3c)[0]; opt = pe + 24
+dd = opt + (112 if struct.unpack_from("<H", d, opt)[0] == 0x20b else 96)
+body = bytearray(d); body[len(d) // 2] ^= 1                     # one bit inside the hashed image
+nosig = bytearray(d); nosig[dd + 32:dd + 40] = bytes(8)          # the certificate-table entry zeroed: no signature
+for name, data in (("root-body", body), ("root-nosig", nosig)):
+    t = os.path.join(out, name); shutil.rmtree(t, ignore_errors=True)
+    shutil.copytree(os.path.join(out, "root"), t)
+    open(os.path.join(t, g), "wb").write(data)
+    print("%s: grubx64.efi.signed copy with %s" % (name, "one bit flipped at byte %d" % (len(d) // 2) if name == "root-body" else "its certificate-table entry zeroed"))
+PY
+fi
 cat > "$OUT/drive.sh" <<'DRIVE'
 #!/bin/bash
 # runs inside the container: /w is the output directory
@@ -92,7 +109,8 @@ EOF
 chmod +x /stub/*/*
 ROOT=/w/root
 FUNCS=$ROOT/opt/vyatta/sbin/vyatta-install-image.functions
-run() {   # run <name> <stubdir>
+run() {   # run <name> <stubdir> [root]
+  local ROOT=${3:-$ROOT}
   ( export PATH="$2:$PATH"
     # shellcheck disable=SC1090
     . "$FUNCS" >/dev/null 2>&1
@@ -107,6 +125,8 @@ echo "mokutil on PATH for the positive run: $(PATH=/stub/with-mok:$PATH command 
 echo "mokutil on PATH for the negative run: $(PATH=/stub/no-mok:/usr/bin:/bin command -v mokutil || echo none)"
 run positive /stub/with-mok
 run negative /stub/no-mok
+# EXTRA_TAMPER: the same real function on copies of the tree whose GRUB is tampered (made on the host, see below)
+if [ -d /w/root-body ]; then run tamper-body /stub/with-mok /w/root-body; run tamper-nosig /stub/with-mok /w/root-nosig; fi
 DRIVE
 chmod +x "$OUT/drive.sh"
 echo "== inside a privileged $IMAGE container"
