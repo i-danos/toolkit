@@ -1,0 +1,77 @@
+{
+ "id": "signed_boot_chain_installed_disk",
+ "item": "signed_boot_chain_installed_disk",
+ "suite_commit": "auto",
+ "description": "The disk the installer writes under OVMF Secure Boot (KVM -cpu host): installer completes on a blank 20 GiB qcow2 ('Setting up grub on /dev/vda: OK'), the ESP carries the Microsoft-signed shim and the OBS-signed GRUB, the disk boots alone to 'node login:' with the installer's NVRAM, and one flipped bit in a copy of the installed grubx64.efi is refused ('Verification failed: (0x1A) Security Violation').",
+ "basis": [
+  "design: handoff/verify/suite-config.json items.signed_boot_chain_installed_disk",
+  "accept-disk-install.sh has no OVMF branch (it drives boot-vm.sh, BIOS): the new --secure-boot switch there hands off to verify-sb-installed-disk.sh"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "iso": "/home/aikon/danos/acceptance-p05/topo-test4/i-danos_2608_20261030T0752-amd64.hybrid.iso",
+  "out": "/home/aikon/danos/acceptance-p05/secure-boot-installed-disk",
+  "vfv": "/home/aikon/danos/.obs/venv-sb/bin/virt-fw-vars"
+ },
+ "steps": [
+  {
+   "name": "run-sb-installed-disk-fixture",
+   "basis": "design: caps on every wait, trap cleanup; directory emptied first",
+   "cmd": "case \"$(basename {{out}})\" in secure-boot-*) ;; *) echo \"BAD_OUT {{out}}\"; exit 2;; esac; rm -rf {{out}}; mkdir -p {{out}}; bash {{vm_dir}}/verify-sb-installed-disk.sh {{iso}} {{out}} {{vfv}} > {{out}}.fixture.stdout 2>&1; echo \"FIXTURE_RC=$?\"; mv {{out}}.fixture.stdout {{out}}/fixture.stdout; grep -E '^qemu:' {{out}}/fixture.stdout | head -1; grep -E '^iso_sha256=' {{out}}/results.txt; echo \"RESULT_LINES=$(wc -l < {{out}}/results.txt)\"",
+   "timeout": 5400,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FIXTURE_RC=[0-9]+$",
+    "^qemu: -enable-kvm -cpu host ",
+    "^iso_sha256=[0-9a-f]{64}$"
+   ]
+  },
+  {
+   "name": "the-installer-completes-under-ovmf-secure-boot",
+   "basis": "design: the installer's own grub line",
+   "cmd": "grep -a 'stage-install' {{out}}/results.txt; grep -a 'Setting up grub on /dev/vda' {{out}}/install.log | tr -d '\\r' | head -1",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^stage-install rc=0$",
+    "^Setting up grub on /dev/vda: OK$"
+   ]
+  },
+  {
+   "name": "the-installed-esp-carries-a-microsoft-signed-shim",
+   "basis": "design: signer of /EFI/debian/shimx64.efi (Microsoft UEFI CA 2011) and of grubx64.efi (OBS project cert), read from the installed ESP",
+   "cmd": "grep -aE '^esp-(shim|grub) ' {{out}}/results.txt",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^esp-shim signer: .*Microsoft Corporation UEFI CA 2011",
+    "^esp-grub signer: .*home:i-danos OBS Project"
+   ]
+  },
+  {
+   "name": "the-installed-disk-boots-alone-under-secure-boot",
+   "basis": "design: installed disk alone with the installer's NVRAM reaches 'node login:'",
+   "cmd": "grep -a 'stage-boot-alone' {{out}}/results.txt; grep -a 'node login:' {{out}}/serial-installed.log | tr -d '\\r' | tail -1",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^stage-boot-alone rc=0$",
+    "node login:"
+   ]
+  },
+  {
+   "name": "one-flipped-bit-in-the-installed-grub-refused",
+   "basis": "design: shim refuses a copy of the installed grubx64.efi with one bit flipped",
+   "cmd": "grep -aE '^(tamper-offset|tamper-result)=' {{out}}/results.txt; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-tamper.log | tr -d '\\r' | grep -a 'Verification failed' | head -1",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^tamper-result=refused$",
+    "Verification failed: \\(0x1A\\) Security Violation"
+   ],
+   "expect_not_regex": [
+    "tamper-result=booted"
+   ]
+  }
+ ]
+}

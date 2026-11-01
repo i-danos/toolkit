@@ -57,6 +57,13 @@ BOOT_TIMEOUT=${BOOT_TIMEOUT:-420}
 ADMIN_USER=${ADMIN_USER:-vyatta}
 ADMIN_PASS=${ADMIN_PASS:-vyatta}
 
+# --secure-boot (or SECURE_BOOT=1) runs the install under OVMF with Secure Boot on instead of the BIOS path
+# below, and checks the installed ESP and the bit-flip refusal (verify-sb-installed-disk.sh). Without it
+# nothing here changes.
+if [ "${3:-}" = --secure-boot ] || [ "${SECURE_BOOT:-}" = 1 ]; then
+	exec "$(dirname "$0")/accept-secure-boot.sh" signed_boot_chain_installed_disk "$ISO" "${SB_OUTDIR:-/home/aikon/danos/acceptance-p05/secure-boot-installed-disk}"
+fi
+
 [ -f "$ISO" ] || { echo "no such image: $ISO" >&2; exit 1; }
 mkdir -p "$OUTDIR/run" "$RUN"
 
