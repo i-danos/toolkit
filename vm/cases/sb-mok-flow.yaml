@@ -1,0 +1,91 @@
+{
+ "id": "signed_boot_chain_mok_enrollment_flow",
+ "item": "signed_boot_chain_mok_enrollment_flow",
+ "suite_commit": "auto",
+ "description": "mokutil --import queues the OBS signing certificate, MokManager 'Enroll MOK' is driven over the serial console and its 'View key 0' (serial, issuer, subject, SHA-1 fingerprint) must equal openssl's output for the same certificate, and after the reboot mokutil --list-enrolled shows the OBS certificate next to the Debian Secure Boot CA. Helper cases control-* run the identical steps with a throwaway certificate, to separate a broken harness from a certificate mokutil refuses.",
+ "basis": [
+  "design: handoff/verify/suite-config.json items.signed_boot_chain_mok_enrollment_flow",
+  "finding: the OBS certificate is compiled into the kernel's .builtin_trusted_keys and is in db (or MokList) for the chain to boot at all, so mokutil skips it ('Already in kernel trusted keyring' / with --ignore-keyring 'already in db')"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "iso": "/home/aikon/danos/acceptance-p05/topo-test4/i-danos_2608_20261030T0752-amd64.hybrid.iso",
+  "out": "/home/aikon/danos/acceptance-p05/secure-boot-mok-flow",
+  "vfv": "/home/aikon/danos/.obs/venv-sb/bin/virt-fw-vars"
+ },
+ "steps": [
+  {
+   "name": "run-sb-mok-flow-fixture",
+   "basis": "design: caps on every wait, trap cleanup; directory emptied first",
+   "cmd": "case \"$(basename {{out}})\" in secure-boot-*) ;; *) echo \"BAD_OUT {{out}}\"; exit 2;; esac; rm -rf {{out}}; mkdir -p {{out}}; bash {{vm_dir}}/verify-sb-mok-flow.sh {{iso}} {{out}} {{vfv}} > {{out}}.fixture.stdout 2>&1; echo \"FIXTURE_RC=$?\"; mv {{out}}.fixture.stdout {{out}}/fixture.stdout; grep -E '^qemu:' {{out}}/fixture.stdout | head -1; grep -E '^iso_sha256=' {{out}}/results.txt; grep -E '^stage-(boot|reboot)' {{out}}/results.txt",
+   "timeout": 5400,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FIXTURE_RC=0$",
+    "^qemu: -enable-kvm -cpu host ",
+    "^iso_sha256=[0-9a-f]{64}$",
+    "^stage-boot rc=0$"
+   ]
+  },
+  {
+   "name": "mokutil-import-queues-the-obs-certificate",
+   "basis": "design: the OBS certificate appears in mokutil --list-new after the import",
+   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} obs queue",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "queued=yes"
+   ]
+  },
+  {
+   "name": "mokmanager-enrolls-the-key",
+   "basis": "design: View key 0 on MokManager's screen equals openssl for the OBS certificate",
+   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} obs view",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "serial-matches-openssl=yes"
+   ]
+  },
+  {
+   "name": "after-reboot-the-key-is-enrolled",
+   "basis": "design: mokutil --list-enrolled has the OBS certificate and the Debian Secure Boot CA",
+   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} obs enrolled",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "key-enrolled=yes"
+   ]
+  },
+  {
+   "name": "control-import-queues-the-throwaway-certificate",
+   "basis": "helper: same import with a certificate the kernel does not carry",
+   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} control queue",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "queued=yes"
+   ]
+  },
+  {
+   "name": "control-mokmanager-view-matches-openssl",
+   "basis": "helper: same MokManager View key 0 comparison, throwaway certificate",
+   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} control view",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "serial-matches-openssl=yes"
+   ]
+  },
+  {
+   "name": "control-after-reboot-the-key-is-enrolled",
+   "basis": "helper: same list-enrolled check, throwaway certificate",
+   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} control enrolled",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "key-enrolled=yes"
+   ]
+  }
+ ]
+}
