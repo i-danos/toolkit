@@ -38,7 +38,7 @@ sb_guest 'cat /sys/kernel/security/lockdown' > "$OUT/lockdown.out" 2>&1
 sb_guest "$SUDO dmesg | grep -i 'secure boot'" > "$OUT/dmesg.out" 2>&1
 # the installed system has no address on its NIC yet: give it the QEMU user-net one so it can reach the host at 10.0.2.2
 sb_guest "N=\$(ls /sys/class/net | grep -v '^lo\$' | head -1); $SUDO ip addr add 10.0.2.15/24 dev \$N; $SUDO ip link set \$N up; $SUDO ip route add default via 10.0.2.2; ip -o -4 addr show dev \$N; curl -sI http://10.0.2.2:$PORT/upg.iso | head -1" > "$OUT/net.out" 2>&1
-sb_guest "$SUDO timeout 120 /opt/vyatta/sbin/vyatta-install-image http://10.0.2.2:$PORT/upg.iso < /dev/null" > "$OUT/addimage.out" 2>&1
+sb_guest "$SUDO -v; printf 'sbkvtest\n\n\n\n' | sudo timeout 100 /opt/vyatta/sbin/vyatta-install-image http://10.0.2.2:$PORT/upg.iso" > "$OUT/addimage.out" 2>&1
 cp "$SB_RUN/serial.log" "$OUT/serial-installed.log"
 R "stage-collect done"
 exit 0
