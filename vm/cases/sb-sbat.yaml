@@ -1,0 +1,60 @@
+{
+ "id": "signed_boot_chain_sbat_revocation",
+ "item": "signed_boot_chain_sbat_revocation",
+ "suite_commit": "auto",
+ "description": "SBAT through shim, same boot twice, differing only in SbatLevel in the variable store: 'grub,5' (GRUB's own generation) boots, 'grub,6' is refused by shim ('Verification failed: (0x1A) Security Violation'). KVM -cpu host, real OVMF Secure Boot.",
+ "basis": [
+  "design: handoff/verify/suite-config.json items.signed_boot_chain_sbat_revocation",
+  "observed: GRUB .sbat is grub,5; shim 16.1 builtin level is grub,5",
+  "earlier 'no effect' came from a level file without the sbat,1,<date> header line, not from the varstore"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "iso": "/home/aikon/danos/acceptance-p05/topo-test4/i-danos_2608_20261030T0752-amd64.hybrid.iso",
+  "out": "/home/aikon/danos/acceptance-p05/secure-boot-sbat",
+  "vfv": "/home/aikon/danos/.obs/venv-sb/bin/virt-fw-vars"
+ },
+ "steps": [
+  {
+   "name": "run-sb-sbat-fixture",
+   "basis": "design: two boots, one QEMU at a time, 900 s cap each; directory emptied first",
+   "cmd": "case \"$(basename {{out}})\" in secure-boot-*) ;; *) echo \"BAD_OUT {{out}}\"; exit 2;; esac; rm -rf {{out}}; mkdir -p {{out}}; bash {{vm_dir}}/verify-sb-sbat.sh {{iso}} {{out}} {{vfv}} > {{out}}.fixture.stdout 2>&1; echo \"FIXTURE_RC=$?\"; mv {{out}}.fixture.stdout {{out}}/fixture.stdout; grep -E '^qemu:' {{out}}/fixture.stdout | head -1; grep -E '^iso_sha256=' {{out}}/results.txt; echo \"RESULT_LINES=$(wc -l < {{out}}/results.txt)\"",
+   "timeout": 2400,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FIXTURE_RC=0$",
+    "^qemu: -enable-kvm -cpu host ",
+    "^iso_sha256=[0-9a-f]{64}$",
+    "^RESULT_LINES=5$"
+   ]
+  },
+  {
+   "name": "sbat-grub-5-boots-the-grub-menu",
+   "basis": "control: SbatLevel grub,5 lets GRUB (generation 5) run and the kernel start",
+   "cmd": "grep -aE '^grub5 ' {{out}}/results.txt; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/grub5/t2.serial | tr -d '\\r' | grep -a -c 'Linux version' | sed 's/^/kernel-banner-lines=/'",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^grub5 rc=0 T2 kernel-started$",
+    "^grub5 level=sbat,1,2026010100\\|grub,5\\|$",
+    "^kernel-banner-lines=[1-9]"
+   ],
+   "expect_not_regex": [
+    "shim-refused"
+   ]
+  },
+  {
+   "name": "sbat-grub-6-is-refused-by-shim",
+   "basis": "design: SbatLevel grub,6 revokes GRUB generation 5; shim prints the Security Violation and never reaches the kernel",
+   "cmd": "grep -aE '^grub6 ' {{out}}/results.txt; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/grub6/t2.serial | tr -d '\\r' | grep -a -o 'Verification failed: (0x1A) Security Violation' | head -1; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/grub6/t2.serial | tr -d '\\r' | grep -a -c 'Linux version' | sed 's/^/kernel-banner-lines=/'",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^grub6 rc=0 T2 shim-refused$",
+    "^grub6 level=sbat,1,2026010100\\|grub,6\\|$",
+    "^Verification failed: \\(0x1A\\) Security Violation$",
+    "^kernel-banner-lines=0$"
+   ]
+  }
+ ]
+}

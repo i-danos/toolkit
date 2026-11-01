@@ -22,6 +22,7 @@ case "$ITEM" in
   signed_boot_chain_certificate_expiry)     CASE=sb-cert-expiry.yaml;  SUF=expiry ;;
   signed_boot_chain_kernel_view_and_add_image_check) CASE=sb-kernel-view.yaml; SUF=kernel-view ;;
   signed_boot_chain_installed_disk)          CASE=sb-installed-disk.yaml; SUF=installed-disk ;;
+  signed_boot_chain_sbat_revocation)         CASE=sb-sbat.yaml; SUF=sbat ;;
   signed_boot_chain_mok_enrollment_flow)     CASE=sb-mok-flow.yaml; SUF=mok-flow ;;
   add_system_image_signing_check)           CASE=add-system-image-signing-check.yaml; SUF=add-image; NOQEMU=1 ;;
   *) echo "unknown item $ITEM" >&2; exit 2 ;;
