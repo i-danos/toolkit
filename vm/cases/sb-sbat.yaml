@@ -45,12 +45,12 @@
   },
   {
    "name": "sbat-grub-6-is-refused-by-shim",
-   "basis": "design: SbatLevel grub,6 revokes GRUB generation 5; shim prints the Security Violation and never reaches the kernel",
+   "basis": "design: SbatLevel grub,6 revokes GRUB generation 5; shim prints the Security Violation and never reaches the kernel (rc=1 is verify-secure-boot.sh failing its own T2 'kernel starts' expectation, which is the point of this boot)",
    "cmd": "grep -aE '^grub6 ' {{out}}/results.txt; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/grub6/t2.serial | tr -d '\\r' | grep -a -o 'Verification failed: (0x1A) Security Violation' | head -1; sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/grub6/t2.serial | tr -d '\\r' | grep -a -c 'Linux version' | sed 's/^/kernel-banner-lines=/'",
    "timeout": 60,
    "expect_exit": 0,
    "expect_regex": [
-    "^grub6 rc=0 T2 shim-refused$",
+    "^grub6 rc=1 T2 shim-refused$",
     "^grub6 level=sbat,1,2026010100\\|grub,6\\|$",
     "^Verification failed: \\(0x1A\\) Security Violation$",
     "^kernel-banner-lines=0$"
