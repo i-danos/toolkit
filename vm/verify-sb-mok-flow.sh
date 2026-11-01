@@ -54,7 +54,8 @@ sb_guest "$SUDO mokutil --list-new" > "$OUT/list-new.out" 2>&1
 sb_guest "$SUDO mokutil --import /tmp/obs.der --hash-file /tmp/mokhash --ignore-keyring" > "$OUT/import-ignore-keyring.out" 2>&1
 sb_guest "$SUDO mokutil --list-new" > "$OUT/list-new-ignore-keyring.out" 2>&1
 sb_guest "$SUDO mokutil --sb-state" > "$OUT/sb-state-before.out" 2>&1
-sb_guest 'cat /proc/keys | grep -E "keyring +[.]builtin|asymmetri" | cut -c1-140' > "$OUT/kernel-keys.out" 2>&1
+sb_guest "$SUDO mokutil --db" > "$OUT/db.out" 2>&1
+sb_guest "$SUDO cat /proc/keys | grep -E 'keyring +[.]builtin|asymmetri' | cut -c1-140" > "$OUT/kernel-keys.out" 2>&1
 
 # Control: a throwaway certificate that is NOT in the kernel's keyring or db, so mokutil can queue it. It shows whether the
 # import + MokManager walk + enrolment work at all, apart from the OBS certificate (which this machine already trusts,
@@ -66,7 +67,7 @@ B64=$(base64 -w0 "$OUT/control.der")
 sb_guest 'rm -f /tmp/c.b64' > /dev/null 2>&1
 while [ -n "$B64" ]; do sb_guest "printf '%s' ${B64:0:300} >> /tmp/c.b64" > /dev/null 2>&1; B64=${B64:300}; done
 sb_guest 'base64 -d /tmp/c.b64 > /tmp/control.der; sha256sum /tmp/control.der' > "$OUT/guest-control.out" 2>&1
-sb_guest "$SUDO mokutil --import /tmp/control.der --hash-file /tmp/mokhash" > "$OUT/control-import.out" 2>&1
+sb_guest "$SUDO mokutil --import /tmp/control.der --hash-file /tmp/mokhash --ignore-keyring" > "$OUT/control-import.out" 2>&1
 sb_guest "$SUDO mokutil --list-new" > "$OUT/control-list-new.out" 2>&1
 
 # reboot into MokManager and drive it

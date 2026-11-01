@@ -75,6 +75,19 @@ elif part == "view":
     for k in ("Issuer", "Subject"):
         got = set(x.strip() for x in " ".join(sec(k)).split(","))
         check(k.lower() + "-matches-openssl", got == nm(k.lower()), "screen=%s openssl=%s" % (sorted(got), sorted(nm(k.lower()))))
+elif part == "obs-trusted":
+    # why `mokutil --import` skips the OBS certificate: the kernel already trusts it (/proc/keys) and so does db
+    ski = ssl("-ext", "subjectKeyIdentifier").split("\n")[-1].strip().replace(":", "").lower()
+    keys = rd("kernel-keys.out")
+    kl = [l for l in keys.splitlines() if "asymmetri" in l and "home:i-danos OBS Project" in l]
+    print("expected subjectKeyIdentifier=%s" % ski)
+    for l in kl:
+        print("/proc/keys: " + " ".join(l.split()))
+    check("in-kernel-keys", any(ski in l.lower() for l in kl))
+    db = rd("db.out")
+    dfps = [x.lower() for x in re.findall(r"SHA1 Fingerprint: ([0-9a-fA-F:]{59})", db)]
+    print("db sha1 list: %s" % (",".join(dfps) or "none"))
+    check("in-db", sha1 in dfps)
 elif part == "enrolled":
     e = rd("enrolled-after.out")
     fps = [x.lower() for x in re.findall(r"SHA1 Fingerprint: ([0-9a-fA-F:]{59})", e)]

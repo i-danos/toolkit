@@ -2,10 +2,10 @@
  "id": "signed_boot_chain_mok_enrollment_flow",
  "item": "signed_boot_chain_mok_enrollment_flow",
  "suite_commit": "auto",
- "description": "mokutil --import queues the OBS signing certificate, MokManager 'Enroll MOK' is driven over the serial console and its 'View key 0' (serial, issuer, subject, SHA-1 fingerprint) must equal openssl's output for the same certificate, and after the reboot mokutil --list-enrolled shows the OBS certificate next to the Debian Secure Boot CA. Helper cases control-* run the identical steps with a throwaway certificate, to separate a broken harness from a certificate mokutil refuses.",
+ "description": "The MOK enrolment flow with a throwaway self-signed certificate (the OBS certificate cannot be queued: the kernel already carries it and db has it): `mokutil --import --ignore-keyring` queues it, MokManager's 'View key 0' (serial, issuer, subject, SHA-1 fingerprint) read from the serial console equals openssl's output for the same file, after the reboot `mokutil --list-enrolled` shows it next to the Debian Secure Boot CA, and the OBS certificate is in the kernel's keys (/proc/keys) and in db, which is why importing it is skipped.",
  "basis": [
-  "design: handoff/verify/suite-config.json items.signed_boot_chain_mok_enrollment_flow",
-  "finding: the OBS certificate is compiled into the kernel's .builtin_trusted_keys and is in db (or MokList) for the chain to boot at all, so mokutil skips it ('Already in kernel trusted keyring' / with --ignore-keyring 'already in db')"
+  "design: handoff/verify/suite-config.json items.signed_boot_chain_mok_enrollment_flow (4 required cases, SB-r5)",
+  "finding: the OBS certificate is in the kernel's .builtin_trusted_keys and must be in db (or MokList) for the chain to boot, so mokutil skips it"
  ],
  "vars": {
   "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
@@ -28,38 +28,8 @@
    ]
   },
   {
-   "name": "mokutil-import-queues-the-obs-certificate",
-   "basis": "design: the OBS certificate appears in mokutil --list-new after the import",
-   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} obs queue",
-   "timeout": 60,
-   "expect_exit": 0,
-   "expect_regex": [
-    "queued=yes"
-   ]
-  },
-  {
-   "name": "mokmanager-enrolls-the-key",
-   "basis": "design: View key 0 on MokManager's screen equals openssl for the OBS certificate",
-   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} obs view",
-   "timeout": 60,
-   "expect_exit": 0,
-   "expect_regex": [
-    "serial-matches-openssl=yes"
-   ]
-  },
-  {
-   "name": "after-reboot-the-key-is-enrolled",
-   "basis": "design: mokutil --list-enrolled has the OBS certificate and the Debian Secure Boot CA",
-   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} obs enrolled",
-   "timeout": 60,
-   "expect_exit": 0,
-   "expect_regex": [
-    "key-enrolled=yes"
-   ]
-  },
-  {
-   "name": "control-import-queues-the-throwaway-certificate",
-   "basis": "helper: same import with a certificate the kernel does not carry",
+   "name": "mokutil-import-queues-a-throwaway-certificate",
+   "basis": "design: mokutil --import --ignore-keyring of a self-signed certificate puts its SHA-1 in mokutil --list-new",
    "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} control queue",
    "timeout": 60,
    "expect_exit": 0,
@@ -68,8 +38,8 @@
    ]
   },
   {
-   "name": "control-mokmanager-view-matches-openssl",
-   "basis": "helper: same MokManager View key 0 comparison, throwaway certificate",
+   "name": "mokmanager-shows-the-throwaway-certificates-fingerprint",
+   "basis": "design: MokManager View key 0 (read from the serial console) equals openssl for serial, issuer, subject and SHA-1 fingerprint",
    "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} control view",
    "timeout": 60,
    "expect_exit": 0,
@@ -78,13 +48,24 @@
    ]
   },
   {
-   "name": "control-after-reboot-the-key-is-enrolled",
-   "basis": "helper: same list-enrolled check, throwaway certificate",
+   "name": "after-reboot-the-throwaway-certificate-is-enrolled",
+   "basis": "design: mokutil --list-enrolled after the reboot has the certificate and the Debian Secure Boot CA",
    "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} control enrolled",
    "timeout": 60,
    "expect_exit": 0,
    "expect_regex": [
     "key-enrolled=yes"
+   ]
+  },
+  {
+   "name": "the-obs-certificate-is-already-in-the-kernel-trusted-keyring",
+   "basis": "finding: the OBS certificate is in the guest's /proc/keys (matched by subject key identifier) and in mokutil --db (matched by SHA-1); either missing is a FAIL",
+   "cmd": "python3 -I {{vm_dir}}/mok-judge.py {{out}} obs obs-trusted",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "in-kernel-keys=yes",
+    "in-db=yes"
    ]
   }
  ]
