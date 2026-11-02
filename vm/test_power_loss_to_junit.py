@@ -40,5 +40,24 @@ class ParseTest(unittest.TestCase):
             plj.parse("===== trial 1: a =====\nx\n===== trial 2: b =====\n  PASS\n")
 
 
+class SummaryTest(unittest.TestCase):
+    def run_main(self, log_text):
+        import subprocess, sys, tempfile
+        d = Path(tempfile.mkdtemp())
+        (d / "l.log").write_text(log_text)
+        return subprocess.run([sys.executable, str(Path(__file__).with_name("power-loss-to-junit.py")), "x_item", str(d / "l.log"),
+                               "0" * 64, str(d / "out"), "toolkit/vm/verify-power-loss-more.sh", "test"], capture_output=True, text=True)
+
+    def test_summary_with_a_mode_prefix_is_cross_checked(self):
+        bad = GOOD.replace("===== 2 passed, 0 failed of 2 cuts =====", "===== boot: 1 passed, 1 failed of 2 cuts =====")
+        r = self.run_main(bad)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("disagrees", r.stderr + r.stdout)
+
+    def test_matching_summary_with_a_mode_prefix_is_accepted(self):
+        ok = GOOD.replace("===== 2 passed, 0 failed of 2 cuts =====", "===== boot: 2 passed, 0 failed of 2 cuts =====")
+        self.assertEqual(self.run_main(ok).returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

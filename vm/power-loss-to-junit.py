@@ -74,7 +74,7 @@ def main():
     item, log, iso_sha, outdir, generated_by, run_desc = a
     text = Path(log).read_text(errors="replace")
     trials = parse(text)
-    summ = re.search(r"^===== (\d+) passed, (\d+) failed of (\d+) cuts =====", text, re.M)
+    summ = re.search(r"^===== (?:\w+: )?(\d+) passed, (\d+) failed of (\d+) cuts =====", text, re.M)
     npass = sum(1 for t in trials if t[1] == "PASS")
     nfail = len(trials) - npass
     if summ and (int(summ.group(1)), int(summ.group(2)), int(summ.group(3))) != (npass, nfail, len(trials)):
