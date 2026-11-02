@@ -72,13 +72,19 @@ def main():
         base = sys.argv[sys.argv.index("--base-disk") + 1]
         a = [x for x in a if x != base]
     item, log, iso_sha, outdir, generated_by, run_desc = a
-    text = Path(log).read_text(errors="replace")
+    logs = log.split(",")
+    text = "\n".join(Path(l).read_text(errors="replace") for l in logs)
     trials = parse(text)
-    summ = re.search(r"^===== (?:\w+: )?(\d+) passed, (\d+) failed of (\d+) cuts =====", text, re.M)
+    summs = re.findall(r"^===== (?:\w+: )?(\d+) passed, (\d+) failed of (\d+) cuts =====", text, re.M)
     npass = sum(1 for t in trials if t[1] == "PASS")
     nfail = len(trials) - npass
-    if summ and (int(summ.group(1)), int(summ.group(2)), int(summ.group(3))) != (npass, nfail, len(trials)):
-        sys.exit("the fixture's own summary (%s) disagrees with its trial blocks (%d pass, %d not)" % (summ.group(0), npass, nfail))
+    if summs and tuple(sum(int(x[i]) for x in summs) for i in range(3)) != (npass, nfail, len(trials)):
+        sys.exit("the fixture's own summaries (%s) disagree with its trial blocks (%d pass, %d not)" % (summs, npass, nfail))
+    if summs and len(summs) != len(logs):
+        sys.exit("%d log(s) given but %d summary line(s) found: a log is incomplete" % (len(logs), len(summs)))
+    dup = [n for n in {slug(t[0]) for t in trials} if sum(1 for t in trials if slug(t[0]) == n) > 1]
+    if dup:
+        sys.exit("duplicate trial name(s) across the logs: %s" % dup)
     suite = ET.Element("testsuite", name=item, tests=str(len(trials)), failures=str(nfail), errors="0", skipped="0")
     for heading, verdict, body in trials:
         tc = ET.SubElement(suite, "testcase", classname=item, name=slug(heading))
@@ -103,7 +109,7 @@ def main():
         "cases": {"total": len(trials), "passed": npass, "failed": nfail, "skipped": 0},
         "suite_dirty": dirty, "generated_by": generated_by,
         "tool_sha256": hashlib.sha256(blob).hexdigest(),
-        "fixture_log": Path(log).name, "fixture_log_sha256": sha256(log),
+        "fixture_log": ",".join(Path(l).name for l in logs), "fixture_log_sha256": ",".join(sha256(l) for l in logs),
         "run": run_desc + (" Base disk sha256 " + sha256(base) + "." if base else ""),
     }
     doc = {"format": "danos-verification-evidence-v2", "iso": "i-danos_2608_20261030T0752-amd64.hybrid.iso",

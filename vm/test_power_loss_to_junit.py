@@ -52,11 +52,37 @@ class SummaryTest(unittest.TestCase):
         bad = GOOD.replace("===== 2 passed, 0 failed of 2 cuts =====", "===== boot: 1 passed, 1 failed of 2 cuts =====")
         r = self.run_main(bad)
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("disagrees", r.stderr + r.stdout)
+        self.assertIn("disagree", r.stderr + r.stdout)
 
     def test_matching_summary_with_a_mode_prefix_is_accepted(self):
         ok = GOOD.replace("===== 2 passed, 0 failed of 2 cuts =====", "===== boot: 2 passed, 0 failed of 2 cuts =====")
         self.assertEqual(self.run_main(ok).returncode, 0)
+
+
+class MultiLogTest(SummaryTest):
+    def two(self, a, b):
+        import subprocess, sys, tempfile
+        d = Path(tempfile.mkdtemp())
+        (d / "a.log").write_text(a)
+        (d / "b.log").write_text(b)
+        return subprocess.run([sys.executable, str(Path(__file__).with_name("power-loss-to-junit.py")), "x_item", "%s,%s" % (d / "a.log", d / "b.log"),
+                               "0" * 64, str(d / "out"), "toolkit/vm/verify-power-loss-more.sh", "test"], capture_output=True, text=True)
+
+    def test_two_logs_become_one_record(self):
+        a = GOOD.replace("===== 2 passed", "===== upgrade: 2 passed")
+        b = a.replace("trial 1: cut 0.6s", "trial 1: cut 7s").replace("trial 2: cut 5s", "trial 2: cut 8s")
+        self.assertEqual(self.two(a, b).returncode, 0)
+
+    def test_a_log_without_its_summary_is_refused(self):
+        a = GOOD.replace("===== 2 passed", "===== upgrade: 2 passed")
+        r = self.two(a, GOOD.split("===== 2 passed")[0].replace("trial 1: cut 0.6s", "trial 1: cut 7s").replace("trial 2: cut 5s", "trial 2: cut 8s"))
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_same_trial_name_in_both_logs_is_refused(self):
+        a = GOOD.replace("===== 2 passed", "===== upgrade: 2 passed")
+        r = self.two(a, a)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("duplicate", r.stderr + r.stdout)
 
 
 if __name__ == "__main__":
