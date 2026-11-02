@@ -5,6 +5,8 @@ Run: python3 -m unittest -v test_mk_release   (from this directory)
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -608,6 +610,307 @@ class TrustedKeyPinTest(SignedDirMixin, unittest.TestCase):
         ok, why = self._verify_with_pin("")
         self.assertFalse(ok)
         self.assertIn("not in release/trusted-keys.sha256", why)
+
+
+# ---------------------------------------------------------------------------
+# "verified" and the per-package provenance records.
+# ---------------------------------------------------------------------------
+
+STATUS = """Package: libc6
+Status: install ok installed
+Architecture: amd64
+Source: glibc
+Version: 2.41-12+deb13u4
+
+Package: tzdata
+Status: install ok installed
+Architecture: all
+Version: 2025b-5
+
+Package: removed-thing
+Status: deinstall ok config-files
+Architecture: amd64
+Version: 1.0
+
+"""
+
+PACKAGES = """Package: libc6
+Version: 2.41-12+deb13u4
+Architecture: amd64
+Source: glibc
+Filename: pool/main/g/glibc/libc6_2.41-12+deb13u4_amd64.deb
+Size: 2846580
+MD5sum: 5559581916477ef1f57ea9f82cecf22e
+SHA256: 967aa62605721081c3eb2a17650611a792aa802d76a6511d1840242623d204c9
+Description: GNU C Library
+ more text that must not be mistaken for a field: Package: nope
+
+Package: tzdata
+Version: 2025b-5
+Architecture: all
+Filename: pool/main/t/tzdata/tzdata_2025b-5_all.deb
+Size: 100
+SHA256: aa
+
+"""
+
+
+def release_text(listed):
+    lines = "".join(f" {h} 1 {path}\n" for path, h in listed.items())
+    return "Origin: Debian\nSuite: stable\nSHA256:\n" + lines + "Acquire-By-Hash: yes\n"
+
+
+def make_apt_tree(td, packages=PACKAGES, sign_ok=True, hash_ok=True):
+    """A directory shaped like what read_image() extracts: var/lib/apt/lists + etc/apt/trusted.gpg.d."""
+    lists = Path(td) / "var/lib/apt/lists"
+    lists.mkdir(parents=True)
+    (Path(td) / "etc/apt/trusted.gpg.d").mkdir(parents=True)
+    pk = lists / "deb.debian.org_debian_dists_trixie_main_binary-amd64_Packages"
+    pk.write_text(packages)
+    want = hashlib.sha256(packages.encode()).hexdigest() if hash_ok else "0" * 64
+    (lists / "deb.debian.org_debian_dists_trixie_InRelease").write_text(
+        release_text({"main/binary-amd64/Packages": want}))
+    return lambda inrelease, keys: (sign_ok, "fake gpgv" if sign_ok else "BADSIG deadbeef")
+
+
+def rec(name, version, arch="amd64"):
+    return {"name": name, "version": version, "arch": arch, "source": name}
+
+
+class DpkgStatusTest(unittest.TestCase):
+    def test_only_installed_packages_with_arch_and_source(self):
+        got = mk.parse_dpkg_status(STATUS)
+        self.assertEqual([(r["name"], r["version"], r["arch"], r["source"]) for r in got],
+                         [("libc6", "2.41-12+deb13u4", "amd64", "glibc"), ("tzdata", "2025b-5", "all", "tzdata")])
+
+
+class AptIndexTest(unittest.TestCase):
+    def test_packages_index_keys_fields_and_ignores_continuation_lines(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "Packages"
+            f.write_text(PACKAGES)
+            idx = mk.parse_apt_packages(f)
+        e = idx[("libc6", "2.41-12+deb13u4", "amd64")]
+        self.assertEqual((e["sha256"], e["size"], e["source"]), (
+            "967aa62605721081c3eb2a17650611a792aa802d76a6511d1840242623d204c9", 2846580, "glibc"))
+        self.assertNotIn(("nope", "", ""), idx)
+        self.assertIn(("tzdata", "2025b-5", "all"), idx)
+        self.assertEqual(idx[("tzdata", "2025b-5", "all")]["md5"], "")
+
+    def test_release_sha256_block(self):
+        got = mk.release_sha256_entries(release_text({"main/binary-amd64/Packages": "ab", "main/Contents": "cd"}))
+        self.assertEqual(got, {"main/binary-amd64/Packages": "ab", "main/Contents": "cd"})
+
+
+class DebianVerifiedTest(unittest.TestCase):
+    def load(self, **kw):
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        verifier = make_apt_tree(td, **kw)
+        return mk.load_apt_index(td, verifier=verifier)
+
+    def test_listed_in_a_verified_index_is_verified_with_real_checksum(self):
+        idx, rel = self.load()
+        ok, why, prov = mk.debian_provenance(rec("libc6", "2.41-12+deb13u4"), idx, rel)
+        self.assertTrue(ok, why)
+        self.assertEqual(prov["deb_sha256"], "967aa62605721081c3eb2a17650611a792aa802d76a6511d1840242623d204c9")
+        self.assertEqual(prov["deb_url"], "http://deb.debian.org/debian/pool/main/g/glibc/libc6_2.41-12+deb13u4_amd64.deb")
+        self.assertEqual((prov["suite"], prov["component"], prov["upstream_source_package"]), ("trixie", "main", "glibc"))
+        self.assertEqual(prov["unavailable"], {})
+
+    def test_missing_md5_is_recorded_as_unavailable_not_invented(self):
+        idx, rel = self.load()
+        ok, _, prov = mk.debian_provenance(rec("tzdata", "2025b-5", "all"), idx, rel)
+        self.assertTrue(ok)
+        self.assertEqual(prov["deb_md5sum"], "")
+        self.assertIn("deb_md5sum", prov["unavailable"])
+
+    def test_bad_signature_is_not_verified_but_still_reports_the_checksum(self):
+        idx, rel = self.load(sign_ok=False)
+        ok, why, prov = mk.debian_provenance(rec("libc6", "2.41-12+deb13u4"), idx, rel)
+        self.assertFalse(ok)
+        self.assertIn("BADSIG", why)
+        self.assertTrue(prov["deb_sha256"])
+
+    def test_index_that_does_not_match_its_release_is_not_verified(self):
+        idx, rel = self.load(hash_ok=False)
+        ok, why, _ = mk.debian_provenance(rec("libc6", "2.41-12+deb13u4"), idx, rel)
+        self.assertFalse(ok)
+        self.assertIn("sha256", why)
+
+    def test_version_or_arch_not_in_the_index_is_not_verified_and_says_why(self):
+        idx, rel = self.load()
+        for r in (rec("libc6", "2.41-12+deb13u3"), rec("libc6", "2.41-12+deb13u4", "arm64"), rec("ghost", "1")):
+            ok, why, prov = mk.debian_provenance(r, idx, rel)
+            self.assertFalse(ok)
+            self.assertIn("not in any Packages index", why)
+            self.assertIn("deb_sha256", prov["unavailable"])
+            self.assertNotIn("deb_sha256", {k for k, v in prov.items() if v})
+
+
+@unittest.skipUnless(shutil.which("gpg") and shutil.which("gpgv"), "needs gpg and gpgv")
+class InReleaseSignatureTest(unittest.TestCase):
+    """verify_inrelease against a real throwaway key: accepts a good signature, rejects a tampered file and a stranger's key."""
+
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.td, True)
+        self.env = {**os.environ, "GNUPGHOME": str(self.td / "home")}
+        (self.td / "home").mkdir(mode=0o700)
+        subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-gen-key", "t@example.org", "default", "default", "never"],
+                       env=self.env, capture_output=True, check=True)
+        self.keys = self.td / "keys"
+        self.keys.mkdir()
+        pub = subprocess.run(["gpg", "--armor", "--export", "t@example.org"], env=self.env, capture_output=True, check=True).stdout
+        (self.keys / "test.asc").write_bytes(pub)
+        (self.td / "Release").write_text(release_text({"main/binary-amd64/Packages": "ab"}))
+        subprocess.run(["gpg", "--batch", "--clearsign", "-o", str(self.td / "InRelease"), str(self.td / "Release")],
+                       env=self.env, capture_output=True, check=True)
+
+    def test_good_signature(self):
+        ok, detail = mk.verify_inrelease(self.td / "InRelease", self.keys)
+        self.assertTrue(ok, detail)
+
+    def test_tampered_file_is_rejected(self):
+        t = (self.td / "InRelease").read_text().replace("Origin: Debian", "Origin: Evil")
+        (self.td / "InRelease").write_text(t)
+        ok, detail = mk.verify_inrelease(self.td / "InRelease", self.keys)
+        self.assertFalse(ok)
+        self.assertIn("rejected", detail)
+
+    def test_key_that_did_not_sign_is_rejected(self):
+        other = self.td / "other"
+        other.mkdir()
+        env2 = {**os.environ, "GNUPGHOME": str(self.td / "home2")}
+        (self.td / "home2").mkdir(mode=0o700)
+        subprocess.run(["gpg", "--batch", "--passphrase", "", "--quick-gen-key", "o@example.org", "default", "default", "never"],
+                       env=env2, capture_output=True, check=True)
+        (other / "o.asc").write_bytes(subprocess.run(["gpg", "--armor", "--export", "o@example.org"], env=env2,
+                                                      capture_output=True, check=True).stdout)
+        ok, _ = mk.verify_inrelease(self.td / "InRelease", other)
+        self.assertFalse(ok)
+
+    def test_empty_keyring_dir_is_rejected_with_a_reason(self):
+        empty = self.td / "empty"
+        empty.mkdir()
+        ok, detail = mk.verify_inrelease(self.td / "InRelease", empty)
+        self.assertFalse(ok)
+        self.assertIn("no archive keys", detail)
+
+
+class LocalGitVerifiedTest(unittest.TestCase):
+    """check_commit_published against real git repositories, one of them acting as the published remote."""
+
+    def git(self, cwd, *a):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
+        return subprocess.run(["git", "-C", str(cwd), *a], env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.td, True)
+        self.remote = self.td / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(self.remote)], check=True)
+        self.work = self.td / "work"
+        subprocess.run(["git", "init", "-q", "-b", "master", str(self.work)], check=True)
+        self.git(self.work, "remote", "add", "i-danos", str(self.remote))
+        (self.work / "a").write_text("1")
+        self.git(self.work, "add", "a")
+        self.git(self.work, "commit", "-qm", "one")
+        self.c1 = self.git(self.work, "rev-parse", "HEAD")
+        (self.work / "a").write_text("2")
+        self.git(self.work, "commit", "-qam", "two")
+        self.c2 = self.git(self.work, "rev-parse", "HEAD")
+        self.git(self.work, "push", "-q", "i-danos", "master")
+
+    def test_commit_in_published_history_is_verified(self):
+        for c in (self.c1, self.c2):
+            ok, why, info = mk.check_commit_published(self.work, c, {})
+            self.assertTrue(ok, why)
+            self.assertEqual(info["ref"], "refs/heads/master")
+
+    def test_commit_only_on_a_local_branch_is_not_verified(self):
+        self.git(self.work, "checkout", "-q", "-b", "local-only")
+        (self.work / "a").write_text("3")
+        self.git(self.work, "commit", "-qam", "three")
+        c3 = self.git(self.work, "rev-parse", "HEAD")
+        ok, why, _ = mk.check_commit_published(self.work, c3, {})
+        self.assertFalse(ok)
+        self.assertIn("not an ancestor", why)
+
+    def test_commit_missing_from_the_clone_is_not_verified(self):
+        ok, why, _ = mk.check_commit_published(self.work, "1" * 40, {})
+        self.assertFalse(ok)
+        self.assertIn("not in the local clone", why)
+
+    def test_unreachable_remote_is_not_verified_and_says_so(self):
+        self.git(self.work, "remote", "set-url", "i-danos", str(self.td / "nowhere.git"))
+        ok, why, _ = mk.check_commit_published(self.work, self.c1, {})
+        self.assertFalse(ok)
+        self.assertIn("not reachable", why)
+
+    def test_ls_remote_is_asked_once_per_remote(self):
+        cache = {}
+        mk.check_commit_published(self.work, self.c1, cache)
+        shutil.rmtree(self.remote)
+        ok, _, _ = mk.check_commit_published(self.work, self.c2, cache)
+        self.assertTrue(ok)
+
+
+class EnrichRowsTest(unittest.TestCase):
+    def rows(self):
+        return [
+            {"name": "libc6", "version": "2.41-12+deb13u4", "category": "external_source", "source_package": "libc6",
+             "reason": "not built by this project's OBS project in any form"},
+            {"name": "mine", "version": "1.0", "category": "local_git", "source_package": "mine", "commit": "c" * 40},
+            {"name": "mine-stamped", "version": "1.0danos1", "category": "version_stamp_inferred", "source_package": "mine",
+             "commit": "c" * 40, "verified": False, "reason": "guess"},
+            {"name": "inherited", "version": "1", "category": "signed_alias", "source_package": "inherited", "reason": "baseline"},
+        ]
+
+    def run_enrich(self, checker, remote_check=True):
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        verifier = make_apt_tree(td)
+        idx, rel = mk.load_apt_index(td, verifier=verifier)
+        src = Path(td) / "src/mine/debian"
+        src.mkdir(parents=True)
+        (src / "control").write_text("Source: mine\n")
+        rows = self.rows()
+        prov = mk.enrich_rows(rows, [rec("libc6", "2.41-12+deb13u4")], idx, rel, Path(td) / "src",
+                              remote_check=remote_check, checker=checker)
+        return rows, prov
+
+    def test_categories_are_untouched_and_every_row_gets_a_verdict_with_a_reason(self):
+        rows, prov = self.run_enrich(lambda d, c, cache: (True, "published", {"ref": "refs/heads/master"}))
+        self.assertEqual([r["category"] for r in rows], ["external_source", "local_git", "version_stamp_inferred", "signed_alias"])
+        self.assertEqual([r["verified"] for r in rows], [True, True, False, False])
+        for r in rows:
+            self.assertTrue(r["verified_reason"])
+        self.assertEqual({p["name"] for p in prov}, {"libc6", "mine"})
+
+    def test_external_source_reason_is_replaced_by_the_conclusion_and_names_the_checksum(self):
+        rows, _ = self.run_enrich(lambda *a: (True, "x", {}))
+        self.assertNotEqual(rows[0]["reason"], "not built by this project's OBS project in any form")
+        self.assertIn("967aa626", rows[0]["reason"])
+        self.assertIn("Not built by", rows[0]["reason"])
+
+    def test_remote_check_off_means_local_git_is_false_with_that_reason(self):
+        rows, _ = self.run_enrich(lambda *a: self.fail("checker must not run"), remote_check=False)
+        self.assertFalse(rows[1]["verified"])
+        self.assertIn("--no-remote-check", rows[1]["verified_reason"])
+
+    def test_failed_checker_result_is_carried_not_hidden(self):
+        rows, prov = self.run_enrich(lambda d, c, cache: (False, "not an ancestor of any remote tip", {}))
+        self.assertFalse(rows[1]["verified"])
+        self.assertIn("not an ancestor", [p for p in prov if p["name"] == "mine"][0]["verified_reason"])
+
+    def test_summary_counts_and_groups_the_false_reasons(self):
+        rows, _ = self.run_enrich(lambda d, c, cache: (True, "published", {}))
+        s = mk.verified_summary(rows)
+        self.assertEqual((s["true"], s["false"]), (2, 2))
+        self.assertEqual(s["by_category"]["external_source"], {"true": 1, "false": 0})
+        self.assertEqual({r["category"] for r in s["false_reasons"]}, {"version_stamp_inferred", "signed_alias"})
+
 
 
 if __name__ == "__main__":

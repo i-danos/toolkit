@@ -30,6 +30,11 @@ What this produces, under <out>/<release-id>/:
                                        local git HEAD of build-iso and
                                        toolkit, the obs-repo's own package
                                        count and content hash
+    provenance.json                   per-package audit records: for Debian packages the
+                                       .deb URL/sha256/size and the signed index that
+                                       lists them, for local_git the published remote
+                                       that contains the commit; plus what `verified`
+                                       means per category
     verification-summary.json         PASS/FAIL/BLOCKED/NOT_APPLICABLE/
                                        NOT_RUN for every acceptance item this
                                        project tracks, not just the ones that
@@ -81,6 +86,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -153,8 +159,28 @@ def parse_iso_manifest(manifest_path):
     return out
 
 
-def installed_from_iso(iso, workdir):
-    """What is actually installed in the ISO -> [(name, version)], from its own dpkg status.
+def parse_dpkg_status(text):
+    """var/lib/dpkg/status -> [{"name","version","arch","source"}] for installed packages.
+
+    "source" is the Source: field's package name when present (dpkg omits it when
+    the source has the binary's name), else the binary name.
+    """
+    out = []
+    for blk in text.split("\n\n"):
+        name = re.search(r"^Package: (\S+)", blk, re.M)
+        status = re.search(r"^Status: (.*)", blk, re.M)
+        version = re.search(r"^Version: (\S+)", blk, re.M)
+        if name and version and status and "install ok installed" in status.group(1):
+            arch = re.search(r"^Architecture: (\S+)", blk, re.M)
+            src = re.search(r"^Source: (\S+)", blk, re.M)
+            out.append({"name": name.group(1), "version": version.group(1),
+                        "arch": arch.group(1) if arch else "",
+                        "source": src.group(1) if src else name.group(1)})
+    return out
+
+
+def read_image(iso, workdir, apt_dir=None):
+    """What is actually installed in the ISO -> [record], from its own dpkg status.
 
     The ISO's <name>.packages file is not that. It is written mid-build: on the
     2608 test ISO it lacked four installed packages (shim-signed,
@@ -163,6 +189,11 @@ def installed_from_iso(iso, workdir):
     not have, and it was byte-identical to the previous ISO's after a package list
     change. So the image's own /var/lib/dpkg/status, read out of the squashfs the ISO
     carries, is the source; the manifest is kept only to say how it differs.
+
+    With apt_dir, the apt data the image itself carries -- /var/lib/apt/lists (the
+    signed Debian InRelease files and Packages indexes it was installed from), the
+    archive keys in /etc/apt/trusted.gpg.d and sources.list -- is extracted there
+    too: it is the only place the .deb checksums of the Debian packages exist.
     """
     sq = Path(workdir) / "filesystem.squashfs"
     r = run(["xorriso", "-osirrox", "on", "-indev", str(iso), "-extract",
@@ -170,17 +201,19 @@ def installed_from_iso(iso, workdir):
     if not sq.exists():
         sys.exit(f"could not extract /live/filesystem.squashfs from {iso}: {r.stderr[-300:]}")
     r = run(["unsquashfs", "-cat", str(sq), "var/lib/dpkg/status"])
+    if apt_dir is not None:
+        shutil.rmtree(apt_dir, ignore_errors=True)
+        run(["unsquashfs", "-no-progress", "-f", "-d", str(apt_dir), str(sq),
+             "var/lib/apt/lists", "etc/apt/trusted.gpg.d", "etc/apt/sources.list"])
     sq.unlink()
     if r.returncode != 0 or not r.stdout:
         sys.exit(f"could not read var/lib/dpkg/status from the squashfs: {r.stderr[-300:]}")
-    out = []
-    for blk in r.stdout.split("\n\n"):
-        name = re.search(r"^Package: (\S+)", blk, re.M)
-        status = re.search(r"^Status: (.*)", blk, re.M)
-        version = re.search(r"^Version: (\S+)", blk, re.M)
-        if name and version and status and "install ok installed" in status.group(1):
-            out.append((name.group(1), version.group(1)))
-    return out
+    return parse_dpkg_status(r.stdout)
+
+
+def installed_from_iso(iso, workdir):
+    """read_image() reduced to [(name, version)]."""
+    return [(r["name"], r["version"]) for r in read_image(iso, workdir)]
 
 
 def parse_baseline(baseline_path):
@@ -226,6 +259,307 @@ def index_commits_by_source(commit_index):
     for (src, ver), sha in commit_index.items():
         out.setdefault(src, set()).add((ver, sha))
     return out
+
+
+# ---------------------------------------------------------------------------
+# "verified": what it means, per category, and the records that back it.
+#
+# Until this existed no row was verified -- not even the local_git ones. The
+# definitions are deliberately narrow; each says what it establishes and what it
+# does not, and the same text is written into source-revision-map.json so an
+# auditor does not have to read this file.
+# ---------------------------------------------------------------------------
+
+VERIFIED_DEFINITION = {
+    "external_source": (
+        "TRUE only if all of: (1) the installed name+version+architecture is an entry of a Debian "
+        "Packages index that the image itself carries (/var/lib/apt/lists, the indexes it was "
+        "installed from); (2) the signed InRelease for that suite verifies with gpgv against the "
+        "Debian archive keys the image ships in /etc/apt/trusted.gpg.d; (3) the sha256 of the "
+        "Packages file equals the one InRelease lists for it. Establishes: this exact "
+        "package version is published by the Debian archive, with this .deb sha256 and size. "
+        "Does NOT establish: that the bytes installed in the image are that .deb -- dpkg keeps no "
+        "digest of the .deb, only per-file md5sums."
+    ),
+    "local_git": (
+        "TRUE only if the recorded commit is an ancestor of a branch or tag tip that `git "
+        "ls-remote` reports on the source repository's published remote (so it is in the public "
+        "history, not just on a local branch). Establishes: the commit exists in the published "
+        "repository. Does NOT establish: that the installed .deb was built from it -- the link "
+        "is the .commit file mk-dsc.sh wrote for this exact source version."
+    ),
+    "other": "always FALSE: version_stamp_inferred is a guess, obs_package_revision has no commit, "
+             "signed_alias is inherited from the 2105 baseline unchanged, unresolved is unresolved.",
+}
+
+
+def parse_apt_packages(path):
+    """A Debian Packages index -> {(name, version, arch): {...}} with only the fields provenance needs."""
+    out = {}
+    cur = {}
+
+    def flush():
+        if cur.get("Package") and cur.get("Version"):
+            out.setdefault((cur["Package"], cur["Version"], cur.get("Architecture", "")), {
+                "filename": cur.get("Filename", ""),
+                "sha256": cur.get("SHA256", ""),
+                "md5": cur.get("MD5sum", ""),
+                "size": int(cur["Size"]) if cur.get("Size", "").isdigit() else None,
+                "source": cur.get("Source", "").split(" ", 1)[0] or cur["Package"],
+                "source_version": (re.search(r"\((.*?)\)", cur.get("Source", "")) or [None, None])[1]
+                                  or cur["Version"],
+            })
+
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line == "\n":
+                flush()
+                cur = {}
+                continue
+            if line[0] in " \t":
+                continue
+            k, _, v = line.partition(":")
+            if k in ("Package", "Version", "Architecture", "Filename", "Size", "SHA256", "MD5sum", "Source"):
+                cur[k] = v.strip()
+        flush()
+    return out
+
+
+def release_sha256_entries(inrelease_text):
+    """InRelease -> {relative_path: sha256} from its SHA256: block."""
+    out = {}
+    in_block = False
+    for line in inrelease_text.splitlines():
+        if line.startswith("SHA256:"):
+            in_block = True
+            continue
+        if in_block:
+            if not line.startswith(" "):
+                break
+            parts = line.split()
+            if len(parts) == 3:
+                out[parts[2]] = parts[0]
+    return out
+
+
+def verify_inrelease(inrelease, keyring_dir):
+    """gpgv-verify a clearsigned InRelease against the .asc/.gpg keys in keyring_dir -> (ok, detail)."""
+    if not (shutil.which("gpgv") and shutil.which("gpg")):
+        return False, "gpg/gpgv not installed on this host"
+    keys = sorted(Path(keyring_dir).glob("*.asc")) + sorted(Path(keyring_dir).glob("*.gpg"))
+    if not keys:
+        return False, f"no archive keys in {keyring_dir}"
+    with tempfile.TemporaryDirectory() as td:
+        ring = Path(td) / "ring.gpg"
+        with open(ring, "wb") as out:
+            for k in keys:
+                if k.suffix == ".asc":
+                    r = subprocess.run(["gpg", "--batch", "--dearmor"], input=k.read_bytes(),
+                                       capture_output=True)
+                    out.write(r.stdout)
+                else:
+                    out.write(k.read_bytes())
+        r = run(["gpgv", "--keyring", str(ring), "--status-fd", "1", str(inrelease)])
+    good = re.search(r"^\[GNUPG:\] VALIDSIG (\S+)", r.stdout, re.M)
+    if r.returncode == 0 and good:
+        return True, f"gpgv VALIDSIG {good.group(1)}"
+    bad = re.findall(r"^\[GNUPG:\] (BADSIG|NO_PUBKEY|EXPSIG|EXPKEYSIG|REVKEYSIG|ERRSIG) (\S+)", r.stdout, re.M)
+    return False, "gpgv rejected the signature: " + (", ".join(" ".join(b) for b in bad) or r.stderr.strip()[-200:])
+
+
+_LIST_NAME = re.compile(r"^(?P<host>[^_]+)_(?P<path>.+)_dists_(?P<suite>[^_]+)_(?P<rest>.+)$")
+
+
+def load_apt_index(apt_dir, verifier=verify_inrelease):
+    """The apt data read out of the image -> (index, releases).
+
+    index:    {(name, version, arch): entry + suite/component/mirror/index_file/release_file}
+    releases: {suite: {"inrelease","signature_ok","signature_detail","base_url","indexes":{file: bool}}}
+    A Packages file counts as covered only if its sha256 is the one its InRelease lists.
+    """
+    lists = Path(apt_dir) / "var/lib/apt/lists"
+    keys = Path(apt_dir) / "etc/apt/trusted.gpg.d"
+    index, releases = {}, {}
+    if not lists.is_dir():
+        return index, releases
+    for rel in sorted(lists.glob("*_InRelease")):
+        m = _LIST_NAME.match(rel.name[:-len("_InRelease")] + "_x")
+        if not m:
+            continue
+        host, path, suite = m.group("host"), m.group("path"), m.group("suite")
+        prefix = rel.name[:-len("InRelease")]
+        ok, detail = verifier(rel, keys)
+        listed = release_sha256_entries(rel.read_text(errors="replace"))
+        info = {"inrelease": rel.name, "signature_ok": ok, "signature_detail": detail,
+                "base_url": f"http://{host}/{path}/", "indexes": {}}
+        for pk in sorted(lists.glob(prefix + "*_Packages")):
+            rest = pk.name[len(prefix):]                      # main_binary-amd64_Packages
+            comp, _, tail = rest.partition("_binary-")
+            arch = tail[:-len("_Packages")]
+            want = listed.get(f"{comp}/binary-{arch}/Packages")
+            matches = bool(want) and sha256_file(pk) == want
+            info["indexes"][pk.name] = matches
+            for key, ent in parse_apt_packages(pk).items():
+                index.setdefault(key, {**ent, "suite": suite, "component": comp, "mirror": info["base_url"],
+                                       "index_file": pk.name, "release_file": rel.name,
+                                       "index_matches_release": matches})
+        releases[suite] = info
+    return index, releases
+
+
+def debian_provenance(rec, index, releases):
+    """One installed package -> (verified, reason, provenance dict) for an external_source row."""
+    key = (rec["name"], rec["version"], rec["arch"])
+    ent = index.get(key)
+    prov = {"kind": "debian-archive", "distribution": "debian", "package": rec["name"],
+            "version": rec["version"], "architecture": rec["arch"], "unavailable": {}}
+    if ent is None:
+        why = ("this name+version+architecture is not in any Packages index the image carries "
+               f"({', '.join(sorted(releases)) or 'none'}): superseded since the image was assembled, "
+               "or installed from a repository that is not Debian's")
+        for f in ("deb_url", "deb_sha256", "deb_size", "suite", "component", "release_file"):
+            prov["unavailable"][f] = why
+        prov["conclusion"] = f"{rec['name']} {rec['version']} ({rec['arch']}): not found in the image's Debian indexes"
+        return False, why, prov
+    rl = releases.get(ent["suite"], {})
+    sig_ok = bool(rl.get("signature_ok"))
+    prov.update({
+        "codename": ent["suite"].split("-")[0], "suite": ent["suite"], "component": ent["component"],
+        "upstream_source_package": ent["source"], "upstream_source_version": ent["source_version"],
+        "deb_url": ent["mirror"] + ent["filename"], "deb_sha256": ent["sha256"], "deb_size": ent["size"],
+        "deb_md5sum": ent["md5"], "index_file": ent["index_file"], "release_file": ent["release_file"],
+        "release_signature_ok": sig_ok, "release_signature_detail": rl.get("signature_detail", ""),
+        "index_sha256_matches_release": ent["index_matches_release"],
+    })
+    for f in ("deb_sha256", "deb_size", "deb_md5sum"):
+        if not prov[f]:
+            prov["unavailable"][f] = "the index entry carries no such field"
+    problems = []
+    if not sig_ok:
+        problems.append("InRelease signature not verified: " + rl.get("signature_detail", "unknown"))
+    if not ent["index_matches_release"]:
+        problems.append("the Packages file's sha256 is not the one InRelease lists")
+    if not ent["sha256"]:
+        problems.append("the index entry has no sha256")
+    verified = not problems
+    prov["conclusion"] = (
+        f"Debian {ent['suite']}/{ent['component']} package {rec['name']} {rec['version']} ({rec['arch']}), "
+        f"source {ent['source']}; .deb sha256 {ent['sha256'] or '(none)'} at {prov['deb_url']}; "
+        + ("index covered by a gpgv-verified InRelease" if verified else "NOT verified: " + "; ".join(problems))
+        + f". Not built by {OBS_PROJECT}."
+    )
+    return verified, ("; ".join(problems) if problems else "listed in the gpgv-verified Debian index"), prov
+
+
+def source_dirs(sources_dir):
+    """<sources>/*/debian/control -> {Source: package: directory}."""
+    out = {}
+    for ctl in sorted(Path(sources_dir).glob("*/debian/control")):
+        try:
+            m = re.search(r"^Source:\s*(\S+)", ctl.read_text(errors="replace"), re.M)
+        except OSError:
+            continue
+        if m:
+            out.setdefault(m.group(1), ctl.parent.parent)
+    return out
+
+
+def check_commit_published(repo_dir, commit, ls_remote_cache, timeout=90):
+    """Is `commit` in the published history of repo_dir's remote? -> (ok, detail, info).
+
+    `git ls-remote --heads --tags` lists the tips; the commit counts only if it is an ancestor of one of
+    them (and the tip itself is a commit this clone has, so the ancestry is read, not assumed).
+    """
+    info = {"repository": str(repo_dir), "remote_url": None, "ref": None, "ref_tip": None}
+    repo = str(repo_dir)
+    if run(["git", "-C", repo, "cat-file", "-e", commit + "^{commit}"]).returncode != 0:
+        return False, "the commit is not in the local clone of the source repository", info
+    remote = None
+    for name in ("i-danos", "origin"):
+        r = run(["git", "-C", repo, "remote", "get-url", name])
+        if r.returncode == 0 and r.stdout.strip():
+            remote = r.stdout.strip()
+            break
+    if remote is None:
+        return False, "the source repository has no i-danos/origin remote", info
+    info["remote_url"] = remote
+    if remote not in ls_remote_cache:
+        try:
+            r = run(["git", "-C", repo, "ls-remote", "--heads", "--tags", remote], timeout=timeout)
+            tips = [ln.split("\t") for ln in r.stdout.splitlines() if "\t" in ln] if r.returncode == 0 else None
+            ls_remote_cache[remote] = tips if tips else (None, r.stderr.strip()[-160:])
+        except subprocess.TimeoutExpired:
+            ls_remote_cache[remote] = (None, f"git ls-remote timed out after {timeout}s")
+    tips = ls_remote_cache[remote]
+    if isinstance(tips, tuple):
+        return False, f"remote not reachable: {tips[1] or 'no refs listed'}", info
+    missing = 0
+    for sha, ref in sorted(tips, key=lambda t: (t[1] != "refs/heads/master", t[1] != "refs/heads/main", t[1])):
+        if run(["git", "-C", repo, "cat-file", "-e", sha + "^{commit}"]).returncode != 0:
+            missing += 1
+            continue
+        if run(["git", "-C", repo, "merge-base", "--is-ancestor", commit, sha]).returncode == 0:
+            info.update(ref=ref, ref_tip=sha)
+            return True, f"ancestor of {ref} ({sha[:12]}) on {remote}", info
+    return False, (f"not an ancestor of any of the {len(tips)} remote branch/tag tips"
+                   + (f" ({missing} tips are not in the local clone, so they could not be checked)" if missing else "")), info
+
+
+def enrich_rows(rows, records, index, releases, sources_dir=None, remote_check=True,
+                checker=check_commit_published):
+    """Add verified/verified_reason (every row) and provenance records (external_source, local_git).
+
+    Categories and every existing field stay as they were, except external_source's one-sentence
+    `reason`, which becomes the human-readable conclusion of its provenance record.
+    Returns the provenance document's package list.
+    """
+    by_key = {}
+    for r in records:
+        by_key.setdefault((r["name"], r["version"]), r)
+    dirs = source_dirs(sources_dir) if sources_dir else {}
+    cache, prov_rows = {}, []
+    for row in rows:
+        cat = row["category"]
+        rec = by_key.get((row["name"], row["version"]), {"name": row["name"], "version": row["version"], "arch": "", "source": row["name"]})
+        if cat == "external_source":
+            ok, why, prov = debian_provenance(rec, index, releases)
+            row["reason"] = prov["conclusion"]
+        elif cat == "local_git":
+            d = dirs.get(row["source_package"])
+            if not remote_check:
+                ok, why, info = False, "remote check disabled (--no-remote-check)", {}
+            elif d is None:
+                ok, why, info = False, f"no directory under the sources root has `Source: {row['source_package']}`", {}
+            else:
+                ok, why, info = checker(d, row["commit"], cache)
+            prov = {"kind": "local-git", "source_package": row["source_package"], "commit": row["commit"],
+                    **info, "conclusion": f"{row['name']} {row['version']} from {row['source_package']} @ {row['commit'][:12]}: {why}"}
+        else:
+            ok = False
+            why = row.get("reason", "") or f"{cat}: not verifiable"
+            prov = None
+        row["verified"] = bool(ok)
+        row["verified_reason"] = why
+        if prov is not None:
+            prov_rows.append({"name": row["name"], "version": row["version"], "category": cat,
+                              "verified": bool(ok), "verified_reason": why, "provenance": prov})
+    return prov_rows
+
+
+def verified_summary(rows):
+    """Counts for the document header: true/false overall and by category, and why the false ones are false."""
+    by_cat, reasons = {}, {}
+    for r in rows:
+        c = by_cat.setdefault(r["category"], {"true": 0, "false": 0})
+        c["true" if r["verified"] else "false"] += 1
+        if not r["verified"]:
+            k = (r["category"], re.sub(r"\d+", "N", r["verified_reason"])[:140])
+            reasons[k] = reasons.get(k, 0) + 1
+    return {"true": sum(1 for r in rows if r["verified"]), "false": sum(1 for r in rows if not r["verified"]),
+            "by_category": by_cat,
+            "false_reasons": [{"category": c, "reason": w, "count": n}
+                              for (c, w), n in sorted(reasons.items(), key=lambda kv: -kv[1])]}
+
 
 
 def strip_epoch(version):
@@ -906,6 +1240,9 @@ def main():
     ap.add_argument("--build-provenance", type=Path, default=None,
                     help="build-provenance JSON (commit + attestation hash per "
                          "package); without it no version-stamped commit is confirmed")
+    ap.add_argument("--no-remote-check", action="store_true",
+                    help="skip the `git ls-remote` reachability check of local_git commits "
+                         "(offline runs); those rows are then verified=false with that reason")
     args = ap.parse_args()
 
     if not args.iso.exists():
@@ -943,7 +1280,10 @@ def main():
     if args.build_provenance:
         provenance, prov_rejected = load_provenance(args.build_provenance, iso_sha, args.trusted_key)
     with tempfile.TemporaryDirectory(dir=release_dir) as tmp:
-        installed = installed_from_iso(args.iso, tmp)
+        apt_dir = Path(tmp) / "apt"
+        records = read_image(args.iso, tmp, apt_dir)
+        installed = [(r["name"], r["version"]) for r in records]
+        apt_index, apt_releases = load_apt_index(apt_dir)
     listed = {n.split(":")[0]: v for n, v in parse_iso_manifest(manifest_path)}
     actual = dict(installed)
     diff = {
@@ -974,6 +1314,16 @@ def main():
         row = {"name": name, "version": version, **resolved}
         revmap_rows.append(row)
 
+    prov_rows = enrich_rows(revmap_rows, records, apt_index, apt_releases, args.sources,
+                            remote_check=not args.no_remote_check)
+    vsum = verified_summary(revmap_rows)
+    (release_dir / "provenance.json").write_text(json.dumps({
+        "format": "danos-p0.5-package-provenance-v1",
+        "verified_definition": VERIFIED_DEFINITION,
+        "debian_releases": apt_releases,
+        "packages": prov_rows,
+    }, indent=2))
+
     (release_dir / "sbom.json").write_text(
         json.dumps({"format": "danos-p0.5-sbom-v1", "packages": sbom_rows}, indent=2)
     )
@@ -981,10 +1331,14 @@ def main():
         json.dumps({
             "format": "danos-p0.5-source-revision-map-v1",
             "category_counts": category_counts,
+            "verified_counts": vsum,
+            "verified_definition": VERIFIED_DEFINITION,
+            "provenance_file": "provenance.json",
             "packages": revmap_rows,
         }, indent=2)
     )
-    print(f"  sbom.json + source-revision-map.json  ({len(installed)} packages)")
+    print(f"  sbom.json + source-revision-map.json + provenance.json  ({len(installed)} packages)")
+    print(f"    verified: {vsum['true']} true / {vsum['false']} false")
     for cat, n in sorted(category_counts.items(), key=lambda kv: -kv[1]):
         print(f"    {cat:22s} {n}")
 
