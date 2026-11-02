@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "events": [
+    {
+      "kind": "extra",
+      "vrf": "default",
+      "prefix": "10.0.2.3/32",
+      "first_cycle": 1,
+      "first_timestamp": "2026-09-20T02:27:32.548190+00:00",
+      "last_cycle": 3,
+      "last_timestamp": "2026-09-20T02:27:36.705763+00:00",
+      "cycles": 3,
+      "type": "active"
+    },
+    {
+      "kind": "extra",
+      "vrf": "default",
+      "prefix": "10.0.2.2/32",
+      "first_cycle": 1,
+      "first_timestamp": "2026-09-20T02:27:32.548190+00:00",
+      "last_cycle": 3,
+      "last_timestamp": "2026-09-20T02:27:36.705763+00:00",
+      "cycles": 3,
+      "type": "active"
+    }
+  ],
+  "read_only": true
+}

@@ -1,0 +1,2 @@
+{"dpa_objects":{"classes":[{"class":"interface","enumerable":true}],"objects":[{"class":"interface","key":"if:dp0s3","state":"not_needed","backend":"sw-dataplane"},{"class":"interface","key":"if:dp0s4","state":"not_needed","backend":"sw-dataplane"}]}}
+
