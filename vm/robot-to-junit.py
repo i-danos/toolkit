@@ -53,26 +53,46 @@ def read_suites(script_text):
 
 
 def robot_tests(path):
-    """output.xml -> [(longname, status, message)]; raises on anything that is not a Robot output."""
+    """output.xml -> [(longname, status, message)]; raises on anything that is not a Robot output.
+
+    Robot counts every test of a suite as failed when that suite's TEARDOWN fails, while the test elements keep the
+    status they had when they ran. The statistics are what Robot reports and what regression.sh totals, so a PASS under
+    a suite whose teardown failed is reported as FAIL here (with the teardown message), and the result is then checked
+    against <statistics><total><stat>: a disagreement is an error, never a quietly different number.
+    """
     root = ET.parse(path).getroot()
     if root.tag != "robot":
         raise ValueError("not a Robot output.xml")
     out = []
 
-    def walk(suite, prefix):
+    def walk(suite, prefix, teardown_failure):
         name = prefix + [suite.get("name", "")]
+        st = suite.find("status")
+        msg = (st.text or "").strip() if st is not None else ""
+        if st is not None and st.get("status") == "FAIL" and msg.startswith("Suite teardown failed"):
+            teardown_failure = teardown_failure or msg
         for t in suite.findall("test"):
-            st = t.find("status")
-            if st is None:
+            ts = t.find("status")
+            if ts is None:
                 raise ValueError("test %r has no status" % t.get("name"))
-            out.append((".".join(name[1:] + [t.get("name", "")]) if len(name) > 1 else t.get("name", ""), st.get("status"), (st.text or "").strip()))
-        for s in suite.findall("suite"):
-            walk(s, name)
+            status, text = ts.get("status"), (ts.text or "").strip()
+            if status == "PASS" and teardown_failure:
+                status, text = "FAIL", "counted as failed by Robot because the suite teardown failed (the test itself passed): " + teardown_failure
+            out.append((".".join(name[1:] + [t.get("name", "")]) if len(name) > 1 else t.get("name", ""), status, text))
+        for sub in suite.findall("suite"):
+            walk(sub, name, teardown_failure)
 
     top = root.find("suite")
     if top is None:
         raise ValueError("no suite element")
-    walk(top, [])
+    walk(top, [], "")
+    stat = root.find("statistics/total/stat")
+    if stat is None:
+        raise ValueError("no statistics/total/stat: cannot check the counts against Robot's own")
+    got = (sum(1 for _, s, _ in out if s == "PASS"), sum(1 for _, s, _ in out if s not in ("PASS", "SKIP")))
+    want = (int(stat.get("pass")), int(stat.get("fail")))
+    if got != want:
+        raise ValueError("per-test statuses give pass/fail %s but Robot's statistics say %s" % (got, want))
     return out
 
 

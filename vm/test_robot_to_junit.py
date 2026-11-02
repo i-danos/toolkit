@@ -8,10 +8,15 @@ _spec.loader.exec_module(r2j)
 TABLE = 'x\nSUITES="\nipsec ipsec IPSEC_VPN_DANOS  2\nfw    fw    FIREWALL_DANOS   1\n"\n'
 
 
-def output_xml(tests, nested=False):
+def output_xml(tests, nested=False, teardown_failed=False, stat=None):
     t = "".join('<test name="%s"><status status="%s">%s</status></test>' % (n, s, m) for n, s, m in tests)
     inner = '<suite name="Sub">%s</suite>' % t if nested else t
-    return '<robot><suite name="Top">%s</suite></robot>' % inner
+    if stat is None:
+        fails = len(tests) if teardown_failed else sum(1 for _, s, _ in tests if s != "PASS")
+        stat = (len(tests) - fails, fails)
+    suite_status = '<status status="FAIL">Suite teardown failed:\nboom</status>' if teardown_failed else ""
+    return ('<robot><suite name="Top">%s%s</suite><statistics><total><stat pass="%d" fail="%d" skip="0">All Tests</stat></total></statistics></robot>'
+            % (inner, suite_status, stat[0], stat[1]))
 
 
 class T(unittest.TestCase):
@@ -43,6 +48,26 @@ class T(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         (d / "o.xml").write_text("<robot><suite name='x'><test")
         with self.assertRaises(ET.ParseError):
+            r2j.robot_tests(d / "o.xml")
+
+
+    def test_a_pass_under_a_failed_suite_teardown_is_reported_as_failed(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "o.xml").write_text(output_xml([("a", "PASS", ""), ("b", "FAIL", "x")], teardown_failed=True))
+        got = r2j.robot_tests(d / "o.xml")
+        self.assertEqual([s for _, s, _ in got], ["FAIL", "FAIL"])
+        self.assertIn("suite teardown failed", got[0][2])
+
+    def test_counts_that_disagree_with_robots_statistics_are_refused(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "o.xml").write_text(output_xml([("a", "PASS", ""), ("b", "PASS", "")], stat=(1, 1)))
+        with self.assertRaises(ValueError):
+            r2j.robot_tests(d / "o.xml")
+
+    def test_output_without_statistics_is_refused(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "o.xml").write_text('<robot><suite name="Top"><test name="a"><status status="PASS"/></test></suite></robot>')
+        with self.assertRaises(ValueError):
             r2j.robot_tests(d / "o.xml")
 
 
