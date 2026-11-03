@@ -46,7 +46,9 @@ exec > "$OUT" 2>&1
 # Which image is this a statement about? Read from the running VMs, never
 # from the variable the caller passed.
 "$HERE/image-fingerprint.sh"
-S() { docker exec danos-robot timeout 180 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$1" "$2" 2>&1; }
+# ssh prints "Warning: Permanently added ..." (UserKnownHostsFile=/dev/null) and the MOTD on every call; merged into stdout they made
+# the json.load() parsers below fail at char 0, so no "packets=... wrong_if=..." line was ever printed. Drop just those two lines.
+S() { docker exec danos-robot timeout 180 sshpass -p vyatta ssh $SSH_OPTS "vyatta@$1" "$2" 2>&1 | grep -v -e '^Warning: Permanently added' -e '^Welcome to DANOS'; }
 
 cli() {
   local h=$1; shift
