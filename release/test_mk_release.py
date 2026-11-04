@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -854,6 +855,149 @@ class LocalGitVerifiedTest(unittest.TestCase):
         shutil.rmtree(self.remote)
         ok, _, _ = mk.check_commit_published(self.work, self.c2, cache)
         self.assertTrue(ok)
+
+
+class PublishedTagScanTest(unittest.TestCase):
+    """check_commit_published against a repository whose published history is held by tags: how it asks, and what it says when it
+    did not look at everything. Local git only; `mk.run` is wrapped to record every subprocess it starts."""
+
+    def git(self, cwd, *a):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
+        return subprocess.run(["git", "-C", str(cwd), *a], env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+    def commit(self, name):
+        (self.work / "f").write_text(name)
+        self.git(self.work, "add", "f")
+        self.git(self.work, "commit", "-qm", name)
+        return self.git(self.work, "rev-parse", "HEAD")
+
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.td, True)
+        self.remote = self.td / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(self.remote)], check=True)
+        self.work = self.td / "work"
+        subprocess.run(["git", "init", "-q", "-b", "master", str(self.work)], check=True)
+        self.git(self.work, "remote", "add", "i-danos", str(self.remote))
+        self.c1 = self.commit("one")
+        self.c2 = self.commit("two")
+        self.git(self.work, "push", "-q", "i-danos", "master")
+        # a commit that only a tag holds: on a side branch that is never pushed, tag pushed
+        self.git(self.work, "checkout", "-q", "-b", "side")
+        self.side = self.commit("side")
+        self.git(self.work, "tag", "v-side")
+        self.git(self.work, "checkout", "-q", "master")
+        # four more tags on published history so there are 5 tag tips in all
+        for i in range(4):
+            self.git(self.work, "tag", f"v{i}", self.c1 if i % 2 else self.c2)
+        self.git(self.work, "push", "-q", "i-danos", "--tags")
+        # a commit nothing published holds
+        self.git(self.work, "checkout", "-q", "-b", "local-only")
+        self.nowhere = self.commit("nowhere")
+        self.git(self.work, "checkout", "-q", "master")
+
+    def recorded(self, fn):
+        calls, real = [], mk.run
+        def rec(cmd, **kw):
+            calls.append(list(cmd))
+            return real(cmd, **kw)
+        with mock.patch.object(mk, "run", side_effect=rec):
+            out = fn()
+        return out, calls
+
+    @staticmethod
+    def merge_bases(calls):
+        return [c for c in calls if "merge-base" in c]
+
+    def test_commit_on_a_branch_keeps_the_old_wording(self):
+        ok, why, info = mk.check_commit_published(self.work, self.c1, {})
+        self.assertTrue(ok, why)
+        self.assertIn("ancestor of refs/heads/master", why)
+        self.assertEqual(info["ref"], "refs/heads/master")
+
+    def test_commit_only_on_a_tag_is_found_with_one_recheck(self):
+        tag_sha = self.git(self.work, "rev-parse", "v-side")
+        (ok, why, info), calls = self.recorded(lambda: mk.check_commit_published(self.work, self.side, {}))
+        self.assertTrue(ok, why)
+        self.assertIn("ancestor of refs/tags/v-side", why)
+        self.assertEqual(info["ref"], "refs/tags/v-side")
+        mb = self.merge_bases(calls)
+        self.assertEqual([c for c in mb if c[-1] == tag_sha], [mb[-1]], "the tag is re-verified exactly once")
+        self.assertEqual(len(mb), 2, "one for the single branch tip, one for the tag -- not one per tag: %s" % mb)
+        self.assertTrue(any("for-each-ref" in c and "--contains=" + self.side in c for c in calls))
+
+    def test_commit_in_no_tip_says_what_was_checked(self):
+        (ok, why, _), calls = self.recorded(lambda: mk.check_commit_published(self.work, self.nowhere, {}))
+        self.assertFalse(ok)
+        self.assertIn("not an ancestor of any", why)
+        self.assertIn("checked", why)
+        self.assertIn("of 5 tag tips", why)
+        self.assertEqual(len(self.merge_bases(calls)), 1, "only the branch tip is asked with merge-base: %s" % self.merge_bases(calls))
+
+    def test_tags_this_clone_lacks_are_checked_one_by_one_up_to_the_limit(self):
+        for t in self.git(self.work, "tag").split():
+            self.git(self.work, "tag", "-d", t)
+        ok, why, _ = mk.check_commit_published(self.work, self.nowhere, {}, tag_limit=2)
+        self.assertFalse(ok)
+        self.assertIn("checked 2 of 5 tag tips", why)
+        self.assertIn("limit 2", why)
+        self.assertNotIn("not an ancestor of any", why, "an incomplete look must not claim there is no such tip")
+
+    def test_limit_does_not_stop_a_hit_that_is_within_it(self):
+        for t in self.git(self.work, "tag").split():
+            self.git(self.work, "tag", "-d", t)
+        # the clone no longer has v-side, but the commit is still in it (branch side) and the remote tag points at it
+        ok, why, _ = mk.check_commit_published(self.work, self.side, {}, tag_limit=50)
+        self.assertTrue(ok, why)
+        self.assertIn("refs/tags/v-side", why)
+
+    def test_a_stale_local_tag_does_not_hide_the_remote_one(self):
+        # the remote's v-side points at self.side; here the same name points somewhere else, so --contains cannot be trusted for it
+        self.git(self.work, "tag", "-f", "v-side", self.c1)
+        ok, why, info = mk.check_commit_published(self.work, self.side, {})
+        self.assertTrue(ok, why)
+        self.assertEqual(info["ref"], "refs/tags/v-side")
+
+    def test_failed_one_pass_falls_back_to_a_capped_scan_and_says_so(self):
+        real = mk.run
+        def broken(cmd, **kw):
+            if "for-each-ref" in cmd:
+                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: boom")
+            return real(cmd, **kw)
+        with mock.patch.object(mk, "run", side_effect=broken):
+            ok, why, _ = mk.check_commit_published(self.work, self.nowhere, {}, tag_limit=3)
+        self.assertFalse(ok)
+        self.assertIn("checked 3 of 5 tag tips", why)
+        self.assertIn("for-each-ref failed", why)
+        self.assertNotIn("not an ancestor of any", why)
+
+    def test_timed_out_one_pass_falls_back_the_same_way(self):
+        real = mk.run
+        def slow(cmd, **kw):
+            if "for-each-ref" in cmd:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+            return real(cmd, **kw)
+        with mock.patch.object(mk, "run", side_effect=slow):
+            ok, why, _ = mk.check_commit_published(self.work, self.side, {}, tag_timeout=1, tag_limit=50)
+        self.assertTrue(ok, why)                      # the capped scan still finds a commit that is within the cap
+        with mock.patch.object(mk, "run", side_effect=slow):
+            ok, why, _ = mk.check_commit_published(self.work, self.nowhere, {}, tag_timeout=1, tag_limit=2)
+        self.assertFalse(ok)
+        self.assertIn("checked 2 of 5 tag tips", why)
+        self.assertIn("timed out", why)
+
+    def test_unreachable_remote_keeps_its_wording(self):
+        self.git(self.work, "remote", "set-url", "i-danos", str(self.td / "nowhere.git"))
+        ok, why, _ = mk.check_commit_published(self.work, self.c1, {})
+        self.assertFalse(ok)
+        self.assertTrue(why.startswith("remote not reachable:"), why)
+
+    def test_the_same_commit_is_not_worked_out_twice(self):
+        cache = {}
+        first = mk.check_commit_published(self.work, self.side, cache)
+        out, calls = self.recorded(lambda: mk.check_commit_published(self.work, self.side, cache))
+        self.assertEqual(calls, [])
+        self.assertEqual(out, first)
 
 
 class EnrichRowsTest(unittest.TestCase):
