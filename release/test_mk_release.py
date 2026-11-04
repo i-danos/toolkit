@@ -924,7 +924,10 @@ class PublishedTagScanTest(unittest.TestCase):
         mb = self.merge_bases(calls)
         self.assertEqual([c for c in mb if c[-1] == tag_sha], [mb[-1]], "the tag is re-verified exactly once")
         self.assertEqual(len(mb), 2, "one for the single branch tip, one for the tag -- not one per tag: %s" % mb)
-        self.assertTrue(any("for-each-ref" in c and "--contains=" + self.side in c for c in calls))
+        self.assertIn(["git", "-C", str(self.work), "tag", "--contains", self.side], calls,
+                      "tags are asked with `git tag --contains`, which is the fast path on a repository with thousands of tags")
+        self.assertFalse(any("for-each-ref" in c and any(a.startswith("--contains") for a in c) for c in calls),
+                         "the slow `for-each-ref --contains` form must not come back")
 
     def test_commit_in_no_tip_says_what_was_checked(self):
         (ok, why, _), calls = self.recorded(lambda: mk.check_commit_published(self.work, self.nowhere, {}))
@@ -961,31 +964,48 @@ class PublishedTagScanTest(unittest.TestCase):
 
     def test_failed_one_pass_falls_back_to_a_capped_scan_and_says_so(self):
         real = mk.run
-        def broken(cmd, **kw):
-            if "for-each-ref" in cmd:
-                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: boom")
-            return real(cmd, **kw)
-        with mock.patch.object(mk, "run", side_effect=broken):
-            ok, why, _ = mk.check_commit_published(self.work, self.nowhere, {}, tag_limit=3)
-        self.assertFalse(ok)
-        self.assertIn("checked 3 of 5 tag tips", why)
-        self.assertIn("for-each-ref failed", why)
-        self.assertNotIn("not an ancestor of any", why)
+        for name, is_it in (("tag --contains", lambda c: "tag" in c and "--contains" in c),
+                            ("for-each-ref", lambda c: "for-each-ref" in c)):
+            with self.subTest(failing=name):
+                def broken(cmd, **kw):
+                    if is_it(cmd):
+                        return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: boom")
+                    return real(cmd, **kw)
+                with mock.patch.object(mk, "run", side_effect=broken):
+                    ok, why, _ = mk.check_commit_published(self.work, self.nowhere, {}, tag_limit=3)
+                self.assertFalse(ok)
+                self.assertIn("checked 3 of 5 tag tips", why)
+                self.assertIn(name.split()[0] if name == "for-each-ref" else "git tag --contains failed", why)
+                self.assertNotIn("not an ancestor of any", why)
 
     def test_timed_out_one_pass_falls_back_the_same_way(self):
         real = mk.run
-        def slow(cmd, **kw):
-            if "for-each-ref" in cmd:
-                raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
-            return real(cmd, **kw)
-        with mock.patch.object(mk, "run", side_effect=slow):
-            ok, why, _ = mk.check_commit_published(self.work, self.side, {}, tag_timeout=1, tag_limit=50)
-        self.assertTrue(ok, why)                      # the capped scan still finds a commit that is within the cap
-        with mock.patch.object(mk, "run", side_effect=slow):
-            ok, why, _ = mk.check_commit_published(self.work, self.nowhere, {}, tag_timeout=1, tag_limit=2)
-        self.assertFalse(ok)
-        self.assertIn("checked 2 of 5 tag tips", why)
-        self.assertIn("timed out", why)
+        for name, is_it in (("tag --contains", lambda c: "tag" in c and "--contains" in c),
+                            ("for-each-ref", lambda c: "for-each-ref" in c)):
+            with self.subTest(timing_out=name):
+                def slow(cmd, **kw):
+                    if is_it(cmd):
+                        raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+                    return real(cmd, **kw)
+                with mock.patch.object(mk, "run", side_effect=slow):
+                    ok, why, _ = mk.check_commit_published(self.work, self.side, {}, tag_timeout=1, tag_limit=50)
+                self.assertTrue(ok, why)                  # the capped scan still finds a commit that is within the cap
+                with mock.patch.object(mk, "run", side_effect=slow):
+                    ok, why, _ = mk.check_commit_published(self.work, self.nowhere, {}, tag_timeout=1, tag_limit=2)
+                self.assertFalse(ok)
+                self.assertIn("checked 2 of 5 tag tips", why)
+                self.assertIn("timed out", why)
+
+    def test_tag_names_with_slashes_are_matched(self):
+        # git tag prints short names ("rel/1.0/final"); the remote lists refs/tags/rel/1.0/final -- both must meet
+        self.git(self.work, "tag", "rel/1.0/final", self.side)
+        self.git(self.work, "push", "-q", "i-danos", "rel/1.0/final")
+        self.git(self.work, "tag", "-d", "v-side")
+        self.git(self.work, "push", "-q", "i-danos", ":refs/tags/v-side")
+        (ok, why, info), calls = self.recorded(lambda: mk.check_commit_published(self.work, self.side, {}))
+        self.assertTrue(ok, why)
+        self.assertEqual(info["ref"], "refs/tags/rel/1.0/final")
+        self.assertEqual(len(self.merge_bases(calls)), 2, "one branch tip, one tag re-verification")
 
     def test_unreachable_remote_keeps_its_wording(self):
         self.git(self.work, "remote", "set-url", "i-danos", str(self.td / "nowhere.git"))
