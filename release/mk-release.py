@@ -615,7 +615,7 @@ def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout,
     if stop:
         return False, (f"not found to be an ancestor of the tips examined: checked {seen} of {total} tag tips "
                        f"({stop}) and {len(heads)} branch tips" + note), info
-    return False, (f"not an ancestor of any of the {len(tips)} remote branch/tag tips "
+    return False, (f"not an ancestor of any of the {len(heads) + total} remote branch/tag tips "
                    f"(checked {len(heads)} branch tips and {seen} of {total} tag tips)" + note), info
 
 

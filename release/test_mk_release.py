@@ -932,6 +932,7 @@ class PublishedTagScanTest(unittest.TestCase):
         self.assertIn("not an ancestor of any", why)
         self.assertIn("checked", why)
         self.assertIn("of 5 tag tips", why)
+        self.assertIn("any of the 6 remote branch/tag tips", why, "1 branch + 5 tags; ls-remote's peeled ^{} lines are not extra tips")
         self.assertEqual(len(self.merge_bases(calls)), 1, "only the branch tip is asked with merge-base: %s" % self.merge_bases(calls))
 
     def test_tags_this_clone_lacks_are_checked_one_by_one_up_to_the_limit(self):
