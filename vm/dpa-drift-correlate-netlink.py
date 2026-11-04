@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 JOURNAL = ["sudo", "journalctl", "-u", "vyatta-dataplane", "-o", "json", "--no-pager"]
 
 ROUTE_LINE = re.compile(
-    r"^ROUTE: RTM_(?P<verb>NEWROUTE|DELROUTE) table (?P<table>\d+) "
+    r"^ROUTE: (?P<verb>RTM_NEWROUTE|RTM_DELROUTE) table (?P<table>\d+) "
     r"type (?P<type>\S+) dst (?P<prefix>\S+) ")
 
 # Same rationale as dpa-drift-correlate.py's window: generous against a
