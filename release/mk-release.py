@@ -83,6 +83,7 @@ Resolution categories (P0.5 item 3's split of "unknown"):
 """
 
 import argparse
+import functools
 import hashlib
 import json
 import re
@@ -464,14 +465,48 @@ def source_dirs(sources_dir):
     return out
 
 
-def check_commit_published(repo_dir, commit, ls_remote_cache, timeout=90):
+DEFAULT_TAG_TIMEOUT = 900   # seconds allowed for the one-pass `git for-each-ref --contains` over the tags
+DEFAULT_TAG_LIMIT = 200     # most tag tips the per-tip fallback / the unaligned-tag check will examine
+
+
+def _tip_is_ancestor(repo, commit, sha):
+    """True / False if `commit` is / is not an ancestor of `sha`; None if the clone does not have `sha` (cannot be read)."""
+    if run(["git", "-C", repo, "cat-file", "-e", sha + "^{commit}"]).returncode != 0:
+        return None
+    return run(["git", "-C", repo, "merge-base", "--is-ancestor", commit, sha]).returncode == 0
+
+
+def check_commit_published(repo_dir, commit, ls_remote_cache, timeout=90,
+                           tag_timeout=DEFAULT_TAG_TIMEOUT, tag_limit=DEFAULT_TAG_LIMIT):
     """Is `commit` in the published history of repo_dir's remote? -> (ok, detail, info).
 
     `git ls-remote --heads --tags` lists the tips; the commit counts only if it is an ancestor of one of
     them (and the tip itself is a commit this clone has, so the ancestry is read, not assumed).
+
+    Cost: a repository can have thousands of tags (linux-vyatta: 4221), and asking `merge-base --is-ancestor` of every tip
+    is one subprocess per tip -- an hour for a single commit that no tip contains. So, in order:
+      1. the branch tips (a handful) are asked one by one, as before;
+      2. the tags are asked in one pass: `git for-each-ref --contains=<commit> refs/tags` lists the local tags whose history
+         holds the commit. That answer is only trusted for a tag whose local object equals the remote's (same name, same
+         object id); tags the clone lacks or has at another object are checked tip by tip, at most `tag_limit` of them.
+         A hit is re-verified with one `merge-base --is-ancestor` against the REMOTE tip, so the result never rests on
+         for-each-ref alone;
+      3. if for-each-ref fails or exceeds `tag_timeout`, the old tip-by-tip scan runs over at most `tag_limit` tags.
+    A False that did not look at everything says how much it looked at ("checked N of M tag tips") and never claims
+    "not an ancestor of any tip". The result per (repo, commit) is remembered in `ls_remote_cache`.
     """
-    info = {"repository": str(repo_dir), "remote_url": None, "ref": None, "ref_tip": None}
     repo = str(repo_dir)
+    key = ("published", repo, commit)
+    if key in ls_remote_cache:
+        ok, why, info = ls_remote_cache[key]
+        return ok, why, dict(info)
+    res = _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout, tag_limit)
+    ls_remote_cache[key] = res
+    return res[0], res[1], dict(res[2])
+
+
+def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout, tag_limit):
+    info = {"repository": str(repo), "remote_url": None, "ref": None, "ref_tip": None}
     if run(["git", "-C", repo, "cat-file", "-e", commit + "^{commit}"]).returncode != 0:
         return False, "the commit is not in the local clone of the source repository", info
     remote = None
@@ -493,16 +528,95 @@ def check_commit_published(repo_dir, commit, ls_remote_cache, timeout=90):
     tips = ls_remote_cache[remote]
     if isinstance(tips, tuple):
         return False, f"remote not reachable: {tips[1] or 'no refs listed'}", info
+
+    heads, tags = [], {}          # tags: ref -> {"obj": tag object id, "peeled": commit it points at}
+    for sha, ref in tips:
+        if ref.startswith("refs/tags/"):
+            if ref.endswith("^{}"):
+                tags.setdefault(ref[:-3], {})["peeled"] = sha
+            else:
+                tags.setdefault(ref, {})["obj"] = sha
+        else:
+            heads.append((sha, ref))
     missing = 0
-    for sha, ref in sorted(tips, key=lambda t: (t[1] != "refs/heads/master", t[1] != "refs/heads/main", t[1])):
-        if run(["git", "-C", repo, "cat-file", "-e", sha + "^{commit}"]).returncode != 0:
+
+    # 1. branch tips, the way it always was
+    for sha, ref in sorted(heads, key=lambda t: (t[1] != "refs/heads/master", t[1] != "refs/heads/main", t[1])):
+        r = _tip_is_ancestor(repo, commit, sha)
+        if r is None:
             missing += 1
-            continue
-        if run(["git", "-C", repo, "merge-base", "--is-ancestor", commit, sha]).returncode == 0:
+        elif r:
             info.update(ref=ref, ref_tip=sha)
             return True, f"ancestor of {ref} ({sha[:12]}) on {remote}", info
-    return False, (f"not an ancestor of any of the {len(tips)} remote branch/tag tips"
-                   + (f" ({missing} tips are not in the local clone, so they could not be checked)" if missing else "")), info
+
+    names = sorted(tags)
+    total = len(names)
+    tip = lambda n: tags[n].get("peeled") or tags[n].get("obj")   # the commit the tag names
+    seen = 0                                                      # tag tips whose ancestry was actually read
+    stop = ""                                                     # why the tag check is not exhaustive, if it is not
+
+    def hit(n):
+        info.update(ref=n, ref_tip=tip(n))
+        return True, f"ancestor of {n} ({tip(n)[:12]}) on {remote}", info
+
+    # 2. tags in one pass
+    local, contains, failed = {}, set(), ""
+    try:
+        for want, store in (("--contains=" + commit, "contains"), (None, "local")):
+            cmd = ["git", "-C", repo, "for-each-ref", "--format=%(refname)\t%(objectname)"]
+            r = run(cmd + ([want] if want else []) + ["refs/tags"], timeout=tag_timeout)
+            if r.returncode != 0:
+                failed = f"git for-each-ref failed: {r.stderr.strip()[-120:] or r.returncode}"
+                break
+            rows = [ln.split("\t") for ln in r.stdout.splitlines() if "\t" in ln]
+            if store == "contains":
+                contains = {n for n, _ in rows}
+            else:
+                local = dict(rows)
+    except subprocess.TimeoutExpired:
+        failed = f"git for-each-ref timed out after {tag_timeout}s"
+
+    if not failed:
+        aligned = {n for n in names if local.get(n) == tags[n].get("obj")}
+        seen = len(aligned)       # `--contains` answered for all of these at once
+        cands = [n for n in names if n in aligned and n in contains]
+        for n in cands[:tag_limit]:
+            r = _tip_is_ancestor(repo, commit, tip(n))        # the one re-verification, against the remote's tip
+            if r:
+                return hit(n)
+        if len(cands) > tag_limit:
+            stop = f"limit {tag_limit} of {len(cands)} candidate tags re-verified"
+        rest = [n for n in names if n not in aligned]          # no local tag at the remote's object: ask them one by one
+        for n in rest[:tag_limit]:
+            r = _tip_is_ancestor(repo, commit, tip(n))
+            if r is None:
+                missing += 1
+            else:
+                seen += 1
+                if r:
+                    return hit(n)
+        if len(rest) > tag_limit:
+            stop = (stop + "; " if stop else "") + f"limit {tag_limit} of {len(rest)} tags this clone lacks"
+    else:
+        # 3. the old tip-by-tip scan, capped
+        for n in names[:tag_limit]:
+            r = _tip_is_ancestor(repo, commit, tip(n))
+            if r is None:
+                missing += 1
+            else:
+                seen += 1
+                if r:
+                    return hit(n)
+        if total > tag_limit:
+            stop = f"limit {tag_limit}; {failed}"
+        else:
+            stop = ""
+    note = f" ({missing} tips are not in the local clone, so they could not be checked)" if missing else ""
+    if stop:
+        return False, (f"not found to be an ancestor of the tips examined: checked {seen} of {total} tag tips "
+                       f"({stop}) and {len(heads)} branch tips" + note), info
+    return False, (f"not an ancestor of any of the {len(tips)} remote branch/tag tips "
+                   f"(checked {len(heads)} branch tips and {seen} of {total} tag tips)" + note), info
 
 
 def enrich_rows(rows, records, index, releases, sources_dir=None, remote_check=True,
@@ -1241,6 +1355,12 @@ def main():
     ap.add_argument("--build-provenance", type=Path, default=None,
                     help="build-provenance JSON (commit + attestation hash per "
                          "package); without it no version-stamped commit is confirmed")
+    ap.add_argument("--remote-check-tag-timeout", type=int, default=DEFAULT_TAG_TIMEOUT, metavar="SECONDS",
+                    help="seconds allowed for the one-pass `git for-each-ref --contains` over a source repository's tags "
+                         "(default %(default)s); on timeout or failure the capped tip-by-tip scan runs instead")
+    ap.add_argument("--remote-check-tag-limit", type=int, default=DEFAULT_TAG_LIMIT, metavar="N",
+                    help="most tag tips examined one by one when the one-pass answer is unavailable or a tag is not at the "
+                         "remote's object (default %(default)s); a result that stopped there says 'checked N of M tag tips'")
     ap.add_argument("--no-remote-check", action="store_true",
                     help="skip the `git ls-remote` reachability check of local_git commits "
                          "(offline runs); those rows are then verified=false with that reason")
@@ -1316,7 +1436,9 @@ def main():
         revmap_rows.append(row)
 
     prov_rows = enrich_rows(revmap_rows, records, apt_index, apt_releases, args.sources,
-                            remote_check=not args.no_remote_check)
+                            remote_check=not args.no_remote_check,
+                            checker=functools.partial(check_commit_published, tag_timeout=args.remote_check_tag_timeout,
+                                                      tag_limit=args.remote_check_tag_limit))
     vsum = verified_summary(revmap_rows)
     (release_dir / "provenance.json").write_text(json.dumps({
         "format": "danos-p0.5-package-provenance-v1",
