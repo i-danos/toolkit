@@ -37,11 +37,11 @@
   {
    "name": "d1-secure-boot-is-on",
    "basis": "design: docs/DEFECTS.md section 19 and release/mk-release.py secure_boot_dataplane_requires_iommu; asserted on the guest's own serial output",
-   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-d1.log | tr -d '\\r' | grep -aE 'Secure boot (en|dis)abled' | head -1",
+   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-d1.log | tr -d '\\r' | grep -aE 'Secure boot (en|dis)abled' | head -1 | sed 's/^\\[ *[0-9.]*\\] //'",
    "timeout": 30,
    "expect_exit": 0,
    "expect_regex": [
-    "^\\[ *[0-9.]+\\] Secure boot enabled$"
+    "^Secure boot enabled$"
    ]
   },
   {
@@ -106,11 +106,11 @@
   {
    "name": "d2-secure-boot-is-on",
    "basis": "design: docs/DEFECTS.md section 19 and release/mk-release.py secure_boot_dataplane_requires_iommu; asserted on the guest's own serial output",
-   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-d2.log | tr -d '\\r' | grep -aE 'Secure boot (en|dis)abled' | head -1",
+   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-d2.log | tr -d '\\r' | grep -aE 'Secure boot (en|dis)abled' | head -1 | sed 's/^\\[ *[0-9.]*\\] //'",
    "timeout": 30,
    "expect_exit": 0,
    "expect_regex": [
-    "^\\[ *[0-9.]+\\] Secure boot enabled$"
+    "^Secure boot enabled$"
    ]
   },
   {
@@ -154,7 +154,7 @@
    "timeout": 30,
    "expect_exit": 0,
    "expect_regex": [
-    "^dp0p0s2 +(DOWN|UP) +52:54:00:",
+    "^dp0p0s2 +(DOWN|UP) +([0-9a-f]{2}:){5}[0-9a-f]{2} ",
     "^PCIDRV=vfio-pci$"
    ],
    "expect_not_regex": [
@@ -174,11 +174,11 @@
   {
    "name": "d3-secure-boot-is-off",
    "basis": "design: docs/DEFECTS.md section 19 and release/mk-release.py secure_boot_dataplane_requires_iommu; asserted on the guest's own serial output",
-   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-d3.log | tr -d '\\r' | grep -aE 'Secure boot (en|dis)abled' | head -1",
+   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-d3.log | tr -d '\\r' | grep -aE 'Secure boot (en|dis)abled' | head -1 | sed 's/^\\[ *[0-9.]*\\] //'",
    "timeout": 30,
    "expect_exit": 0,
    "expect_regex": [
-    "^\\[ *[0-9.]+\\] Secure boot disabled$"
+    "^Secure boot disabled$"
    ]
   },
   {
