@@ -25,6 +25,8 @@ case "$ITEM" in
   signed_boot_chain_sbat_revocation)         CASE=sb-sbat.yaml; SUF=sbat ;;
   signed_boot_chain_mok_enrollment_flow)     CASE=sb-mok-flow.yaml; SUF=mok-flow ;;
   add_system_image_signing_check)           CASE=add-system-image-signing-check.yaml; SUF=add-image; NOQEMU=1 ;;
+  secure_boot_dataplane_requires_iommu)     CASE=sb-iommu.yaml; SUF=iommu ;;
+  signed_boot_chain_dbx)                    CASE=sb-dbx.yaml; SUF=dbx ;;
   *) echo "unknown item $ITEM" >&2; exit 2 ;;
 esac
 OUT=${3:-$BASE/secure-boot-$SUF}

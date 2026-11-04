@@ -1,0 +1,114 @@
+{
+ "id": "signed_boot_chain_dbx",
+ "item": "signed_boot_chain_dbx",
+ "suite_commit": "auto",
+ "description": "On EDK2/OVMF (a virtual machine's firmware, NOT a physical UEFI): a dbx entry holding the Authenticode SHA-256 of the ISO's shim makes the firmware refuse to load it ('Access Denied -- rejected probably by Secure Boot', no GRUB, no kernel), while the same variable store without that entry (control) and with a dbx entry for a different hash (decoy) both boot to a login. The revoked hash is checked against the digest inside the shim's own signature.",
+ "basis": [
+  "design: handoff/tasks/SB-r7.md",
+  "virt-fw-vars --add-dbx-hash writes the entry; firmware behaviour observed on OVMF 2025.11-3ubuntu7.3, not a claim about any vendor's UEFI"
+ ],
+ "vars": {
+  "vm_dir": "/home/aikon/danos/build-iso/danos-sources/toolkit/vm",
+  "iso": "/home/aikon/danos/acceptance-p05/iso-r5/i-danos_2608_20261103T0000-amd64.hybrid.iso",
+  "out": "/home/aikon/danos/acceptance-p05/secure-boot-dbx",
+  "vfv": "/home/aikon/danos/.obs/venv-sb/bin/virt-fw-vars"
+ },
+ "steps": [
+  {
+   "name": "run-sb-dbx-fixture",
+   "basis": "design: Microsoft-keys+MOK variable store, then the same store with the shim's Authenticode SHA-256 in dbx, and a decoy dbx entry as negative control; caps on every wait, trap cleanup",
+   "cmd": "case \"$(basename {{out}})\" in secure-boot-*) ;; *) echo \"BAD_OUT {{out}}\"; exit 2;; esac; rm -rf {{out}}; mkdir -p {{out}}; bash {{vm_dir}}/verify-sb-dbx.sh {{iso}} {{out}} {{vfv}} > {{out}}.fixture.stdout 2>&1; echo \"FIXTURE_RC=$?\"; mv {{out}}.fixture.stdout {{out}}/fixture.stdout; grep -E '^qemu: ' {{out}}/fixture.stdout | head -1; grep -E '^iso_sha256=' {{out}}/results.txt",
+   "timeout": 3000,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FIXTURE_RC=[0-9]+$",
+    "^qemu: -enable-kvm -cpu host ",
+    "^iso_sha256=[0-9a-f]{64}$"
+   ]
+  },
+  {
+   "name": "the-firmware-is-edk2-ovmf-not-a-physical-uefi",
+   "basis": "design: handoff/tasks/SB-r7.md; EDK2/OVMF firmware in a virtual machine, not a physical UEFI",
+   "cmd": "grep -aE '^(firmware|ovmf|ovmf_code|qemu)=' {{out}}/results.txt",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^firmware=edk2/OVMF \\(a virtual machine's firmware\\); this is NOT the UEFI of a physical machine$",
+    "^ovmf=ovmf [0-9]",
+    "^ovmf_code=\\S+secboot\\.fd sha256=[0-9a-f]{64}$",
+    "^qemu=QEMU emulator version "
+   ]
+  },
+  {
+   "name": "the-revoked-hash-is-the-one-in-the-shims-own-signature",
+   "basis": "design: handoff/tasks/SB-r7.md; EDK2/OVMF firmware in a virtual machine, not a physical UEFI",
+   "cmd": "a=$(grep -a '^signature-digest=' {{out}}/results.txt | cut -d= -f2); b=$(grep -a '^shim-authenticode-sha256=' {{out}}/results.txt | cut -d= -f2); echo \"signature=$a\"; echo \"computed=$b\"; [ -n \"$a\" ] && [ \"$a\" = \"$b\" ] && echo SAME; grep -a '^hash-in-signature=' {{out}}/results.txt",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^signature=[0-9a-f]{64}$",
+    "^computed=[0-9a-f]{64}$",
+    "^SAME$",
+    "^hash-in-signature=yes$"
+   ]
+  },
+  {
+   "name": "only-the-revoked-store-has-the-shim-hash-in-dbx",
+   "basis": "design: handoff/tasks/SB-r7.md; EDK2/OVMF firmware in a virtual machine, not a physical UEFI",
+   "cmd": "grep -a '^dbx ' {{out}}/results.txt",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^dbx vars\\.fd bytes=[0-9]+ has-shim-hash=0 has-decoy-hash=0$",
+    "^dbx vars-revoked\\.fd bytes=[0-9]+ has-shim-hash=1 has-decoy-hash=0$",
+    "^dbx vars-decoy\\.fd bytes=[0-9]+ has-shim-hash=0 has-decoy-hash=1$"
+   ]
+  },
+  {
+   "name": "control-without-the-dbx-entry-boots-the-whole-chain",
+   "basis": "design: handoff/tasks/SB-r7.md; EDK2/OVMF firmware in a virtual machine, not a physical UEFI",
+   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-c1.log | tr -d '\\r' | grep -aE 'GNU GRUB  version|node login:' | head -2; grep -a '^c1 result=' {{out}}/results.txt",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^GNU GRUB  version ",
+    "node login:",
+    "^c1 result=booted$"
+   ]
+  },
+  {
+   "name": "the-firmware-refuses-the-shim-whose-hash-is-in-dbx",
+   "basis": "design: handoff/tasks/SB-r7.md; EDK2/OVMF firmware in a virtual machine, not a physical UEFI",
+   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-c2.log | tr -d '\\r' | grep -aE 'BdsDxe: (loading|failed to load|No bootable)'; grep -a '^c2 result=' {{out}}/results.txt",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^BdsDxe: failed to load Boot0002 \"UEFI QEMU DVD-ROM[^\"]*\" from PciRoot\\(0x0\\)/Pci\\(0x[0-9a-f],0x0\\)/Sata\\(0x0,0xFFFF,0x0\\): Access Denied -- rejected probably by Secure Boot$",
+    "^BdsDxe: No bootable option or device was found\\.$",
+    "^c2 result=refused$"
+   ]
+  },
+  {
+   "name": "nothing-after-the-refusal-ran",
+   "basis": "design: handoff/tasks/SB-r7.md; EDK2/OVMF firmware in a virtual machine, not a physical UEFI",
+   "cmd": "n=$(sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-c2.log | tr -d '\\r' | grep -acE 'GNU GRUB|node login:|Linux version|MokManager'); echo LATER_STAGES=$n",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^LATER_STAGES=0$"
+   ]
+  },
+  {
+   "name": "a-dbx-entry-for-another-hash-does-not-block",
+   "basis": "design: handoff/tasks/SB-r7.md; EDK2/OVMF firmware in a virtual machine, not a physical UEFI",
+   "cmd": "sed 's/\\x1b\\[[0-9;?]*[A-Za-z]//g' {{out}}/serial-c3.log | tr -d '\\r' | grep -aE 'GNU GRUB  version|node login:' | head -2; grep -a '^c3 result=' {{out}}/results.txt",
+   "timeout": 30,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^GNU GRUB  version ",
+    "node login:",
+    "^c3 result=booted$"
+   ]
+  }
+ ]
+}
