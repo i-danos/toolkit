@@ -465,7 +465,7 @@ def source_dirs(sources_dir):
     return out
 
 
-DEFAULT_TAG_TIMEOUT = 900   # seconds allowed for the one-pass `git for-each-ref --contains` over the tags
+DEFAULT_TAG_TIMEOUT = 900   # seconds allowed for each of the two tag passes (`git tag --contains`, `git for-each-ref refs/tags`)
 DEFAULT_TAG_LIMIT = 200     # most tag tips the per-tip fallback / the unaligned-tag check will examine
 
 
@@ -486,7 +486,7 @@ def check_commit_published(repo_dir, commit, ls_remote_cache, timeout=90,
     Cost: a repository can have thousands of tags (linux-vyatta: 4221), and asking `merge-base --is-ancestor` of every tip
     is one subprocess per tip -- an hour for a single commit that no tip contains. So, in order:
       1. the branch tips (a handful) are asked one by one, as before;
-      2. the tags are asked in one pass: `git for-each-ref --contains=<commit> refs/tags` lists the local tags whose history
+      2. the tags are asked in one pass: `git tag --contains <commit>` lists the local tags whose history
          holds the commit. That answer is only trusted for a tag whose local object equals the remote's (same name, same
          object id); tags the clone lacks or has at another object are checked tip by tip, at most `tag_limit` of them.
          A hit is re-verified with one `merge-base --is-ancestor` against the REMOTE tip, so the result never rests on
@@ -551,7 +551,7 @@ def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout,
 
     names = sorted(tags)
     total = len(names)
-    tip = lambda n: tags[n].get("peeled") or tags[n].get("obj")   # the commit the tag names
+    tip = lambda n: tags[n].get("obj") or tags[n].get("peeled")   # as ls-remote lists it (annotated tags peel inside git)
     seen = 0                                                      # tag tips whose ancestry was actually read
     stop = ""                                                     # why the tag check is not exhaustive, if it is not
 
@@ -559,26 +559,30 @@ def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout,
         info.update(ref=n, ref_tip=tip(n))
         return True, f"ancestor of {n} ({tip(n)[:12]}) on {remote}", info
 
-    # 2. tags in one pass
+    # 2. tags in two cheap passes:
+    #    `git tag --contains <commit>` -> short names of the local tags whose history holds the commit. It is used instead of
+    #    `git for-each-ref --contains=<commit> refs/tags` because, measured on linux-vyatta (4221 tags), for-each-ref did not
+    #    finish in 300 s while `git tag --contains` took 13 s: same question, different (much faster) implementation path.
+    #    `git for-each-ref refs/tags` (no --contains) -> name -> object id of every local tag, to tell which tags sit at the
+    #    object the remote lists, i.e. which tags the --contains answer may be trusted for.
     local, contains, failed = {}, set(), ""
     try:
-        for want, store in (("--contains=" + commit, "contains"), (None, "local")):
-            cmd = ["git", "-C", repo, "for-each-ref", "--format=%(refname)\t%(objectname)"]
-            r = run(cmd + ([want] if want else []) + ["refs/tags"], timeout=tag_timeout)
+        r = run(["git", "-C", repo, "tag", "--contains", commit], timeout=tag_timeout)
+        if r.returncode != 0:
+            failed = f"git tag --contains failed: {r.stderr.strip()[-120:] or r.returncode}"
+        else:
+            contains = {"refs/tags/" + ln.strip() for ln in r.stdout.splitlines() if ln.strip()}   # git tag prints short names
+            r = run(["git", "-C", repo, "for-each-ref", "--format=%(refname)\t%(objectname)", "refs/tags"], timeout=tag_timeout)
             if r.returncode != 0:
                 failed = f"git for-each-ref failed: {r.stderr.strip()[-120:] or r.returncode}"
-                break
-            rows = [ln.split("\t") for ln in r.stdout.splitlines() if "\t" in ln]
-            if store == "contains":
-                contains = {n for n, _ in rows}
             else:
-                local = dict(rows)
+                local = dict(ln.split("\t") for ln in r.stdout.splitlines() if "\t" in ln)
     except subprocess.TimeoutExpired:
-        failed = f"git for-each-ref timed out after {tag_timeout}s"
+        failed = f"git tag --contains / for-each-ref timed out after {tag_timeout}s"
 
     if not failed:
         aligned = {n for n in names if local.get(n) == tags[n].get("obj")}
-        seen = len(aligned)       # `--contains` answered for all of these at once
+        seen = len(aligned)       # `git tag --contains` answered for all of these at once
         cands = [n for n in names if n in aligned and n in contains]
         for n in cands[:tag_limit]:
             r = _tip_is_ancestor(repo, commit, tip(n))        # the one re-verification, against the remote's tip
@@ -1356,7 +1360,7 @@ def main():
                     help="build-provenance JSON (commit + attestation hash per "
                          "package); without it no version-stamped commit is confirmed")
     ap.add_argument("--remote-check-tag-timeout", type=int, default=DEFAULT_TAG_TIMEOUT, metavar="SECONDS",
-                    help="seconds allowed for the one-pass `git for-each-ref --contains` over a source repository's tags "
+                    help="seconds allowed for each of the two tag passes (`git tag --contains`, `git for-each-ref refs/tags`) over a source repository's tags "
                          "(default %(default)s); on timeout or failure the capped tip-by-tip scan runs instead")
     ap.add_argument("--remote-check-tag-limit", type=int, default=DEFAULT_TAG_LIMIT, metavar="N",
                     help="most tag tips examined one by one when the one-pass answer is unavailable or a tag is not at the "
