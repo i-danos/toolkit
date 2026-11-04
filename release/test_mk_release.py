@@ -1013,6 +1013,50 @@ class PublishedTagScanTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(why.startswith("remote not reachable:"), why)
 
+    def ls_remotes(self, calls):
+        return [c[-1] for c in calls if "ls-remote" in c]
+
+    def test_falls_through_to_origin_when_i_danos_is_unreachable(self):
+        dead = str(self.td / "dead-i-danos.git")
+        self.git(self.work, "remote", "add", "origin", str(self.remote))     # origin is the reachable one
+        self.git(self.work, "remote", "set-url", "i-danos", dead)
+        (ok, why, info), calls = self.recorded(lambda: mk.check_commit_published(self.work, self.side, {}))
+        self.assertTrue(ok, why)
+        self.assertEqual(self.ls_remotes(calls), [dead, str(self.remote)], "i-danos is asked first, then origin")
+        self.assertEqual(info["remote_url"], str(self.remote), "the URL actually used, not the first one configured")
+        self.assertTrue(why.endswith("on " + str(self.remote)), why)
+        self.assertTrue(all("--heads" in c and "--tags" in c for c in calls if "ls-remote" in c), "only the ls-remote query is used")
+        self.assertFalse(any("fetch" in c for c in calls))
+
+    def test_both_remotes_failing_lists_both_and_why(self):
+        dead1, dead2 = str(self.td / "dead-one.git"), str(self.td / "dead-two.git")
+        self.git(self.work, "remote", "add", "origin", dead2)
+        self.git(self.work, "remote", "set-url", "i-danos", dead1)
+        ok, why, info = mk.check_commit_published(self.work, self.side, {})
+        self.assertFalse(ok)
+        self.assertTrue(why.startswith("remote not reachable:"), why)
+        for name, url in (("i-danos", dead1), ("origin", dead2)):
+            self.assertIn(name, why)
+            self.assertIn(url, why)
+        self.assertEqual(why.count("does not appear to be a git repository"), 2, "each remote's own reason is kept: " + why)
+        self.assertIsNone(info["remote_url"])
+
+    def test_a_working_i_danos_means_origin_is_never_asked(self):
+        dead = str(self.td / "dead-origin.git")
+        self.git(self.work, "remote", "add", "origin", dead)
+        (ok, why, info), calls = self.recorded(lambda: mk.check_commit_published(self.work, self.side, {}))
+        self.assertTrue(ok, why)
+        self.assertEqual(self.ls_remotes(calls), [str(self.remote)])
+        self.assertEqual(info["remote_url"], str(self.remote))
+        self.assertTrue(why.endswith("on " + str(self.remote)), why)
+
+    def test_one_url_under_two_names_is_asked_once(self):
+        self.git(self.work, "remote", "add", "origin", str(self.remote))
+        self.git(self.work, "remote", "set-url", "i-danos", str(self.remote))
+        self.git(self.work, "push", "-q", "origin", "master")
+        _, calls = self.recorded(lambda: mk.check_commit_published(self.work, self.nowhere, {}))
+        self.assertEqual(self.ls_remotes(calls), [str(self.remote)])
+
     def test_the_same_commit_is_not_worked_out_twice(self):
         cache = {}
         first = mk.check_commit_published(self.work, self.side, cache)
