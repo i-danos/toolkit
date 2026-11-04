@@ -469,6 +469,14 @@ DEFAULT_TAG_TIMEOUT = 900   # seconds allowed for each of the two tag passes (`g
 DEFAULT_TAG_LIMIT = 200     # most tag tips the per-tip fallback / the unaligned-tag check will examine
 
 
+def _ls_remote_reason(stderr):
+    """git's complaint as one line: its fixed 'Please make sure ...' boilerplate dropped, the rest kept from the start
+    (the old tail-160-characters cut the beginning off, e.g. 'om: Permission denied (publickey)')."""
+    keep = [ln.strip() for ln in stderr.splitlines()
+            if ln.strip() and not ln.startswith(("Please make sure", "and the repository exists"))]
+    return " | ".join(keep)[:300]
+
+
 def _tip_is_ancestor(repo, commit, sha):
     """True / False if `commit` is / is not an ancestor of `sha`; None if the clone does not have `sha` (cannot be read)."""
     if run(["git", "-C", repo, "cat-file", "-e", sha + "^{commit}"]).returncode != 0:
@@ -509,25 +517,35 @@ def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout,
     info = {"repository": str(repo), "remote_url": None, "ref": None, "ref_tip": None}
     if run(["git", "-C", repo, "cat-file", "-e", commit + "^{commit}"]).returncode != 0:
         return False, "the commit is not in the local clone of the source repository", info
-    remote = None
+    remotes = []                      # (name, url) in preference order; the same URL under two names is tried once
     for name in ("i-danos", "origin"):
         r = run(["git", "-C", repo, "remote", "get-url", name])
-        if r.returncode == 0 and r.stdout.strip():
-            remote = r.stdout.strip()
+        url = r.stdout.strip() if r.returncode == 0 else ""
+        if url and url not in [u for _, u in remotes]:
+            remotes.append((name, url))
+    if not remotes:
+        return False, "the source repository has no i-danos/origin remote", info
+    # Ask `git ls-remote --heads --tags` of each remote in turn and use the first that answers: i-danos is the writable
+    # one (ssh) and may be unusable where origin (https, anonymous read) still works. Only this query is used, never a fetch.
+    # Every failure is kept so that "not reachable" can say which remotes were tried and why each failed.
+    remote, tips, failures = None, None, []
+    for name, url in remotes:
+        if url not in ls_remote_cache:
+            try:
+                r = run(["git", "-C", repo, "ls-remote", "--heads", "--tags", url], timeout=timeout)
+                got = [ln.split("\t") for ln in r.stdout.splitlines() if "\t" in ln] if r.returncode == 0 else None
+                ls_remote_cache[url] = got if got else (None, _ls_remote_reason(r.stderr))
+            except subprocess.TimeoutExpired:
+                ls_remote_cache[url] = (None, f"git ls-remote timed out after {timeout}s")
+        answer = ls_remote_cache[url]
+        if isinstance(answer, tuple):
+            failures.append(f"{name} ({url}): {answer[1] or 'no refs listed'}")
+        else:
+            remote, tips = url, answer
             break
     if remote is None:
-        return False, "the source repository has no i-danos/origin remote", info
-    info["remote_url"] = remote
-    if remote not in ls_remote_cache:
-        try:
-            r = run(["git", "-C", repo, "ls-remote", "--heads", "--tags", remote], timeout=timeout)
-            tips = [ln.split("\t") for ln in r.stdout.splitlines() if "\t" in ln] if r.returncode == 0 else None
-            ls_remote_cache[remote] = tips if tips else (None, r.stderr.strip()[-160:])
-        except subprocess.TimeoutExpired:
-            ls_remote_cache[remote] = (None, f"git ls-remote timed out after {timeout}s")
-    tips = ls_remote_cache[remote]
-    if isinstance(tips, tuple):
-        return False, f"remote not reachable: {tips[1] or 'no refs listed'}", info
+        return False, "remote not reachable: " + "; ".join(failures), info
+    info["remote_url"] = remote       # the URL actually used; the message below says "on <remote>" with the same value
 
     heads, tags = [], {}          # tags: ref -> {"obj": tag object id, "peeled": commit it points at}
     for sha, ref in tips:
