@@ -60,7 +60,13 @@ class VerificationSummaryTest(unittest.TestCase):
     def test_non_pass_rows_are_not_upgraded(self):
         s = statuses("never-built-audit-input.iso")
         self.assertEqual(s["real_nic_hardware"], "NOT_APPLICABLE")
-        self.assertEqual(s["dpa_object_model_extension"], "NOT_RUN")
+        self.assertEqual(s["dpa_object_model_tunnel"], "NOT_RUN")
+        self.assertEqual(s["dpa_object_model_acl"], "NOT_RUN")
+        # qos is declared PASS in the table but carries no signed, artifact-bound
+        # case for this image, so the release gate must still report NOT_RUN. The
+        # split (2026-11-05) replaced one umbrella NOT_RUN row with three.
+        self.assertEqual(s["dpa_object_model_qos"], "NOT_RUN")
+        self.assertNotIn("dpa_object_model_extension", s)
 
 
 
