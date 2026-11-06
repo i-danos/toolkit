@@ -161,5 +161,113 @@ class T_(unittest.TestCase):
         self.assertEqual(cap.judge(out)[0], 1)   # nothing to judge is not a pass
 
 
+def prog(prefix, ts, result="ok", state="no_support", op="add", pid="7", table=254, scope=0, src=True):
+    msg = ("ROUTE: programmed cls=route op=%s vrf=1 table=%d prefix=%s scope=%d result=%s sw_state=full state=%s backend=sw-dataplane "
+           "mono_ns=5000 wall_ns=%d" % (op, table, prefix, scope, result, state, int(ts * 1e9)))
+    row = {"MESSAGE": msg, "_PID": pid, "__REALTIME_TIMESTAMP": str(int((ts + 0.002) * 1e6))}  # journald logs ~2 ms after the datagram arrived
+    if src:
+        row["_SOURCE_REALTIME_TIMESTAMP"] = str(int(ts * 1e6))
+    return json.dumps(row)
+
+
+class Comp:
+    """completion-record mode: nl.jsonl + completion.jsonl, with or without a snapshot directory"""
+    def __init__(self, tc, deliveries, completions, with_snaps=False):
+        self.d = Path(tempfile.mkdtemp()); tc.addCleanup(lambda: __import__("shutil").rmtree(self.d, True))
+        (self.d / "nl.jsonl").write_text("\n".join(deliveries) + "\n")
+        (self.d / "completion.jsonl").write_text("\n".join(completions) + "\n")
+        self.with_snaps = with_snaps
+        if with_snaps:
+            (self.d / "snaps.log").write_text("0 %.9f %.9f 0\n1 %.9f %.9f 0\n" % (T - 0.05, T - 0.04, T + 0.02, T + 0.03))
+            (self.d / "snap-0.json").write_text(json.dumps({"dpa_objects": {"classes": [], "objects": []}}))
+            (self.d / "snap-1.json").write_text(json.dumps({"dpa_objects": {"classes": [], "objects": [route(P)]}}))
+
+    def run(self, *extra):
+        out = self.d / "tx.json"
+        cmd = [sys.executable, str(HERE / "dpa-broker-dp-correlate.py"), "--nl", str(self.d / "nl.jsonl"),
+               "--completions", str(self.d / "completion.jsonl"), "--out", str(out), *extra]
+        if self.with_snaps:
+            cmd += ["--snaps", str(self.d)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return json.loads(out.read_text()), out
+
+    judge = Cap.judge
+
+
+class C_(unittest.TestCase):
+    def test_the_completion_is_the_data_planes_own_record_and_its_gap_is_measured(self):
+        doc, out = Comp(self, [nl(P, T + 0.001).replace('"__REALTIME_TIMESTAMP"', '"_SOURCE_REALTIME_TIMESTAMP": "%d", "__REALTIME_TIMESTAMP"' % int((T + 0.001) * 1e6))],
+                        [prog(P, T + 0.001046)]).run()
+        t = doc["transactions"][0]
+        c = t["completion"]
+        self.assertEqual((c["result"], c["state"], c["sw_state"], c["backend"], c["op"]), ("ok", "no_support", "full", "sw-dataplane", "add"))
+        self.assertAlmostEqual(c["lag_seconds"], 0.000046, places=6)
+        self.assertGreaterEqual(c["timestamp"], t["delivery"]["timestamp"])
+        self.assertEqual((c["mono_ns"], c["pid"]), (5000, "7"))
+        self.assertIn("_SOURCE_REALTIME_TIMESTAMP", c["source"])
+        self.assertEqual(doc["method"]["completion_source"], "programmed-records")
+
+    def test_strict_and_default_readings_agree_because_result_is_the_records_word(self):
+        cap = Comp(self, [nl(P, T)], [prog(P, T + 0.0001)])
+        strict, out_s = cap.run("--ok-states", "full")
+        default, out_d = cap.run()
+        self.assertEqual(strict["transactions"][0]["completion"]["result"], "ok")
+        self.assertEqual(strict["transactions"], default["transactions"])
+        self.assertEqual(cap.judge(out_s)[0], 0)
+        self.assertEqual(cap.judge(out_d)[0], 0)
+
+    def test_a_record_that_says_error_is_not_turned_into_ok(self):
+        cap = Comp(self, [nl(P, T)], [prog(P, T + 0.0001, result="error", state="no_resource")])
+        doc, out = cap.run("--ok-states", "full,no_support,no_resource")
+        self.assertEqual(doc["transactions"][0]["completion"]["result"], "error")
+        rc, text = cap.judge(out)
+        self.assertEqual(rc, 1, text)
+
+    def test_a_delivery_with_no_record_gets_no_completion_and_the_judge_refuses(self):
+        cap = Comp(self, [nl(P, T)], [prog("10.99.0.0/24", T + 0.0001)])
+        doc, out = cap.run()
+        self.assertIsNone(doc["transactions"][0]["completion"])
+        self.assertEqual(cap.judge(out)[0], 1)
+        self.assertEqual(doc["method"]["unmatched_completion_records"][0]["prefix"], "10.99.0.0/24")
+
+    def test_a_record_from_before_the_delivery_or_from_another_process_is_not_the_completion(self):
+        cap = Comp(self, [nl(P, T)], [prog(P, T - 0.5), prog(P, T + 0.0001, pid="999")])
+        doc, out = cap.run()
+        self.assertIsNone(doc["transactions"][0]["completion"])
+
+    def test_an_update_record_does_not_complete_an_add_delivery(self):
+        cap = Comp(self, [nl(P, T)], [prog(P, T + 0.0001, op="update")])
+        self.assertIsNone(cap.run()[0]["transactions"][0]["completion"])
+
+    def test_two_deliveries_of_one_prefix_each_take_their_own_record_in_order(self):
+        cap = Comp(self, [nl(P, T), nl(P, T + 1.0)], [prog(P, T + 0.0002), prog(P, T + 1.0003)])
+        txs = cap.run()[0]["transactions"]
+        self.assertEqual([round(t["completion"]["lag_seconds"], 4) for t in txs], [0.0002, 0.0003])
+
+    def test_the_source_stamp_is_preferred_and_journald_time_is_the_fallback(self):
+        cap = Comp(self, [nl(P, T)], [prog(P, T + 0.0005, src=True)])
+        c = cap.run()[0]["transactions"][0]["completion"]
+        self.assertAlmostEqual(c["timestamp"], T + 0.0005, places=6)           # not the +2 ms journald stamp
+        cap = Comp(self, [nl(P, T)], [prog(P, T + 0.0005, src=False)])
+        c = cap.run()[0]["transactions"][0]["completion"]
+        self.assertAlmostEqual(c["timestamp"], T + 0.0025, places=6)           # fallback: __REALTIME_TIMESTAMP
+        self.assertIn("__REALTIME_TIMESTAMP", c["source"])
+
+    def test_snapshots_are_optional_and_when_given_only_add_the_polled_bound_for_comparison(self):
+        doc, _ = Comp(self, [nl(P, T)], [prog(P, T + 0.0001)]).run()
+        self.assertNotIn("polled_upper_bound", doc["transactions"][0])
+        doc, out = (cap := Comp(self, [nl(P, T)], [prog(P, T + 0.0001)], with_snaps=True)).run("--ok-states", "full")
+        t = doc["transactions"][0]
+        self.assertEqual(t["completion"]["result"], "ok")                       # the record, not the strict snapshot reading
+        self.assertAlmostEqual(t["polled_upper_bound"]["timestamp"], T + 0.03, places=6)
+        self.assertEqual(cap.judge(out)[0], 0)
+
+    def test_without_completions_snaps_is_still_required(self):
+        r = subprocess.run([sys.executable, str(HERE / "dpa-broker-dp-correlate.py"), "--nl", "/nonexistent"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--snaps is required", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

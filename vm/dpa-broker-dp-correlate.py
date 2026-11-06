@@ -29,7 +29,20 @@ Limits, by construction: a route installed and removed between two snapshots is 
 ms); two deliveries for the SAME prefix are indistinguishable (one key); a delivery whose installation was deferred
 (incomplete_route_add_nl) gets no completion at all, which is the correct answer. DELROUTE lines are listed under "ignored".
 
-Usage: dpa-broker-dp-correlate.py --nl nl.jsonl --snaps DIR [--ok-states a,b] [--out transactions.json]
+COMPLETION RECORDS (vyatta-dataplane >= 3.14.46). The data plane now writes one line when it has finished programming a route:
+
+  ROUTE: programmed cls=route op=add vrf=1 table=254 prefix=P scope=0 result=ok sw_state=full state=S backend=B mono_ns=N wall_ns=N
+
+With --completions FILE (the same journal, `grep 'ROUTE: programmed'`, -o json) the completion of a delivery is that line itself: the
+first unused record with the same table/prefix/scope, op=add, from the same pid, stamped at or after the delivery. Its journal stamp
+(_SOURCE_REALTIME_TIMESTAMP, else __REALTIME_TIMESTAMP) is on the same clock as the delivery's, so the order and the gap are measured, not bounded by a poll. `result` is the record's own
+word (ok / not_needed / error), not a mapping of the backend state, so --ok-states plays no part in this mode and the strict and the
+default reading cannot differ. A delivery with no matching record gets completion null (deferred, failed before the record, or the
+data plane predates 3.14.46). --snaps is then optional: given, it supplies the capture window and each transaction also carries the
+polled upper bound for comparison; absent, every delivery in --nl is used.
+
+Usage: dpa-broker-dp-correlate.py --nl nl.jsonl [--completions completion.jsonl] [--snaps DIR] [--ok-states a,b] [--out transactions.json]
+  (--snaps is required unless --completions is given)
   DIR holds snaps.log ("<n> <start> <end> <rc>") and snap-<n>.json (the raw `dpa object show route` output).
 Exit 0 always when the inputs are readable (a missing completion is data, not an error); 2 on unreadable input.
 """
@@ -44,6 +57,16 @@ LINE = re.compile(r"^ROUTE: (?P<verb>RTM_NEWROUTE|RTM_DELROUTE) table (?P<table>
 DEFAULT_OK = ("full", "not_needed", "no_support")
 
 
+def stamp(row):
+    """(seconds, field) of a journal row. _SOURCE_REALTIME_TIMESTAMP is when the syslog datagram reached the journal socket, i.e. when
+    the data plane wrote the line; __REALTIME_TIMESTAMP is when journald got round to it (measured here ~2 ms later and jittery), so the
+    source stamp is preferred and __REALTIME_TIMESTAMP is the fallback for rows that lack it. Same CLOCK_REALTIME either way."""
+    for f in ("_SOURCE_REALTIME_TIMESTAMP", "__REALTIME_TIMESTAMP"):
+        if f in row:
+            return int(row[f]) / 1e6, f
+    return None, None
+
+
 def read_deliveries(path):
     out, ignored = [], []
     for ln in Path(path).read_text().splitlines():
@@ -52,14 +75,60 @@ def read_deliveries(path):
         except json.JSONDecodeError:
             continue
         m = LINE.match(row.get("MESSAGE", ""))
-        if not m or "__REALTIME_TIMESTAMP" not in row:
+        ts, field = stamp(row)
+        if not m or ts is None:
             continue
         rec = {"verb": m["verb"], "table": m["table"], "scope": m["scope"], "prefix": m["prefix"],
-               "timestamp": int(row["__REALTIME_TIMESTAMP"]) / 1e6, "line": row["MESSAGE"].strip(),
-               "pid": row.get("_PID"), "source": "journalctl -u vyatta-dataplane -o json __REALTIME_TIMESTAMP"}
+               "timestamp": ts, "line": row["MESSAGE"].strip(),
+               "pid": row.get("_PID"), "source": "journalctl -u vyatta-dataplane -o json " + field}
         (out if m["verb"] == "RTM_NEWROUTE" else ignored).append(rec)
     out.sort(key=lambda r: r["timestamp"])
     return out, ignored
+
+
+PROG = re.compile(r"^ROUTE: programmed (?P<kv>(?:\S+=\S+ ?)+)$")
+
+
+def read_completions(path):
+    out = []
+    for ln in Path(path).read_text().splitlines():
+        try:
+            row = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        m = PROG.match(row.get("MESSAGE", "").strip())
+        ts, field = stamp(row)
+        if not m or ts is None:
+            continue
+        kv = dict(p.split("=", 1) for p in m["kv"].split())
+        kv.update(timestamp=ts, stamp_field=field, line=row["MESSAGE"].strip(), pid=row.get("_PID"))
+        out.append(kv)
+    out.sort(key=lambda r: r["timestamp"])
+    return out
+
+
+def match_completions(deliveries, comps):
+    """Pair each delivery with the first unused completion record for the same route. Returns (transactions, unmatched records)."""
+    used, tx = set(), []
+    for dl in deliveries:
+        rec = {"prefix": dl["prefix"], "delivery": {kk: dl[kk] for kk in ("timestamp", "line", "pid", "source")}, "completion": None}
+        for i, c in enumerate(comps):
+            if i in used or c.get("op") != "add" or c.get("cls") != "route" or c["timestamp"] < dl["timestamp"]:
+                continue
+            if (c.get("table"), c.get("prefix"), c.get("scope"), c["pid"]) != (dl["table"], dl["prefix"], dl["scope"], dl["pid"]):
+                continue
+            used.add(i)
+            rec["completion"] = {
+                "timestamp": c["timestamp"], "result": c.get("result", "unknown"), "state": c.get("state"), "sw_state": c.get("sw_state"),
+                "backend": c.get("backend"), "op": c["op"], "mono_ns": int(c["mono_ns"]), "wall_ns": int(c["wall_ns"]), "line": c["line"],
+                "pid": c["pid"], "lag_seconds": c["timestamp"] - dl["timestamp"],
+                "source": "journalctl -u vyatta-dataplane -o json " + c["stamp_field"],
+                "basis": "the data plane's own 'programmed' record, written after lpm_add() and the forwarding-backend step (measured, not polled)"}
+            break
+        if rec["completion"] is None:
+            rec["note"] = "no 'programmed' record followed this delivery: deferred, failed before the record, or a data plane older than 3.14.46"
+        tx.append(rec)
+    return tx, [c for i, c in enumerate(comps) if i not in used]
 
 
 def read_snapshots(d):
@@ -124,13 +193,17 @@ def correlate(deliveries, snaps, ok_states):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--nl", required=True)
-    ap.add_argument("--snaps", required=True)
+    ap.add_argument("--snaps")
+    ap.add_argument("--completions", help="journal -o json lines containing 'ROUTE: programmed' (data plane >= 3.14.46)")
     ap.add_argument("--ok-states", default=",".join(DEFAULT_OK))
     ap.add_argument("--out")
     a = ap.parse_args()
+    if not a.snaps and not a.completions:
+        ap.error("--snaps is required unless --completions is given")
     try:
         deliveries, ignored = read_deliveries(a.nl)
-        snaps, skipped = read_snapshots(a.snaps)
+        snaps, skipped = read_snapshots(a.snaps) if a.snaps else ([], [])
+        comps = read_completions(a.completions) if a.completions else None
     except OSError as e:
         print("unreadable input: %s" % e, file=sys.stderr)
         return 2
@@ -142,8 +215,19 @@ def main():
         outside = [dict(d, why="stamped outside the capture window %.6f..%.6f (an earlier run's line, or the data plane before polling began)" % (lo, hi))
                    for d in deliveries if not (lo <= d["timestamp"] <= hi)]
         deliveries = inside
-    doc = {"transactions": correlate(deliveries, snaps, ok),
-           "method": {"ok_states": list(ok), "snapshots_used": len(snaps), "snapshots_skipped": skipped,
+    unmatched = []
+    if comps is not None:
+        txs, unmatched = match_completions(deliveries, comps)
+        if snaps:  # keep the old polled bound next to the measured completion, for comparison only
+            for t, p in zip(txs, correlate(deliveries, snaps, ok)):
+                if p.get("completion"):
+                    t["polled_upper_bound"] = {"timestamp": p["completion"]["timestamp"], "uncertainty_seconds": p["completion"]["uncertainty_seconds"]}
+    else:
+        txs = correlate(deliveries, snaps, ok)
+    doc = {"transactions": txs,
+           "method": {"completion_source": "programmed-records" if comps is not None else "polled-snapshots",
+                      "unmatched_completion_records": [{"prefix": u.get("prefix"), "op": u.get("op"), "timestamp": u["timestamp"]} for u in unmatched],
+                      "ok_states": list(ok) if comps is None else "unused (result comes from the record)", "snapshots_used": len(snaps), "snapshots_skipped": skipped,
                       "ignored_deliveries": [{"verb": i["verb"], "prefix": i["prefix"], "timestamp": i["timestamp"]} for i in ignored]
                       + [{"verb": o["verb"], "prefix": o["prefix"], "timestamp": o["timestamp"], "why": o["why"]} for o in outside]}}
     text = json.dumps(doc, indent=1) + "\n"
