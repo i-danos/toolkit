@@ -1,0 +1,142 @@
+{
+ "id": "dpa_object_model_qos",
+ "item": "dpa_object_model_qos",
+ "suite_commit": "auto",
+ "description": "On an installed guest, the data plane's qos-if and qos-vlan classes are enumerable and track `policy qos`: no objects before any QoS policy is committed, exactly qos-if:dp0s4 and qos-vlan:dp0s4/100 (state full, backend sw-dataplane) after the commit, none again after it is removed; and the unchanged judge toolkit/vm/judge-dpa-object-model-extension.py --require qos-if,qos-vlan accepts the live `dpa object show` output. The guest is the guest of the image under test (booted from the disk the installer wrote); the case drives it over ssh through the danos-robot container (192.168.203.1, port 2302).",
+ "basis": [
+  "observed: acceptance-p05/dpa-r1/raw/10..13 (same configuration, same keys, state full, backend sw-dataplane, judge rc=0)",
+  "required case names: handoff/verify/suite-config.json items.dpa_object_model_qos",
+  "limit: state=full / backend=sw-dataplane is what this software-only data plane answers for QoS; no hardware FAL backend is exercised",
+  "limit: the judge reads only the class table (enumerable true/false); the per-object assertions here are what checks the objects"
+ ],
+ "steps": [
+  {
+   "name": "guest-is-up",
+   "basis": "design: the claim is about a running guest; 192.168.203.1:2302 is the host-forwarded ssh of the QEMU guest booted by boot-vm.sh BOOT=disk",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nS \"echo UP_QOS\" 2>&1 | tail -1\n",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^UP_QOS$"
+   ],
+   "abort_on_fail": true
+  },
+  {
+   "name": "qos-if-has-no-objects-before-policy-qos",
+   "basis": "observed: dpa-r1 raw/04-qos-if.txt (class enumerable, objects empty) on an unconfigured guest",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nshow() { raw=$(S \"echo vyatta | sudo -S -p '' /opt/vyatta/bin/vplsh -l -c 'dpa object show $2' 2>/dev/null\"); rc=$?; printf '%s' \"$raw\" > \"/home/aikon/danos/acceptance-p05/qos-r1/raw/$1-$2.json\"; printf '%s' \"$raw\" | python3 -c '\nimport json,sys\ntag,cls,rc=sys.argv[1:4]\ntry:\n    d=json.loads(sys.stdin.read())[\"dpa_objects\"]\nexcept Exception as e:\n    print(\"%s %s rc=%s UNREADABLE %s\"%(tag,cls,rc,type(e).__name__)); sys.exit(0)\nc=[x for x in d[\"classes\"] if x[\"class\"]==cls]\no=d[\"objects\"]\ns=\"%s %s rc=%s enumerable=%s objects=%d\"%(tag,cls,rc,str(bool(c and c[0].get(\"enumerable\"))).lower(),len(o))\nfor x in o: s+=\" key=%s state=%s backend=%s\"%(x[\"key\"],x[\"state\"],x[\"backend\"])\nprint(s)' \"$1\" \"$2\" \"$rc\"; }\nshow BEFORE qos-if\n",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^BEFORE qos-if rc=0 enumerable=true objects=0$"
+   ],
+   "expect_not_regex": [
+    "UNREADABLE"
+   ]
+  },
+  {
+   "name": "qos-vlan-has-no-objects-before-policy-qos",
+   "basis": "observed: dpa-r1 raw/05-qos-vlan.txt",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nshow() { raw=$(S \"echo vyatta | sudo -S -p '' /opt/vyatta/bin/vplsh -l -c 'dpa object show $2' 2>/dev/null\"); rc=$?; printf '%s' \"$raw\" > \"/home/aikon/danos/acceptance-p05/qos-r1/raw/$1-$2.json\"; printf '%s' \"$raw\" | python3 -c '\nimport json,sys\ntag,cls,rc=sys.argv[1:4]\ntry:\n    d=json.loads(sys.stdin.read())[\"dpa_objects\"]\nexcept Exception as e:\n    print(\"%s %s rc=%s UNREADABLE %s\"%(tag,cls,rc,type(e).__name__)); sys.exit(0)\nc=[x for x in d[\"classes\"] if x[\"class\"]==cls]\no=d[\"objects\"]\ns=\"%s %s rc=%s enumerable=%s objects=%d\"%(tag,cls,rc,str(bool(c and c[0].get(\"enumerable\"))).lower(),len(o))\nfor x in o: s+=\" key=%s state=%s backend=%s\"%(x[\"key\"],x[\"state\"],x[\"backend\"])\nprint(s)' \"$1\" \"$2\" \"$rc\"; }\nshow BEFORE qos-vlan\n",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^BEFORE qos-vlan rc=0 enumerable=true objects=0$"
+   ],
+   "expect_not_regex": [
+    "UNREADABLE"
+   ]
+  },
+  {
+   "name": "policy-qos-commit-succeeds",
+   "basis": "observed: dpa-r1 raw/10-qos-config.txt (same ten set commands, COMMIT_DONE rc=0)",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nS \"echo vyatta | sudo -S -p '' runuser -u vyatta -- bash -c 'SID=\\$\\$; eval \\\"\\$(cli-shell-api getSessionEnv \\$SID)\\\"; cli-shell-api setupSession; for c in \\\"\\$@\\\"; do vcli -s \\$SID -c \\\"\\$c\\\" 2>&1 | grep -v \\\"Node exists\\\"; done; vcli -s \\$SID -c commit 2>&1; echo COMMIT_DONE rc=\\$?; cli-shell-api teardownSession' _ 'set policy qos name Q1 shaper bandwidth 1Gbit' 'set policy qos name Q1 shaper default P1' 'set policy qos name Q1 shaper profile P1 bandwidth 1Gbit' 'set policy qos name Q2 shaper bandwidth 100Mbit' 'set policy qos name Q2 shaper default P2' 'set policy qos name Q2 shaper profile P2 bandwidth 100Mbit' 'set interfaces dataplane dp0s4 address 10.77.0.1/24' 'set interfaces dataplane dp0s4 policy qos Q1' 'set interfaces dataplane dp0s4 vif 100 address 10.78.0.1/24' 'set interfaces dataplane dp0s4 vif 100 policy qos Q2'\" 2>&1 | grep -E 'COMMIT_DONE|ailed|rror'\n",
+   "timeout": 300,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^COMMIT_DONE rc=0$"
+   ],
+   "expect_not_regex": [
+    "ailed",
+    "rror"
+   ],
+   "abort_on_fail": true
+  },
+  {
+   "name": "qos-if-lists-dp0s4-full-on-sw-dataplane-after-commit",
+   "basis": "observed: dpa-r1 raw/11-qos-if-configured.txt",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nshow() { raw=$(S \"echo vyatta | sudo -S -p '' /opt/vyatta/bin/vplsh -l -c 'dpa object show $2' 2>/dev/null\"); rc=$?; printf '%s' \"$raw\" > \"/home/aikon/danos/acceptance-p05/qos-r1/raw/$1-$2.json\"; printf '%s' \"$raw\" | python3 -c '\nimport json,sys\ntag,cls,rc=sys.argv[1:4]\ntry:\n    d=json.loads(sys.stdin.read())[\"dpa_objects\"]\nexcept Exception as e:\n    print(\"%s %s rc=%s UNREADABLE %s\"%(tag,cls,rc,type(e).__name__)); sys.exit(0)\nc=[x for x in d[\"classes\"] if x[\"class\"]==cls]\no=d[\"objects\"]\ns=\"%s %s rc=%s enumerable=%s objects=%d\"%(tag,cls,rc,str(bool(c and c[0].get(\"enumerable\"))).lower(),len(o))\nfor x in o: s+=\" key=%s state=%s backend=%s\"%(x[\"key\"],x[\"state\"],x[\"backend\"])\nprint(s)' \"$1\" \"$2\" \"$rc\"; }\nshow AFTER qos-if\n",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^AFTER qos-if rc=0 enumerable=true objects=1 key=qos-if:dp0s4 state=full backend=sw-dataplane$"
+   ],
+   "expect_not_regex": [
+    "UNREADABLE"
+   ]
+  },
+  {
+   "name": "qos-vlan-lists-dp0s4-vif100-full-on-sw-dataplane-after-commit",
+   "basis": "observed: dpa-r1 raw/12-qos-vlan-configured.txt",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nshow() { raw=$(S \"echo vyatta | sudo -S -p '' /opt/vyatta/bin/vplsh -l -c 'dpa object show $2' 2>/dev/null\"); rc=$?; printf '%s' \"$raw\" > \"/home/aikon/danos/acceptance-p05/qos-r1/raw/$1-$2.json\"; printf '%s' \"$raw\" | python3 -c '\nimport json,sys\ntag,cls,rc=sys.argv[1:4]\ntry:\n    d=json.loads(sys.stdin.read())[\"dpa_objects\"]\nexcept Exception as e:\n    print(\"%s %s rc=%s UNREADABLE %s\"%(tag,cls,rc,type(e).__name__)); sys.exit(0)\nc=[x for x in d[\"classes\"] if x[\"class\"]==cls]\no=d[\"objects\"]\ns=\"%s %s rc=%s enumerable=%s objects=%d\"%(tag,cls,rc,str(bool(c and c[0].get(\"enumerable\"))).lower(),len(o))\nfor x in o: s+=\" key=%s state=%s backend=%s\"%(x[\"key\"],x[\"state\"],x[\"backend\"])\nprint(s)' \"$1\" \"$2\" \"$rc\"; }\nshow AFTER qos-vlan\n",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^AFTER qos-vlan rc=0 enumerable=true objects=1 key=qos-vlan:dp0s4/100 state=full backend=sw-dataplane$"
+   ],
+   "expect_not_regex": [
+    "UNREADABLE"
+   ]
+  },
+  {
+   "name": "judge-accepts-qos-if-and-qos-vlan-as-enumerable",
+   "basis": "design: the item's criterion is the judge's rc=0 on the live `dpa object show` output; the judge and its --require are unchanged",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nS \"echo vyatta | sudo -S -p '' /opt/vyatta/bin/vplsh -l -c 'dpa object show' 2>/dev/null\" > /home/aikon/danos/acceptance-p05/qos-r1/raw/judge-input-full.json\npython3 /home/aikon/danos/build-iso/danos-sources/toolkit/vm/judge-dpa-object-model-extension.py /home/aikon/danos/acceptance-p05/qos-r1/raw/judge-input-full.json --require qos-if,qos-vlan\necho \"JUDGE rc=$?\"\n",
+   "timeout": 120,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^PASS: all of qos-if, qos-vlan are enumerable$",
+    "^JUDGE rc=0$"
+   ]
+  },
+  {
+   "name": "judge-still-refuses-a-class-the-data-plane-does-not-have",
+   "basis": "design: negative control, the same input with a class that has no entry (tunnel) must be refused, so the PASS above is not vacuous",
+   "cmd": "python3 /home/aikon/danos/build-iso/danos-sources/toolkit/vm/judge-dpa-object-model-extension.py /home/aikon/danos/acceptance-p05/qos-r1/raw/judge-input-full.json --require qos-if,qos-vlan,tunnel\necho \"JUDGE-NEG rc=$?\"\n",
+   "timeout": 60,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^FAIL: .*tunnel",
+    "^JUDGE-NEG rc=1$"
+   ]
+  },
+  {
+   "name": "policy-qos-removal-commits",
+   "basis": "design: restores the guest and is the other half of the causal claim",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nS \"echo vyatta | sudo -S -p '' runuser -u vyatta -- bash -c 'SID=\\$\\$; eval \\\"\\$(cli-shell-api getSessionEnv \\$SID)\\\"; cli-shell-api setupSession; for c in \\\"\\$@\\\"; do vcli -s \\$SID -c \\\"\\$c\\\" 2>&1 | grep -v \\\"Node exists\\\"; done; vcli -s \\$SID -c commit 2>&1; echo COMMIT_DONE rc=\\$?; cli-shell-api teardownSession' _ 'delete interfaces dataplane dp0s4 vif 100' 'delete interfaces dataplane dp0s4 policy' 'delete interfaces dataplane dp0s4 address' 'delete policy qos'\" 2>&1 | grep -E 'COMMIT_DONE|ailed|rror'\n",
+   "timeout": 300,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^COMMIT_DONE rc=0$"
+   ],
+   "expect_not_regex": [
+    "ailed",
+    "rror"
+   ]
+  },
+  {
+   "name": "qos-objects-are-gone-after-removal",
+   "basis": "design: objects appear with the policy and disappear with it",
+   "cmd": "S() { docker exec danos-robot timeout 120 sshpass -p vyatta ssh -p 2302 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR vyatta@192.168.203.1 \"$1\"; }\nshow() { raw=$(S \"echo vyatta | sudo -S -p '' /opt/vyatta/bin/vplsh -l -c 'dpa object show $2' 2>/dev/null\"); rc=$?; printf '%s' \"$raw\" > \"/home/aikon/danos/acceptance-p05/qos-r1/raw/$1-$2.json\"; printf '%s' \"$raw\" | python3 -c '\nimport json,sys\ntag,cls,rc=sys.argv[1:4]\ntry:\n    d=json.loads(sys.stdin.read())[\"dpa_objects\"]\nexcept Exception as e:\n    print(\"%s %s rc=%s UNREADABLE %s\"%(tag,cls,rc,type(e).__name__)); sys.exit(0)\nc=[x for x in d[\"classes\"] if x[\"class\"]==cls]\no=d[\"objects\"]\ns=\"%s %s rc=%s enumerable=%s objects=%d\"%(tag,cls,rc,str(bool(c and c[0].get(\"enumerable\"))).lower(),len(o))\nfor x in o: s+=\" key=%s state=%s backend=%s\"%(x[\"key\"],x[\"state\"],x[\"backend\"])\nprint(s)' \"$1\" \"$2\" \"$rc\"; }\nshow CLEAN qos-if; show CLEAN qos-vlan\n",
+   "timeout": 180,
+   "expect_exit": 0,
+   "expect_regex": [
+    "^CLEAN qos-if rc=0 enumerable=true objects=0$",
+    "^CLEAN qos-vlan rc=0 enumerable=true objects=0$"
+   ],
+   "expect_not_regex": [
+    "UNREADABLE"
+   ]
+  }
+ ]
+}
