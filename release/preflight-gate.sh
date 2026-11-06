@@ -111,13 +111,38 @@ check_vm() {
 		no "container danos-robot is running" "vm/robot-env.sh up (builds it if the image is gone); every ssh in accept-disk-install.sh/accept-lifecycle.sh/regression.sh goes through it"
 	fi
 
+	# A persistent, unrelated workspace on this host (the dsh-superagent tree under
+	# ~/.dsh/state/superagent) keeps its own warm guest up for days. When that is the
+	# only stray process, failing here blocks every acceptance run indefinitely even
+	# though the cause the check exists for -- a guest holding a hostfwd port the next
+	# ssh silently reaches -- is absent. So the check stays fatal unless the caller
+	# opts in with PREFLIGHT_ALLOW_STRAY_QEMU=1, and even then only for processes this
+	# gate itself proves harmless: no hostfwd= in the command line, and no listening
+	# socket owned by the pid. Anything it cannot prove remains a FAIL.
 	stray=$(ps -eo pid,args | awk '$2 ~ /^qemu-system/ {print $1}')
 	if [ -z "$stray" ]; then
 		ok "no qemu-system process is running"
 	else
 		n=$(printf '%s\n' "$stray" | grep -c .)
-		no "no qemu-system process is running" \
-		   "$n running (pids: $(printf '%s' "$stray" | tr '\n' ' ')); a leftover process can hold a hostfwd port that the next boot's ssh silently goes to instead"
+		blockers=""
+		if [ "${PREFLIGHT_ALLOW_STRAY_QEMU:-0}" = 1 ]; then
+			for p in $stray; do
+				pargs=$(ps -o args= -p "$p" 2>/dev/null)
+				if grep -q 'hostfwd=' <<<"$pargs"; then
+					blockers="$blockers $p:hostfwd"
+				elif ss -Hltnp 2>/dev/null | grep -q "pid=$p,"; then
+					blockers="$blockers $p:listening"
+				fi
+			done
+		else
+			blockers="opt-in-not-set"
+		fi
+		if [ -n "$blockers" ]; then
+			no "no qemu-system process is running" \
+			   "$n running (pids: $(printf '%s' "$stray" | tr '\n' ' ')); a leftover process can hold a hostfwd port that the next boot's ssh silently goes to instead (blocking: $blockers). A stray guest that forwards and listens on nothing may be accepted with PREFLIGHT_ALLOW_STRAY_QEMU=1"
+		else
+			ok "no qemu-system process contests a forwarded or listening port -- $n unrelated guest(s) running (pids: $(printf '%s' "$stray" | tr '\n' ' ')), accepted via PREFLIGHT_ALLOW_STRAY_QEMU=1; record this line in the run report"
+		fi
 	fi
 
 	avail_mb=$(free -m | awk 'NR==2{print $7}')
