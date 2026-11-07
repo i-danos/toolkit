@@ -8,7 +8,8 @@ pair hashes to that member are blackholed, while forwarded traffic is not affect
 
 Topology (r1 is the router under test):   r3 --(dp0s8)-- r1 ==(dp0s9, dp0s10: two parallel links)== r2.
 OSPF on all three, 8 loopback addresses per router (10.255.<n>.1-8) used as probe sources. Three kinds of flow, 8 each:
-  F   r3 -> 10.255.2.1   FORWARDED through r1 (data plane)
+  F   r3 -> 10.255.2.1   ping through r1 (data plane); the echo REPLY is originated by r2's kernel, so F also depends on r2's kernel route
+  F1  r3 -> r2           (--udp) one-way UDP, forwarded by r1, received on r2, NO reply: pure forwarding
   O1  r1 -> 10.255.2.1   ORIGINATED by r1 (kernel route)
   O2  r2 -> 10.255.1.1   ORIGINATED by r2 (kernel route)
 The cut is a cable pull: QEMU `set_link <id> off` on BOTH ends of one link, so both routers see carrier loss at once (taking the carrier
@@ -229,9 +230,9 @@ def converged(timeout):
 
 
 # ---------------------------------------------------------------- one run
-def one_run(link, outdir, cut, total):
+def one_run(link, outdir, cut, total, udp=False):
     outdir.mkdir(parents=True, exist_ok=True)
-    meta = {"link": link, "dead_if": LINKS[link], "cut_s": cut, "total_s": total}
+    meta = {"link": link, "dead_if": LINKS[link], "cut_s": cut, "total_s": total, "udp": udp}
     pre = converged(150)
     meta["precondition_converged_s"] = pre
     if pre is None:
@@ -243,7 +244,7 @@ def one_run(link, outdir, cut, total):
         ssh(r, "cat > /tmp/nhg-guest.sh", inp=script)
     meta["start_host"] = time.time()
     for r in ("r1", "r2", "r3"):
-        ssh(r, "sudo -n setsid bash -c 'nohup bash /tmp/nhg-guest.sh %s %d </dev/null >/tmp/nhg-guest.out 2>&1 &'" % (r, total), timeout=30)
+        ssh(r, "sudo -n setsid bash -c 'NHG_UDP=%d nohup bash /tmp/nhg-guest.sh %s %d </dev/null >/tmp/nhg-guest.out 2>&1 &'" % (1 if udp else 0, r, total), timeout=30)
     time.sleep(5)
     meta["cut_host"] = set_link(link, "off")
     time.sleep(cut)
@@ -361,6 +362,30 @@ def flow_gaps(rdir, ref_cut, ref_restore, s0_guest, total):
     return res
 
 
+def udp_gaps(rdir, ref_restore, s0_guest, total):
+    """The same window rule as flow_gaps, for the one-way UDP stream received on r2 (udp-recv.log: 'time source' per datagram)."""
+    f = rdir / "nhg" / "udp-recv.log"
+    if not f.exists():
+        return None
+    by = {}
+    for ln in f.read_text(errors="replace").splitlines():
+        p = ln.split()
+        if len(p) == 2:
+            by.setdefault(p[1], []).append(float(p[0]))
+    lo, hi, end = s0_guest + 1.0, s0_guest + ref_restore - 3.0, s0_guest + total - 1
+    res = {}
+    for src in ["10.255.3.%d" % i for i in range(1, 9)]:
+        ts = by.get(src, [])
+        if len(ts) < 10:
+            res[src] = {"datagrams": len(ts), "max_gap_s": None}
+            continue
+        n = len(ts)
+        if ts[-1] < end - 1:
+            ts.append(end)
+        res[src] = {"datagrams": n, "max_gap_s": round(max((b - a for a, b in zip(ts, ts[1:]) if lo <= a <= hi), default=0.05), 3)}
+    return res
+
+
 def analyze_run(rundir):
     rundir = Path(rundir)
     meta = json.loads((rundir / "run.json").read_text())
@@ -379,6 +404,9 @@ def analyze_run(rundir):
     for r, tag in (("r1", "O1"), ("r2", "O2"), ("r3", "F")):
         g = flow_gaps(rundir / r, off_cut, off_restore, start_time(rundir / r), meta["total_s"])
         out["flows"][tag] = g
+    u = udp_gaps(rundir / "r2", off_restore, start_time(rundir / "r2"), meta["total_s"])
+    if u is not None:
+        out["flows"]["F1"] = u
     frr = (rundir / "r1" / "nhg" / "start.txt").read_text()
     out["frr_pkg"] = (re.search(r"frr_pkg=(\S+)", frr) or [None, None])[1]
     out["restore_converged_s"] = meta.get("restore_converged_s")
@@ -400,7 +428,7 @@ def summarise(rows):
     s["kernel_never_moved_in_window"] = sum(1 for r in ok for rt in ("r1", "r2") if r[rt].get("kernel_move_s") is None)
     s["kernel_move_over_5s"] = sum(1 for v in kms if v > 5)
     s["runs_with_a_stuck_kernel_group_on_either_router"] = sum(1 for r in ok if any((r[rt].get("kernel_move_s") is None or r[rt]["kernel_move_s"] > 5) for rt in ("r1", "r2")))
-    for tag in ("F", "O1", "O2"):
+    for tag in ("F", "O1", "O2") + (("F1",) if any("F1" in r["flows"] for r in ok) else ()):
         worst = [max((f["max_gap_s"] or 0) for f in r["flows"][tag].values()) for r in ok]
         aff = [sum(1 for f in r["flows"][tag].values() if (f["max_gap_s"] or 0) > 1.0) for r in ok]
         s["flow_%s" % tag] = {"worst_silence_per_run_s": stat(worst), "affected_flows_of_8_per_run": stat(aff),
@@ -416,6 +444,7 @@ def main():
     i = sub.add_parser("install-frr"); i.add_argument("debdir")
     v = sub.add_parser("verify-frr"); v.add_argument("--expect", default="any")
     r = sub.add_parser("run"); r.add_argument("--group", required=True); r.add_argument("--n", type=int, required=True); r.add_argument("--out", required=True)
+    r.add_argument("--udp", action="store_true", help="also run the one-way UDP stream r3 -> r2 (flow F1: forwarded traffic without any reply)")
     r.add_argument("--first-run", type=int, default=1); r.add_argument("--cut", type=int, default=75); r.add_argument("--total", type=int, default=108)
     a = sub.add_parser("analyze"); a.add_argument("dirs", nargs="+")
     x = ap.parse_args()
@@ -429,7 +458,7 @@ def main():
         out = Path(x.out)
         for k in range(x.first_run, x.first_run + x.n):
             link = "AB"[(k - 1) % 2]
-            m = one_run(link, out / ("run%02d" % k), x.cut, x.total)
+            m = one_run(link, out / ("run%02d" % k), x.cut, x.total, x.udp)
             print("run%02d link=%s %s" % (k, link, m.get("error") or "ok (restore converged in %ss)" % m.get("restore_converged_s")), flush=True)
         return 0
     for d in x.dirs:

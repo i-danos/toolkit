@@ -127,6 +127,30 @@ class Flows(unittest.TestCase):
         self.assertIsNone(self.gaps([S0 + 1, S0 + 2])["max_gap_s"])
 
 
+class Udp(unittest.TestCase):
+    def gaps(self, per_src):
+        d = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(d, True))
+        g = Path(d) / "nhg"; g.mkdir(parents=True)
+        (g / "udp-recv.log").write_text("".join("%.6f %s\n" % (t, src) for src, ts in per_src.items() for t in ts))
+        return nhg.udp_gaps(Path(d), 80.0, S0, 108)
+
+    def test_a_silent_source_has_a_gap_and_a_steady_one_does_not(self):
+        steady_src = steady(S0, S0 + 107, 0.05)
+        broken = steady(S0, S0 + 4.2, 0.05) + steady(S0 + 20, S0 + 107, 0.05)
+        r = self.gaps({"10.255.3.%d" % i: (broken if i == 3 else steady_src) for i in range(1, 9)})
+        self.assertGreater(r["10.255.3.3"]["max_gap_s"], 15)
+        self.assertLess(r["10.255.3.4"]["max_gap_s"], 0.2)
+
+    def test_a_source_that_never_arrived_is_none_not_a_clean_flow(self):
+        r = self.gaps({"10.255.3.1": steady(S0, S0 + 107, 0.05)})
+        self.assertIsNone(r["10.255.3.2"]["max_gap_s"])
+
+    def test_without_the_log_there_is_no_f1(self):
+        d = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__("shutil").rmtree(d, True))
+        (Path(d) / "nhg").mkdir()
+        self.assertIsNone(nhg.udp_gaps(Path(d), 80.0, S0, 108))
+
+
 class Summary(unittest.TestCase):
     def test_counts_runs_with_a_stuck_group_and_never_moved(self):
         def run(name, m1, m2):

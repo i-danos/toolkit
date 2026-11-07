@@ -19,6 +19,7 @@
 #   nh.log      N|t|... the output of `ip nexthop show` right after each change of the route's nhid, so group membership at that moment is known
 #   snap.log    every 5 s: ip -d route show, ip nexthop show, FRR's own RIB entry (vtysh) -- the same three views DEFECTS.md used
 #   ping-SRC-DST.log   ping -D output (a timestamp in front of every reply)
+#   udp-recv.log       (NHG_UDP=1, on r2) one line per datagram received from r3: arrival time and source address
 #   start.txt   the guest's time when this script started (S0) and the version of frr that is running
 set -u
 ROLE=${1:?role}; DUR=${2:?duration}
@@ -64,6 +65,44 @@ if [ -n "$PFX" ]; then
     done
   ) &
   pids+=($!)
+fi
+
+# Optional (NHG_UDP=1): a ONE-WAY UDP stream r3 -> r2, so that traffic merely forwarded by r1 is measured without any reply. The ping flows
+# above are not that: the echo reply is originated by r2's kernel, so flow F there also depends on r2's kernel route.
+if [ "${NHG_UDP:-0}" = 1 ]; then
+  if [ "$ROLE" = r2 ]; then
+    python3 - "$DUR" <<'PY' &
+import socket, sys, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.255.2.1", 9000)); s.settimeout(1.0)
+f = open("/tmp/nhg/udp-recv.log", "w", buffering=1); end = time.time() + float(sys.argv[1])
+while time.time() < end:
+    try:
+        d, a = s.recvfrom(64)
+    except socket.timeout:
+        continue
+    f.write("%.6f %s\n" % (time.time(), a[0]))
+f.close()
+PY
+    pids+=($!)
+  elif [ "$ROLE" = r3 ]; then
+    python3 - "$DUR" <<'PY' &
+import socket, sys, time
+socks = []
+for i in range(1, 9):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.255.3.%d" % i, 0)); socks.append(s)
+end = time.time() + float(sys.argv[1]); seq = 0; nxt = time.time()
+while time.time() < end:
+    for s in socks:
+        try:
+            s.sendto(b"%d" % seq, ("10.255.2.1", 9000))
+        except OSError:
+            pass
+    seq += 1; nxt += 0.05; d = nxt - time.time()
+    if d > 0:
+        time.sleep(d)
+PY
+    pids+=($!)
+  fi
 fi
 
 wait "${pids[@]}" 2>/dev/null
