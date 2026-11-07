@@ -51,6 +51,11 @@ case "$TOPO" in
        WANTED="231:dp0s3 dp0s9|232:dp0s3 dp0s9 dp0s10|233:dp0s3 dp0s9|234:dp0s3 dp0s9 dp0s10"
        RELAYS="r1:192.168.203.231:2231 r2:192.168.203.232:2232
                r3:192.168.203.233:2233 r4:192.168.203.234:2234" ;;
+  nhg) ROUTERS="r1 r2 r3"
+       HOSTS="155 156 157"
+       WANTED="155:dp0s8 dp0s9 dp0s10|156:dp0s9 dp0s10|157:dp0s8"
+       RELAYS="r1:192.168.203.155:2231 r2:192.168.203.156:2232
+               r3:192.168.203.157:2233" ;;
   *)   ROUTERS="r1 r2 r3"
        HOSTS="155 156 157"
        WANTED="155:dp0s3 dp0s9|156:dp0s3 dp0s8|157:dp0s3 dp0s8"

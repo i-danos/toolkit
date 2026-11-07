@@ -6,6 +6,7 @@
 #   TOPO=fw     FIREWALL                 three routers   (default)
 #   TOPO=ipsec  IPSEC_VPN, MPLS_LDP      three routers
 #   TOPO=bgp    BGP                      four routers
+#   TOPO=nhg    FRR nexthop-group A/B     three routers, TWO parallel links between r1 and r2 (frr-nhg-ab.py)
 #
 # The default is not a topology all three-router suites can use, and forgetting
 # TOPO does not look like a wiring problem. The suite configures addresses on
@@ -161,6 +162,8 @@ stop_all
 #   ipsec  (IPSEC_VPN,  R1.dp0s9 <-> R2.dp0s3 ; R2.dp0s8  <-> R3.dp0s8
 #          MPLS_LDP)    R1.dp0s3 = LAN        ; R3.dp0s3  = LAN
 #   bgp    (BGP)        four routers, five links -- see the case below
+#   nhg    (frr-nhg-ab.py)  r3.dp0s8 <-> r1.dp0s8 ; r1.dp0s9 <-> r2.dp0s9 ; r1.dp0s10 <-> r2.dp0s10
+#                       r1 reaches r2 over two equal-cost links, which is what makes zebra build a nexthop group
 #
 # The two ends of a link need not use the same slot; only the wiring matters.
 TOPO=${TOPO:-fw}
@@ -226,6 +229,25 @@ bgp)
   echo
   echo "  expected: r1 dp0s3+dp0s9  r2 dp0s3+dp0s9+dp0s10  r3 dp0s3+dp0s9  r4 dp0s3+dp0s9+dp0s10"
   ;;
+nhg)
+  # r1 is the router under test. It has two parallel links to r2 (equal-cost, so zebra gives it a kernel nexthop group) and one link
+  # to r3, the traffic source behind it. Netdev ids are the same on both ends of a link so that `set_link la off` on both monitors
+  # takes the carrier down on both sides, which is what a pulled cable does.
+  # Listeners first: r2 listens for the two parallel links, r1 listens for r3 and connects to r2, r3 connects last.
+  MACBASE=52:54:00:02 start r2 2232 \
+    -netdev socket,id=la,listen=127.0.0.1:4166 -device virtio-net-pci,netdev=la,addr=0x9,mac=52:54:00:02:09:01 \
+    -netdev socket,id=lb,listen=127.0.0.1:4167 -device virtio-net-pci,netdev=lb,addr=0xa,mac=52:54:00:02:0a:01
+  sleep 3
+  MACBASE=52:54:00:01 start r1 2231 \
+    -netdev socket,id=ls,listen=127.0.0.1:4165 -device virtio-net-pci,netdev=ls,addr=0x8,mac=52:54:00:01:08:01 \
+    -netdev socket,id=la,connect=127.0.0.1:4166 -device virtio-net-pci,netdev=la,addr=0x9,mac=52:54:00:01:09:01 \
+    -netdev socket,id=lb,connect=127.0.0.1:4167 -device virtio-net-pci,netdev=lb,addr=0xa,mac=52:54:00:01:0a:01
+  sleep 3
+  MACBASE=52:54:00:03 start r3 2233 \
+    -netdev socket,id=ls,connect=127.0.0.1:4165 -device virtio-net-pci,netdev=ls,addr=0x8,mac=52:54:00:03:08:01
+  echo
+  echo "  expected: r1 ens31+dp0s8+dp0s9+dp0s10   r2 ens31+dp0s9+dp0s10   r3 ens31+dp0s8"
+  ;;
 *)
-  echo "unknown TOPO=$TOPO (want fw, ipsec or bgp)" >&2; exit 1 ;;
+  echo "unknown TOPO=$TOPO (want fw, ipsec, bgp or nhg)" >&2; exit 1 ;;
 esac
