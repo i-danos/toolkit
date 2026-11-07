@@ -93,6 +93,22 @@ stop_vm() {
 }
 trap stop_vm EXIT
 
+# DIAG_NET=1: dump the guest's DHCP state over the console (works even when ssh does not) into $OUTDIR/netdiag-LABEL.txt.
+# Added for ISO-2 to tell "the MAC changed" from "the same MAC got another address"; off by default, changes no check.
+diag_net() {
+	[ "${DIAG_NET:-0}" = 1 ] || return 0
+	# One short command per console line, each under its own 10 s timeout inside the guest; a failed probe is recorded as
+	# "probe_failed:NAME" instead of voiding the whole dump. Output is one fact per line, no journal dump.
+	timeout 150 "$HERE/console.py" "$RUN/console.sock" "$ADMIN_USER" "$ADMIN_PASS" \
+	  'echo "FACT time=$(timeout 10 date -u +%T || echo probe_failed:date)"' \
+	  'echo "FACT iface=dp0s3 mac=$(timeout 10 cat /sys/class/net/dp0s3/address || echo probe_failed:mac)"' \
+	  'echo "FACT ipv4=$(timeout 10 ip -4 -o addr show dp0s3 | awk "{print \$4}" | tr "\n" "," || echo probe_failed:ipv4)"' \
+	  'echo "FACT lease_file_addr=$(echo '"$ADMIN_PASS"' | timeout 10 sudo -S -p "" grep -h fixed-address /var/lib/dhcp/dhclient_dp0s3.leases | tail -1 | tr -d " ;")"' \
+	  'echo "FACT dhclient_procs=$(timeout 10 pgrep -c dhclient || echo probe_failed:pgrep)"' \
+	  'echo "FACT lease_origin=$(echo '"$ADMIN_PASS"' | timeout 10 sudo -S -p "" grep -c "address dhcp" /config/config.boot | grep -q -v "^0" && echo dhcp || echo unknown)"' \
+	  2>&1 | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' | tr -d '\r' | grep -E '^FACT |timed out' > "$OUTDIR/netdiag-$1.txt"
+}
+
 # ssh from the robot container; the host has no sshpass.
 HOSTIP=${HOSTIP:-192.168.203.1}
 ssh_guest() {
@@ -241,6 +257,7 @@ esac
 echo
 echo "===== 4. Does it survive its own restart? ====="
 before_root="$root"
+diag_net before-reboot
 before_boot=$(ssh_guest "cat /proc/sys/kernel/random/boot_id" | tail -1)
 ssh_guest "echo $ADMIN_PASS | sudo -S -p '' systemctl reboot" > /dev/null 2>&1
 sleep 25
@@ -264,6 +281,8 @@ if wait_ssh "$BOOT_TIMEOUT"; then
 else
 	record "it did not come back after a restart" FAIL "see $RUN/console.log"
 fi
+
+diag_net after-reboot
 
 echo
 echo "===== Result ====="
