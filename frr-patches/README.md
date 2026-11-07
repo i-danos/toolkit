@@ -78,10 +78,33 @@ The patched source package is `frr 10.3-3+deb13u1danos1` (Debian's source with t
 
 ## Keeping it
 
-- The ISO's apt preference pins everything from origin `DANOS` at priority 1000 (`config/archives/danos.pref.chroot`
-  in the build-iso tree), so a later Debian `10.3-3+deb13u2` does **not** replace this package. The flip side:
-  Debian's security updates to frr are not picked up automatically. When Debian publishes one, rebase:
-  fetch the new `.dsc`, `.debian.tar.xz`, `.orig.tar.xz`, re-apply `danos-zebra-nhg-...patch` (check that
-  `zebra_nhg_nexthop_compare()` still has the same shape), bump the version to `...danos2`, and upload.
+- **Correction (2026-11-07).** This paragraph used to say the ISO's apt preference (`config/archives/danos.pref.chroot`: `Pin: release o=DANOS`,
+  priority 1000) keeps a later Debian `10.3-3+deb13u2` from replacing this package. That holds only for a repository whose `Release` file says
+  `Origin: DANOS`. The local overlay's `Release` (written by `reindex-overlay.sh`) has `Codename` and `Suite` only, so for packages shipped through
+  the overlay the pin matches nothing and the patched frr is chosen only because `10.3-3+deb13u1danos1` sorts above `10.3-3+deb13u1`. Tested with apt
+  in a container configured like the ISO build (`acceptance-p05/frr-nhg-20261106/logs/apt-selection.txt`): with the real overlay apt picks the danos
+  version; with a synthetic `10.3-3+deb13u2` added the candidate flips to the Debian one (and installing the three frr packages together fails);
+  with `Origin: DANOS` added to the overlay's `Release` the pin applies (priority 1000) and the danos version stays. Not changed here: adding the
+  `Origin` line would pin every overlay package, which is a decision for the owner; a pin file for frr alone is the narrower alternative.
+  A Debian security update to frr is therefore either silently preferred (overlay without Origin) or not picked up automatically (with the pin):
+  when Debian publishes one, rebase: fetch the new `.dsc`, `.debian.tar.xz`, `.orig.tar.xz`, re-apply the patch (check that
+  `zebra_nhg_nexthop_compare()` still has the same shape), bump the version to `...danos2`, and rebuild.
 - If Debian moves to a newer FRR that already fixes `zebra_nhg_nexthop_compare()`, drop the patch (and
   `frr` from `DEBIAN_REPO_PKGS`, `EXTRA_PKGS` and the allowlist) and test with the failover loop first.
+
+## QEMU A/B, same image (2026-11-07)
+
+Stock `frr 10.3-3+deb13u1` against `10.3-3+deb13u1danos1` on the same test image (`i-danos_2608_20261106T0249`), three routers, two parallel links
+between r1 and r2 (`toolkit/vm/boot-topo.sh` TOPO=nhg), the link cut at both ends at once, 20 cuts per side (blocks ABAB), 75 s down, 8 source
+addresses per flow family. Every number is recomputed from the raw files by `toolkit/vm/frr-nhg-ab.py analyze`; method, verification of which zebra
+binary was running (sha256 of /proc/PID/exe) and all caveats are in `acceptance-p05/frr-nhg-20261106/report.md`.
+
+| | stock | patched |
+|---|---|---|
+| runs in which the kernel route kept the dead member until the link came back (>5 s) | 20 of 20 | 0 of 20 |
+| kernel route left the dead member, per router and run | never within 75.5 s (40 of 40) | median 0.39 s, max 0.54 s |
+| router-originated flows, worst silence per run | median 33 s, max 45 s | median 0.59 s, max 0.64 s |
+| forwarded-only flow (one-way UDP, 6 runs each) | worst 0.6 s | worst 0.61 s |
+
+Not tested there: real hardware cable pulls, groups of more than two members, IPv6, routes learned by BGP, the Robot regression with this package,
+and the side effect named above (more nexthop-group entries when an inactive member is present).
