@@ -339,10 +339,15 @@ def kernel_view(rdir, dead_if):
 
 
 def flow_gaps(rdir, ref_cut, ref_restore, s0_guest, total):
-    """Longest silence per flow: gaps between consecutive replies whose start lies in [cut-0.5, restore]. A flow that never answers again is
-    measured to the end of its log (S0 + total - 1). ref_cut/ref_restore are offsets from the guest's S0."""
+    """Longest silence per flow. Which gaps count: those that START between S0+1 and (restore - 3 s), S0 being this guest's own script start.
+    The three scripts start up to about a second apart and the guests' clocks are not synchronised, so a window cut at the nominal moment of
+    the cut (r1's offset) can miss a gap that starts slightly before it on another guest -- the first version of this function did exactly
+    that and reported 0.1 s for flows that were silent for 30 s. A cut-induced gap starts near S0+5 and a restore-induced one near S0+80, so a
+    window from S0+1 to restore-3 takes the first and leaves the second out with seconds of margin either way.
+    A flow that never answers again is measured to the end of its log (S0 + total - 1). ref_restore is r1's offset (from its own S0) of the
+    moment the link came back; ref_cut is kept for the signature and not used."""
     res = {}
-    lo, hi, end = s0_guest + ref_cut - 0.5, s0_guest + ref_restore, s0_guest + total - 1
+    lo, hi, end = s0_guest + 1.0, s0_guest + ref_restore - 3.0, s0_guest + total - 1
     for f in sorted((rdir / "nhg").glob("ping-*.log")):
         ts = [float(m[1]) for m in (re.match(r"\[([\d.]+)\] .*bytes from", ln) for ln in f.read_text(errors="replace").splitlines()) if m]
         if len(ts) < 10:

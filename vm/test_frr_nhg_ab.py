@@ -113,6 +113,16 @@ class Flows(unittest.TestCase):
         ts = steady(S0, S0 + 85, 0.05) + steady(S0 + 95, S0 + 107, 0.05)
         self.assertLess(self.gaps(ts)["max_gap_s"], 1.0)
 
+    def test_a_gap_that_starts_slightly_before_the_nominal_cut_still_counts(self):
+        # another guest's script started ~1 s later than r1's, so its flow went silent at S0+4.2 while r1's offset of the cut is 5.0: the first
+        # version of flow_gaps used a window starting at cut-0.5 and reported ~0.05 s for a flow that was silent for 30 s
+        ts = steady(S0, S0 + 4.2, 0.05) + steady(S0 + 34.2, S0 + 107, 0.05)
+        self.assertGreater(self.gaps(ts)["max_gap_s"], 29)
+
+    def test_a_gap_starting_just_before_the_restore_is_the_restore_not_the_cut(self):
+        ts = steady(S0, S0 + 79.0, 0.05) + steady(S0 + 90, S0 + 107, 0.05)
+        self.assertLess(self.gaps(ts)["max_gap_s"], 1.0)
+
     def test_too_few_replies_is_none_not_zero(self):
         self.assertIsNone(self.gaps([S0 + 1, S0 + 2])["max_gap_s"])
 
