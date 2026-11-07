@@ -4,7 +4,7 @@
 #
 # usage: frr-nhg-guest.sh ROLE DURATION        ROLE is r1, r2 or r3
 #
-#   r1  router under test. Logs the KERNEL route to 10.255.2.1 (what router-originated traffic uses) and the carrier of dp0s9/dp0s10, and
+#   r1  router under test. Logs the KERNEL route to 10.255.2.1 (what router-originated traffic uses) and the operstate of dp0s9/dp0s10, and
 #       originates 8 ping flows, one per source address 10.255.1.1-8, to 10.255.2.1.
 #   r2  the far end. The same for 10.255.1.1, flows from 10.255.2.1-8 to 10.255.1.1.
 #   r3  traffic source behind r1: 8 flows from 10.255.3.1-8 to 10.255.2.1. These are FORWARDED by r1 (data plane), not originated by it.
@@ -13,7 +13,9 @@
 # put some flows on each member of a two-member group, and a flow on the dead member is the one that shows a stuck kernel route.
 #
 # Files (all times are this guest's CLOCK_REALTIME, seconds with microseconds):
-#   route.log   t|carrier dp0s9|carrier dp0s10|ip route show PREFIX   written on every change and as a heartbeat every second
+#   route.log   t|operstate dp0s9|operstate dp0s10|ip route show PREFIX   written on every change and as a heartbeat every second
+#               (operstate, not the sysfs carrier file: on a DANOS router the data plane signals a lost link as operstate dormant + NO-CARRIER
+#               while /sys/class/net/IF/carrier keeps reading 1; found when the first pilot logged carrier 1 through a 75 s cut)
 #   nh.log      N|t|... the output of `ip nexthop show` right after each change of the route's nhid, so group membership at that moment is known
 #   snap.log    every 5 s: ip -d route show, ip nexthop show, FRR's own RIB entry (vtysh) -- the same three views DEFECTS.md used
 #   ping-SRC-DST.log   ping -D output (a timestamp in front of every reply)
@@ -44,8 +46,8 @@ if [ -n "$PFX" ]; then
     while [ "$EPOCHSECONDS" -lt "$END" ]; do
       t=$EPOCHREALTIME
       rt=$(ip route show "$PFX" 2>&1)
-      read -r c9 < /sys/class/net/dp0s9/carrier 2>/dev/null || c9=x
-      read -r c10 < /sys/class/net/dp0s10/carrier 2>/dev/null || c10=x
+      read -r c9 < /sys/class/net/dp0s9/operstate 2>/dev/null || c9=x
+      read -r c10 < /sys/class/net/dp0s10/operstate 2>/dev/null || c10=x
       cur="$c9|$c10|$rt"
       if [ "$cur" != "$last" ] || [ "$EPOCHSECONDS" != "$lastbeat" ]; then
         echo "$t|$cur" >> "$D/route.log"; last=$cur; lastbeat=$EPOCHSECONDS

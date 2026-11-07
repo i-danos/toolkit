@@ -63,33 +63,33 @@ class Kernel(unittest.TestCase):
         return nhg.kernel_view(d, "dp0s9")
 
     def test_the_move_time_is_measured_from_the_carrier_loss(self):
-        rows = [(S0 + 1, "1", "1", "10.255.2.1 nhid 143 proto ospf"), (S0 + 5, "0", "1", "10.255.2.1 nhid 143 proto ospf"),
-                (S0 + 20, "0", "1", "10.255.2.1 nhid 143 proto ospf"), (S0 + 35.5, "0", "1", "10.255.2.1 nhid 25 proto ospf"),
-                (S0 + 80, "1", "1", "10.255.2.1 nhid 25 proto ospf")]
+        rows = [(S0 + 1, "up", "up", "10.255.2.1 nhid 143 proto ospf"), (S0 + 5, "dormant", "up", "10.255.2.1 nhid 143 proto ospf"),
+                (S0 + 20, "dormant", "up", "10.255.2.1 nhid 143 proto ospf"), (S0 + 35.5, "dormant", "up", "10.255.2.1 nhid 25 proto ospf"),
+                (S0 + 80, "up", "up", "10.255.2.1 nhid 25 proto ospf")]
         dumps = [(S0 + 0.5, NH_BOTH)]
         v = self.view(rows, dumps)
         self.assertAlmostEqual(v["t_cut"], S0 + 5); self.assertAlmostEqual(v["kernel_move_s"], 30.5, places=2); self.assertAlmostEqual(v["t_restore"], S0 + 80)
 
     def test_a_route_that_keeps_the_dead_member_until_the_link_returns_never_moved(self):
-        rows = [(S0 + 1, "1", "1", "10.255.2.1 nhid 143 proto ospf"), (S0 + 5, "0", "1", "10.255.2.1 nhid 143 proto ospf"),
-                (S0 + 60, "0", "1", "10.255.2.1 nhid 143 proto ospf"), (S0 + 80, "1", "1", "10.255.2.1 nhid 143 proto ospf")]
+        rows = [(S0 + 1, "up", "up", "10.255.2.1 nhid 143 proto ospf"), (S0 + 5, "dormant", "up", "10.255.2.1 nhid 143 proto ospf"),
+                (S0 + 60, "dormant", "up", "10.255.2.1 nhid 143 proto ospf"), (S0 + 80, "up", "up", "10.255.2.1 nhid 143 proto ospf")]
         v = self.view(rows, [(S0 + 0.5, NH_BOTH)])
         self.assertIsNone(v["kernel_move_s"]); self.assertAlmostEqual(v["window_s"], 75.0)
 
     def test_an_immediate_move_is_about_zero(self):
-        rows = [(S0 + 1, "1", "1", "10.255.2.1 nhid 143 proto ospf"), (S0 + 5, "0", "1", "10.255.2.1 nhid 25 proto ospf"), (S0 + 80, "1", "1", "10.255.2.1 nhid 25 proto ospf")]
+        rows = [(S0 + 1, "up", "up", "10.255.2.1 nhid 143 proto ospf"), (S0 + 5, "dormant", "up", "10.255.2.1 nhid 25 proto ospf"), (S0 + 80, "up", "up", "10.255.2.1 nhid 25 proto ospf")]
         v = self.view(rows, [(S0 + 0.5, NH_BOTH)])
         self.assertLess(v["kernel_move_s"], 0.01)
 
     def test_a_group_dump_taken_at_the_change_is_the_one_used(self):
         # nhid 143 is the two-member group at first and (after a re-number) a single member later: the dump at the time decides
         later = ["id 143 via 10.0.3.2 dev dp0s10 scope link proto zebra"]
-        rows = [(S0 + 1, "1", "1", "10.255.2.1 nhid 143 proto ospf"), (S0 + 5, "0", "1", "10.255.2.1 nhid 143 proto ospf"), (S0 + 9, "0", "1", "10.255.2.1 nhid 143 proto ospf")]
+        rows = [(S0 + 1, "up", "up", "10.255.2.1 nhid 143 proto ospf"), (S0 + 5, "dormant", "up", "10.255.2.1 nhid 143 proto ospf"), (S0 + 9, "dormant", "up", "10.255.2.1 nhid 143 proto ospf")]
         v = self.view(rows, [(S0 + 0.5, NH_BOTH), (S0 + 8, later)])
         self.assertAlmostEqual(v["kernel_move_s"], 4.0, places=2)
 
     def test_no_carrier_loss_is_reported_not_guessed(self):
-        v = self.view([(S0 + 1, "1", "1", "x"), (S0 + 5, "1", "1", "x")], [])
+        v = self.view([(S0 + 1, "up", "up", "x"), (S0 + 5, "up", "up", "x")], [])
         self.assertIn("error", v)
 
 

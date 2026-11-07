@@ -16,7 +16,7 @@ down on one end only leaves the peer unaware and measures OSPF dead timers inste
 
 Per run: wait until every router holds a 2-member group, start frr-nhg-guest.sh on the three routers, cut link A or B at +5 s (alternating),
 restore after --cut seconds, collect the guests' files, wait for the topology to converge again. Measured per run, in each guest's own clock:
-  (a) kernel_move_s   time from the carrier loss to the first kernel route whose nexthop group no longer contains the dead interface
+  (a) kernel_move_s   time from the link loss (operstate leaving 'up') to the first kernel route whose nexthop group no longer contains the dead interface
                       (None = it never did before the link came back = stuck for the whole cut)
   (b) F   longest silence of a forwarded flow after the cut
   (c) O1/O2 longest silence of a router-originated flow after the cut
@@ -265,20 +265,19 @@ def kernel_view(rdir, dead_if):
     rows = read_route_log(rdir / "nhg" / "route.log")
     dumps = read_nh_log(rdir / "nhg" / "nh.log")
     col = 1 if dead_if == "dp0s9" else 2
-    down = lambda c: c in ("0", "x")
     t_cut = t_restore = None
     prev_up = False
     for row in rows:
-        c = row[col]
-        if c == "1":
+        c = row[col]                      # operstate: "up" is up; "dormant" (the data plane's way to say no carrier), "down", "x" are not
+        if c == "up":
             prev_up = True
             if t_cut is not None and t_restore is None:
                 t_restore = row[0]
-        elif down(c) and prev_up and t_cut is None:
+        elif prev_up and t_cut is None:
             t_cut = row[0]
     out = {"t_cut": t_cut, "t_restore": t_restore, "dead_if": dead_if}
     if t_cut is None:
-        out["error"] = "no carrier loss seen on %s" % dead_if
+        out["error"] = "no operstate change away from up seen on %s" % dead_if
         return out
     end = t_restore or rows[-1][0]
     moved = None
@@ -329,7 +328,7 @@ def analyze_run(rundir):
     k1, k2 = kernel_view(rundir / "r1", dead), kernel_view(rundir / "r2", dead)
     out["r1"], out["r2"] = k1, k2
     if k1.get("t_cut") is None or k2.get("t_cut") is None:
-        out["error"] = out.get("error") or "carrier loss not seen on both routers"
+        out["error"] = out.get("error") or "link loss (operstate) not seen on both routers"
         return out
     off_cut = k1["t_cut"] - start_time(rundir / "r1")
     off_restore = (k1["t_restore"] or (k1["t_cut"] + meta["cut_s"])) - start_time(rundir / "r1")
