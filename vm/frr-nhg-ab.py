@@ -23,7 +23,8 @@ restore after --cut seconds, collect the guests' files, wait for the topology to
 A flow is "affected" when its longest silence exceeds 1 s. Nothing is estimated: every number comes from the raw files kept under OUT/.
 
 Usage:  frr-nhg-ab.py configure
-        frr-nhg-ab.py install-frr DEBDIR                     (group B: dpkg -i frr*.deb on the three routers; do it BEFORE configure)
+        frr-nhg-ab.py install-frr DEBDIR                     (group B: dpkg -i the three frr debs, RESTART frr, check the running zebra's hash; before configure)
+        frr-nhg-ab.py verify-frr [--expect SHA256]           (package version and the identity of the running zebra on each router)
         frr-nhg-ab.py run --group A|B --n N --out DIR [--first-run K] [--cut 75] [--total 108]
         frr-nhg-ab.py analyze DIR [DIR...]                    -> results.jsonl and summary.json next to each DIR
 """
@@ -114,21 +115,58 @@ def configure(p2p):
     return 0
 
 
+def deb_zebra_sha(deb):
+    """sha256 of /usr/lib/frr/zebra inside a frr .deb"""
+    ar = subprocess.run(["dpkg-deb", "--fsys-tarfile", str(deb)], capture_output=True, check=True).stdout
+    with tarfile.open(fileobj=io.BytesIO(ar)) as t:
+        import hashlib
+        return hashlib.sha256(t.extractfile("./usr/lib/frr/zebra").read()).hexdigest()
+
+
+def running_zebra(r):
+    """(sha256 of the executable the RUNNING zebra was started from, whether that file has since been replaced). dpkg -i replaces the file on
+    disk but does not restart zebra, so the package version alone says nothing about which code is running."""
+    rc, out, _ = ssh(r, "p=$(pidof zebra | awk '{print $1}'); echo vyatta | sudo -S -p '' ls -l /proc/$p/exe 2>/dev/null | sed 's/.*-> //'; "
+                        "echo vyatta | sudo -S -p '' sha256sum /proc/$p/exe 2>/dev/null | cut -c1-64", timeout=30)
+    lines = out.strip().splitlines()
+    return (lines[-1] if lines else None), any("(deleted)" in l for l in lines)
+
+
 def install_frr(debdir):
-    debs = sorted(Path(debdir).glob("frr*.deb"))
-    debs = [d for d in debs if "dbgsym" not in d.name]
-    if not debs:
-        print("no frr*.deb in", debdir); return 1
+    # exactly the three frr packages the ISO installs (frr, frr-pythontools, frr-snmp); frr-doc, frr-rpki-rtrlib and the dbgsym debs are not part of it
+    debs = [d for n in ("frr", "frr-pythontools", "frr-snmp") for d in sorted(Path(debdir).glob(n + "_*.deb"))]
+    if len(debs) != 3:
+        print("expected exactly frr, frr-pythontools, frr-snmp in", debdir, "found", [d.name for d in debs]); return 1
+    want = deb_zebra_sha(next(d for d in debs if d.name.startswith("frr_")))
     for r in ("r1", "r2", "r3"):
         for d in debs:
             rc, _, err = ssh(r, "cat > /tmp/%s" % d.name, inp=d.read_bytes(), timeout=300)
             if rc != 0:
                 print(r, "copy failed", err[:200]); return 1
-        rc, out, err = ssh(r, "sudo -n dpkg -i %s 2>&1 | tail -4; dpkg-query -W -f='${Package} ${Version}\\n' frr" % " ".join("/tmp/" + d.name for d in debs), timeout=600)
-        print("%s: %s" % (r, " | ".join(out.strip().splitlines()[-3:])))
+        rc, out, err = ssh(r, "sudo -n dpkg -i %s 2>&1 | tail -3; dpkg-query -W -f='${Package} ${Version}\\n' frr" % " ".join("/tmp/" + d.name for d in debs), timeout=600)
+        print("%s: %s" % (r, " | ".join(out.strip().splitlines()[-2:])))
         if "danos" not in out:
             return 1
+        # the new files are on disk, the running daemons are still the old ones: restart them, then prove which binary is running
+        ssh(r, "sudo -n systemctl restart frr", timeout=120)
+        time.sleep(6)
+        sha, deleted = running_zebra(r)
+        print("%s: running zebra sha256=%s deleted=%s (patched deb has %s)" % (r, (sha or "?")[:16], deleted, want[:16]))
+        if sha != want or deleted:
+            print("%s: the RUNNING zebra is not the patched binary; refusing to go on" % r); return 1
     return 0
+
+
+def verify_frr(expect):
+    """Print, for every router, the package version and the identity of the running zebra. expect: a sha256 or 'any'."""
+    bad = 0
+    for r in ("r1", "r2", "r3"):
+        rc, out, _ = ssh(r, "dpkg-query -W -f='${Version}' frr", timeout=30)
+        sha, deleted = running_zebra(r)
+        print("%s: package %s running-zebra sha256=%s deleted=%s" % (r, out.strip(), sha, deleted))
+        if expect != "any" and (sha != expect or deleted):
+            bad += 1
+    return 1 if bad else 0
 
 
 # ---------------------------------------------------------------- state parsing
@@ -371,6 +409,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("configure"); c.add_argument("--no-p2p", action="store_true")
     i = sub.add_parser("install-frr"); i.add_argument("debdir")
+    v = sub.add_parser("verify-frr"); v.add_argument("--expect", default="any")
     r = sub.add_parser("run"); r.add_argument("--group", required=True); r.add_argument("--n", type=int, required=True); r.add_argument("--out", required=True)
     r.add_argument("--first-run", type=int, default=1); r.add_argument("--cut", type=int, default=75); r.add_argument("--total", type=int, default=108)
     a = sub.add_parser("analyze"); a.add_argument("dirs", nargs="+")
@@ -379,6 +418,8 @@ def main():
         return configure(not x.no_p2p)
     if x.cmd == "install-frr":
         return install_frr(x.debdir)
+    if x.cmd == "verify-frr":
+        return verify_frr(x.expect)
     if x.cmd == "run":
         out = Path(x.out)
         for k in range(x.first_run, x.first_run + x.n):
