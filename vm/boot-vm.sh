@@ -86,7 +86,7 @@ qemu-system-x86_64 \
   -object rng-random,filename=/dev/urandom,id=rng0 \
   -device virtio-rng-pci,rng=rng0 \
   -display none \
-  -serial unix:"$RUN/console.sock",server,nowait \
+  -serial unix:"$RUN/console.sock",server,nowait,logfile="$RUN/console.log",logappend=on \
   -monitor unix:"$RUN/monitor.sock",server,nowait \
   -pidfile "$RUN/qemu.pid" \
   > "$RUN/qemu.log" 2>&1 &
