@@ -58,6 +58,16 @@ mkdir -p "$LOCAL_REPO"
 
 echo "== close-the-loop: snapshot $TS =="
 
+# ---- stage 0a: this project's own tests ----
+# mk-release.py in stage 7 decides what the release CLAIMS about its provenance,
+# and a wrong claim there is silent: on 2026-11-07 an ancestry-only check had
+# reported 255 packages as unpublished for six days, and every later stage
+# agreed with it. The suite runs here, before OBS, because it needs no network,
+# no ISO and no container (10 s) and because a release assembled by a broken
+# release tool is worse than no release. See release/test-gate.sh.
+echo "-- stage 0a: toolkit tests --"
+"$(dirname "$0")/test-gate.sh" || { echo "toolkit tests failed -- fix them before building; the release tool is what the rest of this run trusts." >&2; exit 1; }
+
 # ---- stage 0: OBS session sanity ----
 # An expired osc session answers every query empty, which reads as "every
 # package missing" rather than "cannot see OBS at all" -- refuse up front
