@@ -536,12 +536,32 @@ def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout,
     remote, tips, failures = None, None, []
     for name, url in remotes:
         if url not in ls_remote_cache:
-            try:
-                r = run(["git", "-C", repo, "ls-remote", "--heads", "--tags", url], timeout=timeout)
-                got = [ln.split("\t") for ln in r.stdout.splitlines() if "\t" in ln] if r.returncode == 0 else None
-                ls_remote_cache[url] = got if got else (None, _ls_remote_reason(r.stderr))
-            except subprocess.TimeoutExpired:
-                ls_remote_cache[url] = (None, f"git ls-remote timed out after {timeout}s")
+            # `--heads` and `--tags` are asked SEPARATELY, heads first: a repository's branch tips are a handful of
+            # refs, while its tags can number in the thousands and take minutes for the server to enumerate. Asking
+            # both in one call let one slow tag listing hide every branch tip -- linux-vyatta (4226 tags) took over
+            # 180 s, so packages whose commit sits on a branch were reported "remote not reachable". A tag timeout now
+            # costs only the tag half, and the reason strings say the tag list is what went missing.
+            got, why = [], []
+            for flags, label in ((["--heads"], "branches"), (["--tags"], "tags")):
+                try:
+                    r = run(["git", "-C", repo, "ls-remote", *flags, url], timeout=timeout)
+                    rows = [ln.split("\t") for ln in r.stdout.splitlines() if "\t" in ln]
+                    if r.returncode == 0 and rows:
+                        got.extend(rows)
+                    elif r.returncode != 0:
+                        why.append((label, _ls_remote_reason(r.stderr) or "no refs listed"))
+                    else:
+                        why.append((label, "no refs listed"))
+                except subprocess.TimeoutExpired:
+                    why.append((label, f"git ls-remote timed out after {timeout}s"))
+            if got:
+                if why:
+                    ls_remote_cache[("tag-gap", url)] = why     # partial answer: said in the note of every verdict
+                ls_remote_cache[url] = got
+            else:
+                # One dead remote must give one reason, not one per query: when both halves fail the same way, say it once.
+                reasons = [r for _, r in why]
+                ls_remote_cache[url] = (None, reasons[0]) if len(set(reasons)) == 1 else (None, "; ".join(f"{lab}: {r}" for lab, r in why))
         answer = ls_remote_cache[url]
         if isinstance(answer, tuple):
             failures.append(f"{name} ({url}): {answer[1] or 'no refs listed'}")
@@ -638,7 +658,13 @@ def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout,
             stop = f"limit {tag_limit}; {failed}"
         else:
             stop = ""
-    note = f" ({missing} tips are not in the local clone, so they could not be checked)" if missing else ""
+    notes = []
+    if missing:
+        notes.append(f"{missing} tips are not in the local clone, so they could not be checked")
+    gap = ls_remote_cache.get(("tag-gap", remote))
+    if gap:
+        notes.append("the tags could not be listed (" + "; ".join(f"{lab}: {r}" for lab, r in gap) + "), so only the branch tips were examined")
+    note = (" (" + "; ".join(notes) + ")") if notes else ""
 
     # 4. the same source content under a rewritten history. The build record names the commit `mk-dsc.sh` wrote
     #    at build time. If this project's history was later rewritten (authorship normalisation, rebase, a

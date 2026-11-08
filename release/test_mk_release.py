@@ -924,6 +924,44 @@ class RewrittenHistoryTest(unittest.TestCase):
         self.assertNotIn("history rewritten", why)
 
 
+class TagListingTimeoutTest(RewrittenHistoryTest):
+    """linux-vyatta carries 4226 tags and its `ls-remote` never finished inside 90 s, which made the check report
+    "remote not reachable" for packages whose commit is on a branch. A tag timeout must cost only the tag half."""
+
+    real_run = staticmethod(mk.run)
+
+    def patched(self):
+        def fake(args, **kw):
+            if "--tags" in args:
+                raise subprocess.TimeoutExpired(args, kw.get("timeout") or 90)
+            return TagListingTimeoutTest.real_run(args, **kw)
+        return mock.patch.object(mk, "run", side_effect=fake)
+
+    def test_branch_tip_still_answers_when_tags_time_out(self):
+        with self.patched():
+            ok, why, info = mk.check_commit_published(self.work, self.published, {})
+        self.assertTrue(ok, why)
+        self.assertEqual(info["ref"], "refs/heads/master")
+
+    def test_rewritten_commit_is_verified_from_the_branch_tips_alone(self):
+        with self.patched():
+            ok, why, info = mk.check_commit_published(self.work, self.recorded, {})
+        self.assertTrue(ok, why)
+        self.assertEqual(info["tree_identical_commit"], self.published)
+
+    def test_a_false_verdict_says_the_tag_list_was_missing(self):
+        self.git(self.work, "checkout", "-q", "-b", "local-only-2")
+        (self.work / "c").write_text("only local")
+        self.git(self.work, "add", "c")
+        self.git(self.work, "commit", "-qm", "local only")
+        recorded = self.git(self.work, "rev-parse", "HEAD")
+        with self.patched():
+            ok, why, _ = mk.check_commit_published(self.work, recorded, {})
+        self.assertFalse(ok, why)
+        self.assertIn("the tags could not be listed", why)
+        self.assertIn("only the branch tips were examined", why)
+
+
 class PublishedTagScanTest(unittest.TestCase):
     """check_commit_published against a repository whose published history is held by tags: how it asks, and what it says when it
     did not look at everything. Local git only; `mk.run` is wrapped to record every subprocess it starts."""
@@ -1081,7 +1119,7 @@ class PublishedTagScanTest(unittest.TestCase):
         self.assertTrue(why.startswith("remote not reachable:"), why)
 
     def ls_remotes(self, calls):
-        return [c[-1] for c in calls if "ls-remote" in c]
+        return list(dict.fromkeys(c[-1] for c in calls if "ls-remote" in c))     # each URL once, heads and tags share it
 
     def test_falls_through_to_origin_when_i_danos_is_unreachable(self):
         dead = str(self.td / "dead-i-danos.git")
@@ -1092,7 +1130,10 @@ class PublishedTagScanTest(unittest.TestCase):
         self.assertEqual(self.ls_remotes(calls), [dead, str(self.remote)], "i-danos is asked first, then origin")
         self.assertEqual(info["remote_url"], str(self.remote), "the URL actually used, not the first one configured")
         self.assertTrue(why.endswith("on " + str(self.remote)), why)
-        self.assertTrue(all("--heads" in c and "--tags" in c for c in calls if "ls-remote" in c), "only the ls-remote query is used")
+        self.assertEqual([("--heads" if "--heads" in c else "--tags") for c in calls if "ls-remote" in c],
+                         ["--heads", "--tags", "--heads", "--tags"],
+                         "each kind of refs is asked on its own, branch tips first, so a slow tag listing "
+                         "cannot hide them")
         self.assertFalse(any("fetch" in c for c in calls))
 
     def test_both_remotes_failing_lists_both_and_why(self):
