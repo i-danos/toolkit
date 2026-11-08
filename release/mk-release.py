@@ -283,11 +283,16 @@ VERIFIED_DEFINITION = {
         "digest of the .deb, only per-file md5sums."
     ),
     "local_git": (
-        "TRUE only if the recorded commit is an ancestor of a branch or tag tip that `git "
+        "TRUE if EITHER (a) the recorded commit is an ancestor of a branch or tag tip that `git "
         "ls-remote` reports on the source repository's published remote (so it is in the public "
-        "history, not just on a local branch). Establishes: the commit exists in the published "
-        "repository. Does NOT establish: that the installed .deb was built from it -- the link "
-        "is the .commit file mk-dsc.sh wrote for this exact source version."
+        "history, not just on a local branch), OR (b) the recorded commit is itself on no published "
+        "tip but its tree (the complete source state) is byte-identical to the tree of a commit that "
+        "IS reachable from such a tip -- the shape a history rewrite leaves, where the same content "
+        "carries a new commit id; the reason string names that published commit. Establishes: the "
+        "source content the installed package was built from exists in the published repository. "
+        "Does NOT establish: that the recorded commit object itself is published (in case (b) it is "
+        "not), nor that the installed .deb was built from it -- that link is the .commit file "
+        "mk-dsc.sh wrote for this exact source version."
     ),
     "other": "always FALSE: version_stamp_inferred is a guess, obs_package_revision has no commit, "
              "signed_alias is inherited from the 2105 baseline unchanged, unresolved is unresolved.",
@@ -634,11 +639,58 @@ def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout,
         else:
             stop = ""
     note = f" ({missing} tips are not in the local clone, so they could not be checked)" if missing else ""
+
+    # 4. the same source content under a rewritten history. The build record names the commit `mk-dsc.sh` wrote
+    #    at build time. If this project's history was later rewritten (authorship normalisation, rebase, a
+    #    force-push), that commit object sits on no published tip while the tree it points at is byte-identical
+    #    to a published commit's tree. A tree IS the whole source state, so "tree T is published as commit Y"
+    #    answers the question this check asks -- is the source this package was built from in public history --
+    #    without pretending the recorded commit object itself was published. Reported as its own reason, never
+    #    as "ancestor of a tip", and the recorded commit stays untouched in the .commit file.
+    published = [sha for sha, _ in heads] + [tip(n) for n in names]
+    tree, same = _published_tree_match(repo, commit, published, ls_remote_cache)
+    if tree and same:
+        info.update(tree=tree, tree_identical_commit=same[0], tree_identical_count=len(same))
+        more = f" (and {len(same) - 1} other published commit(s) carry the same tree)" if len(same) > 1 else ""
+        return True, (f"the recorded commit is not itself published, but its tree {tree[:12]} is the tree of "
+                      f"published commit {same[0][:12]} on {remote}{more}: the source content is in the public "
+                      f"history, the commit object is not (history rewritten)"), info
+
     if stop:
         return False, (f"not found to be an ancestor of the tips examined: checked {seen} of {total} tag tips "
                        f"({stop}) and {len(heads)} branch tips" + note), info
     return False, (f"not an ancestor of any of the {len(heads) + total} remote branch/tag tips "
                    f"(checked {len(heads)} branch tips and {seen} of {total} tag tips)" + note), info
+
+
+def _published_tree_match(repo, commit, published_tips, cache):
+    """(tree of `commit`, the published commits whose tree is exactly that tree).
+
+    "Published" means reachable from a tip `git ls-remote` listed AND present in this clone, so the answer is
+    read from objects, never assumed from a ref name. One `git rev-list` + one `git log --all` per repository,
+    remembered in `cache`; both are index scans, so the 1.2M-commit kernel history costs seconds, not hours.
+    Returns (None, []) when the commit or every published tip is missing, or rev-list fails.
+    """
+    r = run(["git", "-C", repo, "rev-parse", commit + "^{tree}"])
+    if r.returncode != 0:
+        return None, []
+    tree = r.stdout.strip()
+    key = ("published-trees", repo)
+    if key not in cache:
+        have = [t for t in published_tips if t and run(["git", "-C", repo, "cat-file", "-e", t + "^{commit}"]).returncode == 0]
+        by_tree = {}
+        if have:
+            q = run(["git", "-C", repo, "rev-list", *have], timeout=900)
+            if q.returncode == 0:
+                published = set(q.stdout.split())
+                q = run(["git", "-C", repo, "log", "--all", "--format=%H %T"], timeout=900)
+                if q.returncode == 0:
+                    for line in q.stdout.splitlines():
+                        parts = line.split()
+                        if len(parts) == 2 and parts[0] in published:
+                            by_tree.setdefault(parts[1], []).append(parts[0])
+        cache[key] = by_tree
+    return tree, sorted(cache[key].get(tree, []))
 
 
 def enrich_rows(rows, records, index, releases, sources_dir=None, remote_check=True,

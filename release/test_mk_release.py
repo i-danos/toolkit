@@ -863,6 +863,67 @@ class LocalGitVerifiedTest(unittest.TestCase):
         self.assertTrue(ok)
 
 
+class RewrittenHistoryTest(unittest.TestCase):
+    """A history rewrite leaves the build record naming a commit no tip holds, while the source content
+    (the tree) is published under a new commit id. That is what the 2026-11-02 authorship rewrite did to
+    255 of this project's packages, so the check has to answer it without pretending the old id is public."""
+
+    def git(self, cwd, *a):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
+        return subprocess.run(["git", "-C", str(cwd), *a], env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+    def amend(self, cwd):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "rewritten", "GIT_AUTHOR_EMAIL": "r@x", "GIT_AUTHOR_DATE": "2026-11-02T00:00:00 +0000",
+               "GIT_COMMITTER_NAME": "rewritten", "GIT_COMMITTER_EMAIL": "r@x", "GIT_COMMITTER_DATE": "2026-11-02T00:00:00 +0000"}
+        subprocess.run(["git", "-C", str(cwd), "commit", "-q", "--amend", "--no-edit"], env=env, check=True)
+        return self.git(cwd, "rev-parse", "HEAD")
+
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.td, True)
+        self.remote = self.td / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "master", str(self.remote)], check=True)
+        self.work = self.td / "work"
+        subprocess.run(["git", "init", "-q", "-b", "master", str(self.work)], check=True)
+        self.git(self.work, "remote", "add", "i-danos", str(self.remote))
+        (self.work / "a").write_text("1")
+        self.git(self.work, "add", "a")
+        self.git(self.work, "commit", "-qm", "one")
+        self.recorded = self.git(self.work, "rev-parse", "HEAD")
+        self.git(self.work, "branch", "build-record")        # keep the object reachable, as a stale local branch does
+        self.published = self.amend(self.work)               # same tree, new commit id
+        self.assertNotEqual(self.recorded, self.published)
+        self.git(self.work, "push", "-q", "-f", "i-danos", "master")
+
+    def test_recorded_commit_with_a_published_tree_is_verified_and_says_which_commit(self):
+        ok, why, info = mk.check_commit_published(self.work, self.recorded, {})
+        self.assertTrue(ok, why)
+        self.assertEqual(info["tree_identical_commit"], self.published)
+        self.assertEqual(info["tree"], self.git(self.work, "rev-parse", "HEAD^{tree}"))
+        self.assertIsNone(info["ref"], "must not claim the recorded commit is on a ref")
+        self.assertIn("history rewritten", why)
+        self.assertNotIn("ancestor of", why, "the recorded commit object is NOT an ancestor of a tip")
+
+    def test_tree_identical_commit_that_no_tip_reaches_is_not_verified(self):
+        self.git(self.work, "checkout", "-q", "-b", "local-only")
+        (self.work / "b").write_text("only local")
+        self.git(self.work, "add", "b")
+        self.git(self.work, "commit", "-qm", "local")
+        recorded = self.git(self.work, "rev-parse", "HEAD")
+        self.git(self.work, "branch", "build-record-2")
+        self.amend(self.work)                                 # same tree, different id, still only local
+        ok, why, info = mk.check_commit_published(self.work, recorded, {})
+        self.assertFalse(ok, why)
+        self.assertIn("not an ancestor", why)
+        self.assertNotIn("tree_identical_commit", info)
+
+    def test_same_answer_when_the_commit_is_already_published(self):
+        ok, why, info = mk.check_commit_published(self.work, self.published, {})
+        self.assertTrue(ok, why)
+        self.assertEqual(info["ref"], "refs/heads/master")
+        self.assertNotIn("history rewritten", why)
+
+
 class PublishedTagScanTest(unittest.TestCase):
     """check_commit_published against a repository whose published history is held by tags: how it asks, and what it says when it
     did not look at everything. Local git only; `mk.run` is wrapped to record every subprocess it starts."""
