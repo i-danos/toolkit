@@ -1149,6 +1149,56 @@ class PublishedTagScanTest(unittest.TestCase):
         self.assertEqual(why.count("does not appear to be a git repository"), 2, "each remote's own reason is kept: " + why)
         self.assertIsNone(info["remote_url"])
 
+    def test_i_danos_answering_and_holding_the_commit_is_true_and_origin_is_not_used(self):
+        dead = str(self.td / "dead-origin.git")
+        self.git(self.work, "remote", "add", "origin", dead)
+        (ok, why, info), calls = self.recorded(lambda: mk.check_commit_published(self.work, self.side, {}))
+        self.assertTrue(ok, why)
+        self.assertEqual(self.ls_remotes(calls), [str(self.remote)], "origin is never asked")
+        self.assertEqual(info["remote_url"], str(self.remote))
+        self.assertNotIn("skipped_remotes", info)
+        self.assertNotIn("NOTE", why)
+
+    def test_fallback_to_origin_that_lacks_the_commit_is_false_and_says_i_danos_did_not_answer(self):
+        # i-danos times out, origin answers but does not hold the commit: still False (the definition is unchanged),
+        # but the reason names the remote that was NOT asked successfully and why, not only origin's "not an ancestor"
+        i_danos = str(self.td / "slow-i-danos.git")
+        self.git(self.work, "remote", "add", "origin", str(self.remote))
+        self.git(self.work, "remote", "set-url", "i-danos", i_danos)
+        real = mk.run
+
+        def slow(cmd, **kw):
+            if "ls-remote" in cmd and cmd[-1] == i_danos:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+            return real(cmd, **kw)
+        with mock.patch.object(mk, "run", side_effect=slow):
+            ok, why, info = mk.check_commit_published(self.work, self.nowhere, {})
+        self.assertFalse(ok, why)
+        self.assertEqual(info["remote_url"], str(self.remote), "origin is what answered")
+        self.assertIn("not an ancestor", why)                       # origin's verdict is still there
+        self.assertIn("did not answer", why)
+        self.assertIn("i-danos (" + i_danos + ")", why)             # which remote, which URL
+        self.assertIn("timed out", why)                             # why
+        self.assertEqual(len(info["skipped_remotes"]), 1)
+
+    def test_fallback_reason_also_carries_a_refused_or_empty_i_danos(self):
+        dead = str(self.td / "refused-i-danos.git")
+        self.git(self.work, "remote", "add", "origin", str(self.remote))
+        self.git(self.work, "remote", "set-url", "i-danos", dead)
+        ok, why, info = mk.check_commit_published(self.work, self.nowhere, {})
+        self.assertFalse(ok, why)
+        self.assertIn("does not appear to be a git repository", why)    # i-danos' own refusal, kept
+        self.assertIn(dead, why)
+
+    def test_fallback_that_finds_the_commit_stays_true_and_records_the_skipped_remote(self):
+        dead = str(self.td / "dead-i-danos.git")
+        self.git(self.work, "remote", "add", "origin", str(self.remote))
+        self.git(self.work, "remote", "set-url", "i-danos", dead)
+        ok, why, info = mk.check_commit_published(self.work, self.side, {})
+        self.assertTrue(ok, why)
+        self.assertEqual(len(info["skipped_remotes"]), 1)
+        self.assertIn(dead, info["skipped_remotes"][0])
+
     def test_a_working_i_danos_means_origin_is_never_asked(self):
         dead = str(self.td / "dead-origin.git")
         self.git(self.work, "remote", "add", "origin", dead)

@@ -520,6 +520,17 @@ def check_commit_published(repo_dir, commit, ls_remote_cache, timeout=90,
 
 
 def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout, tag_limit):
+    """_check_commit_published_inner, plus: when the preferred remote did not answer and a later one was used, a False
+    verdict says which remote(s) failed and why -- it must not read as if the preferred remote had been asked. A True
+    keeps its wording ("... on <the remote used>"); the failed remotes are in info["skipped_remotes"] either way."""
+    ok, why, info = _check_commit_published_inner(repo, commit, ls_remote_cache, timeout, tag_timeout, tag_limit)
+    skipped = info.get("skipped_remotes")
+    if skipped and not ok:
+        why += "; NOTE: the preferred remote was not used, it did not answer: " + "; ".join(skipped)
+    return ok, why, info
+
+
+def _check_commit_published_inner(repo, commit, ls_remote_cache, timeout, tag_timeout, tag_limit):
     info = {"repository": str(repo), "remote_url": None, "ref": None, "ref_tip": None}
     if run(["git", "-C", repo, "cat-file", "-e", commit + "^{commit}"]).returncode != 0:
         return False, "the commit is not in the local clone of the source repository", info
@@ -572,6 +583,8 @@ def _check_commit_published(repo, commit, ls_remote_cache, timeout, tag_timeout,
     if remote is None:
         return False, "remote not reachable: " + "; ".join(failures), info
     info["remote_url"] = remote       # the URL actually used; the message below says "on <remote>" with the same value
+    if failures:
+        info["skipped_remotes"] = list(failures)   # remotes tried before this one, each with why it did not answer
 
     heads, tags = [], {}          # tags: ref -> {"obj": tag object id, "peeled": commit it points at}
     for sha, ref in tips:
