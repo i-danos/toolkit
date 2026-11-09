@@ -1203,7 +1203,8 @@ class EnrichRowsTest(unittest.TestCase):
         self.assertEqual([r["verified"] for r in rows], [True, True, False, False])
         for r in rows:
             self.assertTrue(r["verified_reason"])
-        self.assertEqual({p["name"] for p in prov}, {"libc6", "mine"})
+        # PROV-r2: every row has a provenance record now; the unverifiable categories are in it, verified false
+        self.assertEqual({p["name"] for p in prov}, {"libc6", "mine", "mine-stamped", "inherited"})
 
     def test_external_source_reason_is_replaced_by_the_conclusion_and_names_the_checksum(self):
         rows, _ = self.run_enrich(lambda *a: (True, "x", {}))
@@ -1228,6 +1229,100 @@ class EnrichRowsTest(unittest.TestCase):
         self.assertEqual(s["by_category"]["external_source"], {"true": 1, "false": 0})
         self.assertEqual({r["category"] for r in s["false_reasons"]}, {"version_stamp_inferred", "signed_alias"})
 
+
+class ProvenanceCoversSbomTest(EnrichRowsTest):
+    """PROV-r2: provenance.json lists every installed package; the ones that cannot be verified are verified false."""
+
+    def test_unverifiable_categories_enter_provenance_with_verified_false_and_their_reason(self):
+        rows, prov = self.run_enrich(lambda d, c, cache: (True, "published", {}))
+        self.assertEqual(len(prov), len(rows))
+        by = {p["name"]: p for p in prov}
+        for name, cat in (("mine-stamped", "version_stamp_inferred"), ("inherited", "signed_alias")):
+            self.assertIs(by[name]["verified"], False)
+            self.assertEqual(by[name]["category"], cat)
+            self.assertEqual(by[name]["verified_reason"], [r for r in rows if r["name"] == name][0]["verified_reason"])
+            self.assertEqual(by[name]["provenance"]["kind"], cat.replace("_", "-"))
+            self.assertIn(cat, by[name]["provenance"]["conclusion"])
+
+    def test_nothing_is_invented_for_the_new_records(self):
+        _, prov = self.run_enrich(lambda d, c, cache: (True, "published", {}))
+        rec_ = {p["name"]: p["provenance"] for p in prov}["inherited"]
+        self.assertNotIn("deb_sha256", rec_)
+        self.assertNotIn("commit", rec_)
+        self.assertIn("deb_sha256", rec_["unavailable"])
+        self.assertIn("commit", rec_["unavailable"])
+        stamped = {p["name"]: p["provenance"] for p in prov}["mine-stamped"]
+        self.assertEqual(stamped["commit"], "c" * 40)      # carried from the row, not made up
+        self.assertNotIn("commit", stamped["unavailable"])
+
+    def test_package_missing_from_the_index_stays_false_and_origin_is_stated_unproven(self):
+        td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, td, True)
+        verifier = make_apt_tree(td)
+        idx, rel = mk.load_apt_index(td, verifier=verifier)
+        rows = [{"name": "frr", "version": "10.3-3+deb13u1danos1", "category": "external_source", "source_package": "frr",
+                 "reason": "x"}]
+        prov = mk.enrich_rows(rows, [rec("frr", "10.3-3+deb13u1danos1")], idx, rel)
+        self.assertIs(rows[0]["verified"], False)
+        self.assertIs(prov[0]["verified"], False)
+        self.assertEqual(prov[0]["category"], "external_source")
+        self.assertEqual(prov[0]["provenance"]["kind"], "debian-archive")      # nothing proves another origin
+        self.assertIn("not in any Packages index", prov[0]["verified_reason"])
+        self.assertIn("origin of this package is not proven", prov[0]["verified_reason"])
+        self.assertNotIn("commit", prov[0]["provenance"])
+
+    def test_coverage_check_passes_when_provenance_lists_every_sbom_package(self):
+        sbom = [{"name": "a", "version": "1"}, {"name": "b", "version": "2"}]
+        mk.check_provenance_covers_sbom([{"name": "b", "version": "2"}, {"name": "a", "version": "1"}], sbom)
+
+    def test_coverage_check_fails_on_a_short_provenance(self):
+        sbom = [{"name": "a", "version": "1"}, {"name": "b", "version": "2"}]
+        with self.assertRaisesRegex(mk.ProvenanceCoverageError, "1 packages but sbom.json has 2"):
+            mk.check_provenance_covers_sbom([{"name": "a", "version": "1"}], sbom)
+
+    def test_coverage_check_fails_on_equal_count_but_different_packages(self):
+        sbom = [{"name": "a", "version": "1"}, {"name": "b", "version": "2"}]
+        with self.assertRaises(mk.ProvenanceCoverageError):
+            mk.check_provenance_covers_sbom([{"name": "a", "version": "1"}, {"name": "c", "version": "2"}], sbom)
+
+    def _run_main(self, drop_one):
+        """mk_release.main() on a fake ISO with 3 installed packages; drop_one makes enrich_rows return a short list."""
+        td = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, td, True)
+        iso = td / "i-danos_2608_20260101T0000-amd64.hybrid.iso"
+        iso.write_bytes(b"not a real iso")
+        (td / "i-danos_2608_20260101T0000-amd64.packages").write_text("")
+        records = [rec("pkg-a", "1"), rec("pkg-b", "2"), rec("pkg-c", "3")]
+        real_enrich = mk.enrich_rows
+        enrich = (lambda *a, **k: real_enrich(*a, **k)[:-1]) if drop_one else real_enrich
+        out = td / "out"
+        argv = ["mk-release.py", str(iso), "--out", str(out), "--no-remote-check"]
+        with mock.patch.object(mk, "parse_repo_packages", return_value={}), \
+             mock.patch.object(mk, "index_commit_files", return_value={}), \
+             mock.patch.object(mk, "parse_baseline", return_value={}), \
+             mock.patch.object(mk, "read_image", return_value=records), \
+             mock.patch.object(mk, "load_apt_index", return_value=({}, {})), \
+             mock.patch.object(mk, "build_build_inputs", return_value={}), \
+             mock.patch.object(mk, "enrich_rows", side_effect=enrich), \
+             mock.patch("sys.argv", argv):
+            try:
+                mk.main()
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        return code, out / "i-danos_2608_20260101T0000-amd64.hybrid"
+
+    def test_mk_release_main_exits_non_zero_when_provenance_is_short(self):
+        code, d = self._run_main(drop_one=True)
+        self.assertEqual(code, 3)
+        self.assertEqual(len(json.loads((d / "provenance.json").read_text())["packages"]), 2)   # written, then rejected
+        self.assertEqual(len(json.loads((d / "sbom.json").read_text())["packages"]), 3)
+
+    def test_mk_release_main_succeeds_when_provenance_covers_every_package(self):
+        code, d = self._run_main(drop_one=False)
+        self.assertEqual(code, 0)
+        prov = json.loads((d / "provenance.json").read_text())["packages"]
+        self.assertEqual(len(prov), len(json.loads((d / "sbom.json").read_text())["packages"]))
 
 
 if __name__ == "__main__":

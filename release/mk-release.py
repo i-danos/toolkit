@@ -422,7 +422,8 @@ def debian_provenance(rec, index, releases):
     if ent is None:
         why = ("this name+version+architecture is not in any Packages index the image carries "
                f"({', '.join(sorted(releases)) or 'none'}): superseded since the image was assembled, "
-               "or installed from a repository that is not Debian's")
+               "or installed from a repository that is not Debian's; nothing the image carries proves which, "
+               "so the origin of this package is not proven")
         for f in ("deb_url", "deb_sha256", "deb_size", "suite", "component", "release_file"):
             prov["unavailable"][f] = why
         prov["conclusion"] = f"{rec['name']} {rec['version']} ({rec['arch']}): not found in the image's Debian indexes"
@@ -751,13 +752,49 @@ def enrich_rows(rows, records, index, releases, sources_dir=None, remote_check=T
         else:
             ok = False
             why = row.get("reason", "") or f"{cat}: not verifiable"
-            prov = None
+            prov = unverifiable_provenance(row, cat, why)
         row["verified"] = bool(ok)
         row["verified_reason"] = why
-        if prov is not None:
-            prov_rows.append({"name": row["name"], "version": row["version"], "category": cat,
-                              "verified": bool(ok), "verified_reason": why, "provenance": prov})
+        prov_rows.append({"name": row["name"], "version": row["version"], "category": cat,
+                          "verified": bool(ok), "verified_reason": why, "provenance": prov})
     return prov_rows
+
+
+def unverifiable_provenance(row, cat, why):
+    """Provenance record for a row whose category can never be verified (version_stamp_inferred, unresolved,
+    obs_package_revision, signed_alias): it records the category and why it is not true. Nothing is invented --
+    no checksum, URL or commit that the row itself does not carry; what is missing is listed under `unavailable`."""
+    prov = {"kind": cat.replace("_", "-"), "package": row["name"], "version": row["version"],
+            "category": cat, "verified": False, "unavailable": {}}
+    if row.get("source_package"):
+        prov["source_package"] = row["source_package"]
+    if row.get("commit"):
+        prov["commit"] = row["commit"]
+    for extra in ("provenance_claim", "provenance_rejected", "rules_hint"):
+        if row.get(extra):
+            prov[extra] = row[extra]
+    prov["unavailable"]["deb_sha256"] = ("the image's dpkg status carries no .deb digest and this category has no "
+                                         "index entry to take one from")
+    if not prov.get("commit"):
+        prov["unavailable"]["commit"] = "no source commit is recorded for this exact name+version"
+    prov["conclusion"] = f"{row['name']} {row['version']}: category {cat}, not verified: {why}"
+    return prov
+
+
+class ProvenanceCoverageError(Exception):
+    """provenance.json does not list exactly the packages sbom.json lists."""
+
+
+def check_provenance_covers_sbom(prov_rows, sbom_rows):
+    """Raise ProvenanceCoverageError unless provenance has one entry for every sbom package (count and names)."""
+    if len(prov_rows) != len(sbom_rows):
+        raise ProvenanceCoverageError(
+            f"provenance.json has {len(prov_rows)} packages but sbom.json has {len(sbom_rows)}")
+    want = sorted((r["name"], r["version"]) for r in sbom_rows)
+    got = sorted((r["name"], r["version"]) for r in prov_rows)
+    if want != got:
+        missing = [k for k in want if k not in set(got)][:5]
+        raise ProvenanceCoverageError(f"provenance.json and sbom.json list different packages (first missing: {missing})")
 
 
 def verified_summary(rows):
@@ -1557,6 +1594,11 @@ def main():
     (release_dir / "sbom.json").write_text(
         json.dumps({"format": "danos-p0.5-sbom-v1", "packages": sbom_rows}, indent=2)
     )
+    try:
+        check_provenance_covers_sbom(prov_rows, sbom_rows)
+    except ProvenanceCoverageError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(3)
     (release_dir / "source-revision-map.json").write_text(
         json.dumps({
             "format": "danos-p0.5-source-revision-map-v1",
